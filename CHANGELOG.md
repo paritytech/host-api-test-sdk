@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.1
+
+### Changed
+
+- **Test host now matches signing accounts by SS58 address only.** `getPairByAddress` previously had a fallback that matched a raw hex public key (`0x…`) against keypairs, which silently masked a real bug: `@novasamatech/host-api-wrapper`'s `getLegacyAccountSigner` was sending the `signer` field as `toHex(publicKey)` instead of an SS58 address. Real wallets match by SS58 only, so the fallback made the test host more lenient than production. Removing it makes the legacy sign-raw/sign-payload paths fail here exactly as they do against a real wallet, guarding against regressions of [paritytech/product-sdk#156](https://github.com/paritytech/product-sdk/issues/156).
+- **`test/test-product.ts` `trySignRaw` now exercises the real signer path** (`getLegacyAccountSigner(account).signBytes(...)`) instead of hand-building the wire request, so the integration test covers the actual SDK code path. Requires the fixed wrapper (`@novasamatech/host-api-wrapper` ≥ 0.8.1) to pass.
+
 ## 0.9.0
 
 ### Changed

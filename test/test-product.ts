@@ -118,6 +118,7 @@ async function init() {
 
     // Fetch legacy (root) accounts
     let firstRootAddress: string | null = null;
+    let firstRootAccount: { publicKey: Uint8Array; name: string | undefined } | null = null;
     const rootResult = await accountsProvider.getLegacyAccounts();
 
     rootResult.match(
@@ -126,6 +127,7 @@ async function init() {
         rootEl.textContent = JSON.stringify(keys);
         rootEl.dataset.ready = 'true';
         if (keys.length > 0) firstRootAddress = keys[0];
+        if (accounts.length > 0) firstRootAccount = accounts[0];
       },
       () => {},
     );
@@ -136,15 +138,17 @@ async function init() {
 
       async trySignRaw(): Promise<TestResult> {
         try {
-          const r = await hostApi.signRawWithLegacyAccount(enumValue('v1', {
-            signer: firstRootAddress ?? '',
-            payload: { tag: 'Bytes' as const, value: new TextEncoder().encode('test-payload') },
-          }));
-          if (r.isOk()) {
-            const val = r.value;
-            return { ok: true, signature: val.value.signature };
-          }
-          return { ok: false, error: extractError(r.error) };
+          if (!firstRootAccount) return { ok: false, error: 'no legacy account' };
+          // Go through the real signer code path (getLegacyAccountSigner ->
+          // PolkadotSigner.signBytes), which is where the SS58/hex signer
+          // encoding is decided — rather than hand-building the wire request.
+          const signer = accountsProvider.getLegacyAccountSigner({
+            publicKey: firstRootAccount.publicKey,
+            dotNsIdentifier: '',
+            derivationIndex: 0,
+          });
+          const signature = await signer.signBytes(new TextEncoder().encode('test-payload'));
+          return { ok: true, signature: u8aToHex(signature) };
         } catch (err) {
           return { ok: false, error: extractError(err) };
         }
