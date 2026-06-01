@@ -245,12 +245,11 @@ function getPairByAddress(address: string): KeyringPair | undefined {
   for (const pair of pairsByUri.values()) {
     if (pair.address === address) return pair;
   }
-  // Try matching by public key hex (product-sdk sends 0x + hex(publicKey))
-  const normalized = address.toLowerCase();
-  for (const pair of pairsByUri.values()) {
-    if (u8aToHex(pair.publicKey).toLowerCase() === normalized) return pair;
-  }
-  // Try matching by SS58 re-encoding (address might be in different SS58 format)
+  // Match by SS58 re-encoding (address might be in a different SS58 prefix).
+  // NOTE: a raw hex-pubkey fallback was removed intentionally — real wallets
+  // match by SS58 address only, so the signer field must be a valid SS58
+  // address. Keeping the hex fallback here masked the getLegacyAccountSigner
+  // bug where `signer` was sent as toHex(publicKey).
   for (const pair of pairsByUri.values()) {
     try {
       if (keyring.encodeAddress(pair.publicKey) === address) return pair;

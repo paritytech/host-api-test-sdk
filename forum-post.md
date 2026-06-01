@@ -1,3 +1,9 @@
+# host-api-test-sdk 0.9.1
+
+## Stricter (real-wallet-like) account matching
+
+The test host now matches signing accounts by **SS58 address only**. Previously it also accepted a raw hex public key as the `signer`, which was more lenient than a real wallet and masked a bug in `getLegacyAccountSigner` (it sent the public key as hex instead of SS58). With this change, legacy-account `signRaw`/`signPayload` fail in the test host exactly as they do against a real wallet — so the test suite catches that class of regression. Use a wrapper that sends SS58 signers (`@novasamatech/host-api-wrapper` ≥ 0.8.1).
+
 # host-api-test-sdk 0.9.0
 
 Tracks upstream `@novasamatech/*@^0.8.0` ([triangle-js-sdks#179](https://github.com/paritytech/triangle-js-sdks/pull/179)). v0.8 is **wire-incompatible** with v0.7 — there is no compatibility shim, so your product side must be on `@novasamatech/host-api@^0.8.0` too. The [v0.8 migration guide](https://github.com/paritytech/triangle-js-sdks/blob/release/0.8/docs/migration/v0.8.md) lists all the product-side touchpoints; most products that use `createPapiProvider` for chain access and `@novasamatech/product-react-renderer` for custom chat don't need code changes.
