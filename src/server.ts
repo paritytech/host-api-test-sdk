@@ -18,6 +18,7 @@ export async function createTestHostServer(
     accounts,
     networks,
     productAccounts: options.productAccounts,
+    faults: options.faults,
   });
 
   const server = createServer((req, res) => {

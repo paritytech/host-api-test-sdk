@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DEV_ACCOUNTS } from './accounts.js';
-import type { Account, NetworkConfig } from './types.js';
+import type { Account, NetworkConfig, FaultConfig } from './types.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -20,6 +20,7 @@ interface HostPageConfig {
   accounts: Account[];
   networks: NetworkConfig[];
   productAccounts?: Record<string, Account>;
+  faults?: FaultConfig;
 }
 
 function resolveAccount(entry: Account): { name: string; uri: string } {
@@ -53,6 +54,7 @@ export function generateHostPage(config: HostPageConfig): string {
       name: n.name,
     })),
     ...(productAccountConfigs && { productAccounts: productAccountConfigs }),
+    ...(config.faults && { faults: config.faults }),
   });
 
   const bundleScript = getBundleScript();

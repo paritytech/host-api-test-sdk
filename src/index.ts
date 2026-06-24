@@ -1,4 +1,5 @@
 export { createTestHostServer } from './server.js';
+export { FAULT_SCENARIOS } from './scenarios.js';
 export { DEV_ACCOUNTS, DEV_ACCOUNT_NAMES } from './accounts.js';
 export {
   DEFAULT_CHAIN,
@@ -11,6 +12,7 @@ export type {
   Account,
   NetworkConfig,
   CreateTestHostOptions,
+  FaultConfig,
   DevAccountInfo,
   DevAccountName,
   ChatBot,

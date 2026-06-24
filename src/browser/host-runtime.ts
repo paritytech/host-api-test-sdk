@@ -41,10 +41,12 @@ import {
 import { ResultAsync } from "neverthrow";
 import { getWsProvider } from "polkadot-api/ws";
 
+import { createFaultProvider } from "../fault-provider.js";
 import type {
   ChatBot,
   ChatMessageLogEntry,
   ChatRoom,
+  FaultConfig,
   HexString,
   LoginBehavior,
   NavigationLogEntry,
@@ -79,6 +81,8 @@ interface HostConfig {
   networks: ChainRuntimeConfig[];
   /** Maps "dotnsId/index" → { name, uri } for product account overrides. */
   productAccounts?: Record<string, AccountConfig>;
+  /** Transport fault injection (latency, dropped handshake, flaky transport). */
+  faults?: FaultConfig;
 }
 
 declare global {
@@ -122,6 +126,8 @@ const paymentStatuses = new Map<string, { tag: string; value?: string }>();
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const paymentStatusSubscribers = new Map<string, Set<(status: any) => void>>();
 let paymentCounter = 0;
+/** Active transport faults; read by the fault provider on every message. */
+let currentFaults: FaultConfig = {};
 let nextNotificationId = 1;
 let currentTheme: Theme = {
   name: { tag: "Default", value: undefined },
@@ -353,7 +359,13 @@ function setupContainer(
   paymentCounter = 0;
   themeSubscribers.clear();
 
-  const provider = createIframeProvider({ iframe, url: config.productUrl });
+  // Wrap the raw iframe provider with fault injection. Reads `currentFaults`
+  // on every message so faults can be set up front (config.faults) or toggled
+  // at runtime via window.__TEST_HOST__.setFaults. A no-op when no faults set.
+  const provider = createFaultProvider(
+    createIframeProvider({ iframe, url: config.productUrl }),
+    () => currentFaults,
+  );
   const container = createContainer(provider);
 
   // Derive keypairs for all requested accounts
@@ -1233,6 +1245,10 @@ async function init(): Promise<void> {
 
   keyring = new Keyring({ type: "sr25519", ss58Format: 42 });
 
+  // Seed transport faults from config before the container is created so a
+  // dropped handshake is in effect from the very first frame.
+  currentFaults = config.faults ?? {};
+
   const iframe = document.getElementById("product-frame") as HTMLIFrameElement;
 
   currentContainer = setupContainer(iframe, config);
@@ -1285,6 +1301,14 @@ async function init(): Promise<void> {
 
     getChainStatus() {
       return chainStatus;
+    },
+
+    setFaults(faults: FaultConfig) {
+      currentFaults = { ...faults };
+    },
+
+    getFaults() {
+      return { ...currentFaults };
     },
 
     setPermissionBehavior(behavior: PermissionBehavior) {

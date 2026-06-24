@@ -38,6 +38,30 @@ export interface TestHostServer {
 /** A named dev account ('alice') or a custom account with a display name and Substrate URI. */
 export type Account = DevAccountName | DevAccountInfo;
 
+/**
+ * Transport fault-injection knobs. Make SDK-level failure modes reproducible in
+ * CI instead of only against real hosts. An absent/empty config is a no-op
+ * (transparent transport). See `FAULT_SCENARIOS` for ready-made presets.
+ */
+export interface FaultConfig {
+  /**
+   * Delay (ms) applied to every message in both directions. Use for soak/churn
+   * and interactive-timeout tests.
+   */
+  latencyMs?: number;
+  /**
+   * When true, the host never delivers the handshake response. The product's
+   * readiness never resolves — reproduces #200 (`isReady()` hangs). A
+   * bounded-readiness SDK should throw `HostNotReadyError` instead.
+   */
+  dropHandshake?: boolean;
+  /**
+   * Drop every Nth inbound (product→host) message. Exercises the SDK's retry
+   * path under a flaky transport (e.g. `3` drops the 3rd, 6th, 9th… message).
+   */
+  dropEveryNth?: number;
+}
+
 export interface CreateTestHostOptions {
   /** URL of the product to embed (e.g. http://localhost:3001) */
   productUrl: string;
@@ -71,6 +95,11 @@ export interface CreateTestHostOptions {
    * ```
    */
   productAccounts?: Record<string, Account>;
+  /**
+   * Transport fault injection (latency, dropped handshake, flaky transport).
+   * Omit for a faithful, fault-free host. See {@link FaultConfig}.
+   */
+  faults?: FaultConfig;
 }
 
 export interface SigningLogEntry {
@@ -309,6 +338,17 @@ export interface TestHostAPI {
   setPaymentTopUpBehavior(behavior: PaymentTopUpBehavior): void;
   /** Manually set a payment's status and notify subscribers. */
   simulatePaymentStatus(paymentId: string, status: { tag: string; value?: string }): void;
+
+  // ── Fault injection ────────────────────────────────────────
+  /**
+   * Set the active transport faults at runtime. Replaces the current config
+   * (pass `{}` to clear). Read on every message, so latency/drop changes take
+   * effect immediately — though `dropHandshake` only matters before the
+   * handshake has completed.
+   */
+  setFaults(faults: FaultConfig): void;
+  /** Get the currently active transport faults. */
+  getFaults(): FaultConfig;
 
   dispose(): void;
 }

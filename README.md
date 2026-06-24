@@ -196,6 +196,44 @@ product → submit signed bytes              → container's broadcast gate     
 
 If your test is asserting "permission rejected mid-session prevented submission", check the product's error UI rather than the permission log.
 
+## Fault injection
+
+The test host is faithful by design — but real hosts also fail in timing- and transport-level ways that a happy-path mock never exercises. The `faults` option (and the runtime `setFaults`) inject those failure modes so they're reproducible in CI instead of only against real hosts, by hand, after the fact.
+
+```ts
+import { createTestHostServer, FAULT_SCENARIOS } from "@parity/host-api-test-sdk";
+
+// The permanent CI repro for #200: the host never answers the handshake.
+// A bounded-readiness SDK must throw HostNotReadyError instead of hanging.
+const host = await createTestHostServer({
+  productUrl: "http://localhost:3000",
+  faults: FAULT_SCENARIOS.droppedHandshake,
+});
+```
+
+| Knob | Effect | Validates |
+|------|--------|-----------|
+| `latencyMs` | Delays every message in both directions | Soak/churn, interactive-category timeouts |
+| `dropHandshake` | Host never delivers the handshake response (`isReady()` hangs) | **#200 repro** — SDK should throw `HostNotReadyError` |
+| `dropEveryNth` | Drops every Nth inbound (product→host) message | Signer retry path under a flaky transport |
+
+Presets are exported as `FAULT_SCENARIOS`: `droppedHandshake`, `flakyTransport` (`dropEveryNth: 3`), `slowSigning` (`latencyMs: 130_000`), `highLatency` (`latencyMs: 2_000`).
+
+Faults can also be toggled mid-test — connect cleanly, then degrade the transport and assert recovery:
+
+```ts
+test("signer recovers under a flaky transport", async ({ testHost }) => {
+  await testHost.waitForConnection();
+  await testHost.setFaults({ dropEveryNth: 3 });
+  // ... drive the product; assert the retry path recovers ...
+  await testHost.setFaults({}); // clear
+});
+```
+
+Without the Playwright fixture, the same controls are on `window.__TEST_HOST__.setFaults(...)` / `getFaults()`.
+
+An empty/absent `faults` config is a transparent pass-through — no behavior change. Note: **version/protocol-skew injection is not yet supported** (it needs wire codecs the upstream package doesn't export); it's tracked as a follow-up.
+
 ## How it works
 
 ```
@@ -230,6 +268,8 @@ The browser bundle (~780KB minified) includes `@novasamatech/host-container`, `@
 | `testHost.getPermissionLog()` | All permission requests and outcomes since last clear |
 | `testHost.clearPermissionLog()` | Reset the permission log |
 | `testHost.waitForConnection(timeout?)` | Wait for host-api-wrapper to connect |
+| `testHost.setFaults(faults)` | Set transport faults at runtime (latency, dropped handshake, flaky transport) |
+| `testHost.getFaults()` | Get the currently active transport faults |
 
 ### Dev accounts
 

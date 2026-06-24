@@ -1,7 +1,7 @@
 import type { Page, FrameLocator } from '@playwright/test';
 import { createTestHostServer } from '../server.js';
 import { DEFAULT_CHAIN } from '../networks.js';
-import type { ChatBot, ChatMessageLogEntry, ChatRoom, CreateTestHostOptions, DevAccountName, HexString, LoginBehavior, NavigationLogEntry, NotificationLogEntry, PaymentLogEntry, PaymentTopUpBehavior, PermissionBehavior, PermissionLogEntry, PreimageEntry, SigningLogEntry, StatementSubmissionLogEntry, TestHostAPI, Theme, ThemeInput } from '../types.js';
+import type { ChatBot, ChatMessageLogEntry, ChatRoom, CreateTestHostOptions, DevAccountName, FaultConfig, HexString, LoginBehavior, NavigationLogEntry, NotificationLogEntry, PaymentLogEntry, PaymentTopUpBehavior, PermissionBehavior, PermissionLogEntry, PreimageEntry, SigningLogEntry, StatementSubmissionLogEntry, TestHostAPI, Theme, ThemeInput } from '../types.js';
 
 export interface TestHost {
   /** The host page (contains the iframe) */
@@ -136,6 +136,12 @@ export interface TestHost {
 
   /** Wait until the product-sdk has connected to the host container */
   waitForConnection(timeout?: number): Promise<void>;
+
+  /** Set transport faults (latency, dropped handshake, flaky transport) at runtime */
+  setFaults(faults: FaultConfig): Promise<void>;
+
+  /** Get the currently active transport faults */
+  getFaults(): Promise<FaultConfig>;
 }
 
 export interface TestHostFixtureOptions {
@@ -147,6 +153,8 @@ export interface TestHostFixtureOptions {
   networks?: CreateTestHostOptions['networks'];
   /** Map product account requests to specific accounts (see CreateTestHostOptions.productAccounts) */
   productAccounts?: CreateTestHostOptions['productAccounts'];
+  /** Transport fault injection (latency, dropped handshake, flaky transport). See FAULT_SCENARIOS. */
+  faults?: CreateTestHostOptions['faults'];
 }
 
 export function createTestHostFixture(defaults: TestHostFixtureOptions) {
@@ -157,6 +165,7 @@ export function createTestHostFixture(defaults: TestHostFixtureOptions) {
         accounts: defaults.accounts ?? ['alice'],
         networks: defaults.networks ?? [DEFAULT_CHAIN],
         productAccounts: defaults.productAccounts,
+        faults: defaults.faults,
       });
 
       await page.goto(server.url);
@@ -345,6 +354,14 @@ export function createTestHostFixture(defaults: TestHostFixtureOptions) {
             () => window.__TEST_HOST__?.getConnectionStatus() === 'connected',
             { timeout },
           );
+        },
+
+        async setFaults(faults: FaultConfig) {
+          await page.evaluate((f) => window.__TEST_HOST__.setFaults(f), faults);
+        },
+
+        async getFaults() {
+          return page.evaluate(() => window.__TEST_HOST__.getFaults());
         },
       };
 

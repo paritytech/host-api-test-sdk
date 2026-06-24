@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.11.0
+
+### Added
+
+- **Fault injection.** A new `faults` option on `createTestHostServer` / `createTestHostFixture` (and a runtime `testHost.setFaults(...)` / `getFaults()` control) makes SDK-level failure modes reproducible in CI instead of only against real hosts, by hand, after the fact. The raw `Provider` transport is wrapped with a thin fault layer:
+  - `latencyMs` — delay every message in both directions (soak/churn, interactive-timeout tests).
+  - `dropHandshake` — never deliver the handshake response, so the product's readiness never resolves. **This is the permanent CI repro for [#200](https://github.com/paritytech/product-sdk/issues/200)** — a bounded-readiness SDK should throw `HostNotReadyError` rather than hang on `isReady()`.
+  - `dropEveryNth` — drop every Nth inbound (product→host) message, to exercise the signer retry path under a flaky transport.
+- **`FAULT_SCENARIOS`** exported presets: `droppedHandshake`, `flakyTransport`, `slowSigning`, `highLatency`. Pass one as `faults` or to `setFaults(...)`.
+- **`FaultConfig` type** exported from the package root.
+
+### Internal
+
+- Fault layer lives in `src/fault-provider.ts` (DOM-free, no runtime deps) so it is bundled into the browser runtime by esbuild **and** unit-tested under `node --test` (`fault-provider.test.mjs`, 11 cases) without a browser. The handshake-response frame is detected by reading the SCALE-compact `requestId` length and the `MessagePayload` enum index byte (`host_handshake_response` = 1) — no dependency on `@novasamatech/host-api`'s non-exported internal codecs.
+- The fault layer is a transparent pass-through when no faults are configured, so existing tests are unaffected.
+
+### Not yet implemented (tracked for follow-up)
+
+- **Protocol/version skew** (`protocolVersion`) — serving a deliberately older/newer wire version to detect skew at handshake — is intentionally **not** shipped here. A faithful implementation needs to re-encode the handshake response (or emit `HandshakeErr::UnsupportedProtocolVersion`), which requires the `Message`/`MessagePayload` codecs that `@novasamatech/host-api` does not export from its package root. Shipping a fake would violate the "strict mock, never mask" principle. See the internal next-steps doc.
+
 ## 0.10.0
 
 ### Breaking changes
