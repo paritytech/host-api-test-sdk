@@ -13,7 +13,7 @@
 
 ### Internal
 
-- Fault layer lives in `src/fault-provider.ts` (DOM-free, no runtime deps) so it is bundled into the browser runtime by esbuild **and** unit-tested under `node --test` (`fault-provider.test.mjs`, 11 cases) without a browser. The handshake-response frame is detected by reading the SCALE-compact `requestId` length and the `MessagePayload` enum index byte (`host_handshake_response` = 1) — no dependency on `@novasamatech/host-api`'s non-exported internal codecs.
+- Fault layer lives in `src/fault-provider.ts` (DOM-free, no runtime deps) so it is bundled into the browser runtime by esbuild **and** unit-tested under `node --test` (`fault-provider.test.mjs`, 9 cases) without a browser. The handshake-response frame is detected by reading the SCALE-compact `requestId` length and the `MessagePayload` enum index byte (`host_handshake_response` = 1) — no dependency on `@novasamatech/host-api`'s non-exported internal codecs.
 - The fault layer is a transparent pass-through when no faults are configured, so existing tests are unaffected.
 
 ### Not yet implemented (tracked for follow-up)
