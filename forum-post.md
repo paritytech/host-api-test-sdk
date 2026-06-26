@@ -1,4 +1,4 @@
-# host-api-test-sdk 0.10.0
+# host-api-test-sdk 0.11.0
 
 ## Fault injection: reproduce flaky-host failures in CI
 
