@@ -23,10 +23,19 @@ export const FAULT_SCENARIOS = {
   droppedHandshake: { dropHandshake: true },
 
   /**
-   * Drop every 3rd inbound message. Exercises the signer retry path
-   * (`signer/src/retry.ts`) — it should recover within its retry budget.
+   * Drop every inbound message. On this engine a dropped request has no retry
+   * path, so the affected call stalls — assert the SDK does not silently
+   * succeed (a true "retry recovers" test needs a bounded request + a
+   * retry-capable signer; not available on the `@novasamatech` engine).
    */
-  flakyTransport: { dropEveryNth: 3 },
+  flakyTransport: { dropEveryNth: 1 },
+
+  /**
+   * Version-skewed host: the handshake claims an unsupported codec id, so the
+   * host answers with `UnsupportedProtocolVersion` and the client detects skew
+   * at handshake instead of hanging.
+   */
+  versionSkew: { protocolVersion: 2 },
 
   /**
    * 130s of latency on every message. Validates that interactive-category

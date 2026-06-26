@@ -10,8 +10,12 @@
  *   - `dropHandshake` — never deliver the handshake response → reproduces #200
  *                       (the SDK's `isReady()` hangs; a bounded-readiness SDK
  *                       should instead throw `HostNotReadyError`)
- *   - `dropEveryNth`  — drop every Nth inbound (product→host) message, to
- *                       exercise the signer retry path under a flaky transport
+ *   - `dropEveryNth`  — drop every Nth inbound (product→host) message; on this
+ *                       engine a dropped request has no retry path, so the call
+ *                       stalls (the observable fault)
+ *   - `protocolVersion` — rewrite the inbound handshake request's codec id so
+ *                       the host answers with `UnsupportedProtocolVersion`
+ *                       (version-skew simulation)
  *
  * This module is intentionally DOM-free and has no runtime imports (the two
  * `import type` lines are erased at compile time), so it lives outside
@@ -32,6 +36,17 @@ import type { FaultConfig } from './types.js';
  * internal subpath.
  */
 export const HANDSHAKE_RESPONSE_INDEX = 1;
+
+/**
+ * Enum index of `host_handshake_request` within `MessagePayload` (the request
+ * is variant 0, the response variant 1). The inbound handshake request frame is
+ * `[compact-len][requestId][0x00 request][0x00 v1][u8 codecId]`, so its codec id
+ * is the final byte — see {@link rewriteHandshakeCodecId}.
+ */
+export const HANDSHAKE_REQUEST_INDEX = 0;
+
+/** The host's supported SCALE codec/protocol id; a handshake claiming any other id is rejected. */
+export const SUPPORTED_CODEC_ID = 1;
 
 /**
  * Read a SCALE compact-encoded unsigned integer at `offset`.
@@ -82,6 +97,30 @@ export function isHandshakeResponse(frame: Uint8Array): boolean {
   }
 }
 
+/** Is this inbound frame a `host_handshake_request`? (payload enum index 0) */
+export function isHandshakeRequest(frame: Uint8Array): boolean {
+  try {
+    const { value: requestIdLen, nextOffset } = readCompactUint(frame, 0);
+    return frame[nextOffset + requestIdLen] === HANDSHAKE_REQUEST_INDEX;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Return a copy of an inbound `host_handshake_request` with its trailing u8
+ * codec id set to `codecId`. The host's built-in handshake handler answers with
+ * `Err(UnsupportedProtocolVersion)` for any id other than {@link SUPPORTED_CODEC_ID},
+ * so this triggers the *real* version-skew path — no encoding on our side. The
+ * frame is returned unchanged (same reference) if it isn't a handshake request.
+ */
+export function rewriteHandshakeCodecId(frame: Uint8Array, codecId: number): Uint8Array {
+  if (!isHandshakeRequest(frame) || frame.length === 0) return frame;
+  const out = frame.slice();
+  out[out.length - 1] = codecId & 0xff; // codec id is the final byte of the request frame
+  return out;
+}
+
 /** Run `fn` now, or after `latencyMs` if a positive delay is configured. */
 function deliver(fn: () => void, latencyMs?: number): void {
   if (latencyMs && latencyMs > 0) {
@@ -124,16 +163,23 @@ export function createFaultProvider(
     subscribe(callback: (message: Uint8Array) => void): () => void {
       return inner.subscribe((message: Uint8Array) => {
         const faults = getFaults() ?? {};
+        // Version skew: rewrite the codec id in the inbound handshake request so
+        // the host's built-in handler answers with UnsupportedProtocolVersion.
+        const frame =
+          faults.protocolVersion !== undefined
+            ? rewriteHandshakeCodecId(message, faults.protocolVersion)
+            : message;
         inboundCount += 1;
         if (
           faults.dropEveryNth &&
           faults.dropEveryNth > 0 &&
           inboundCount % faults.dropEveryNth === 0
         ) {
-          // Drop this inbound frame to exercise the SDK's retry path.
+          // Drop this inbound frame. On this engine a dropped request has no
+          // retry path, so the affected call stalls — the observable fault.
           return;
         }
-        deliver(() => callback(message), faults.latencyMs);
+        deliver(() => callback(frame), faults.latencyMs);
       });
     },
 

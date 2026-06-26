@@ -15,26 +15,27 @@ const host = await createTestHostServer({
 });
 ```
 
-Three knobs, composable:
+Four knobs, composable:
 
 - `latencyMs` — delay every message both ways (soak/churn, interactive-timeout tests).
 - `dropHandshake` — never deliver the handshake response (`isReady()` hangs → #200 repro).
-- `dropEveryNth` — drop every Nth inbound message (flaky transport → exercises the signer retry path).
+- `dropEveryNth` — drop every Nth inbound message; the affected call stalls (no retry on this engine).
+- `protocolVersion` — simulate a version-skewed host: the handshake claims an unsupported codec id, so the host answers `UnsupportedProtocolVersion` and the client detects skew at handshake. No fake — we trigger the host's real rejection path by rewriting one byte of the inbound handshake request.
 
-Ready-made presets in `FAULT_SCENARIOS`: `droppedHandshake`, `flakyTransport`, `slowSigning`, `highLatency`.
+Ready-made presets in `FAULT_SCENARIOS`: `droppedHandshake`, `flakyTransport`, `versionSkew`, `slowSigning`, `highLatency`.
 
-You can also flip faults mid-test from the Playwright fixture — e.g. connect cleanly, then turn on a flaky transport and assert recovery:
+You can also flip faults mid-test from the Playwright fixture — e.g. connect cleanly, then degrade the transport and assert a signing call stalls:
 
 ```ts
-test('signer recovers under a flaky transport', async ({ testHost }) => {
+test('a dropped signing request stalls under a flaky transport', async ({ testHost }) => {
   await testHost.waitForConnection();
-  await testHost.setFaults({ dropEveryNth: 3 });
-  // ... drive the product, assert the retry path recovers ...
+  await testHost.setFaults({ dropEveryNth: 1 });
+  // ... drive a signing call; assert it does NOT settle within a bound ...
   await testHost.setFaults({}); // clear
 });
 ```
 
-Version/protocol-skew injection is deliberately **not** in this release — doing it faithfully needs wire codecs the upstream package doesn't export yet, and a fake would defeat the point. It's tracked as a follow-up.
+Two honest limits: a dropped request has **no retry path** on the current `@novasamatech` engine, so the test asserts the call *stalls*, not that it recovers (true retry-recovery is a follow-up needing a bounded request + retry-capable signer). And `protocolVersion` skews the u8 codec id — a literal-semver wire negotiation would need the `@parity/truapi-host` engine.
 
 # host-api-test-sdk 0.9.1
 

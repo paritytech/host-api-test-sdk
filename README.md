@@ -215,20 +215,23 @@ const host = await createTestHostServer({
 |------|--------|-----------|
 | `latencyMs` | Delays every message in both directions | Soak/churn, interactive-category timeouts |
 | `dropHandshake` | Host never delivers the handshake response (`isReady()` hangs) | **#200 repro** — SDK should throw `HostNotReadyError` |
-| `dropEveryNth` | Drops every Nth inbound (product→host) message | Signer retry path under a flaky transport |
+| `dropEveryNth` | Drops every Nth inbound (product→host) message | Dropped request **stalls** (no retry on this engine) — assert no silent success |
+| `protocolVersion` | Handshake claims an unsupported codec id → host answers `UnsupportedProtocolVersion` | Client detects version skew at handshake instead of hanging |
 
-Presets are exported as `FAULT_SCENARIOS`: `droppedHandshake`, `flakyTransport` (`dropEveryNth: 3`), `slowSigning` (`latencyMs: 130_000`), `highLatency` (`latencyMs: 2_000`).
+Presets are exported as `FAULT_SCENARIOS`: `droppedHandshake`, `flakyTransport` (`dropEveryNth: 1`), `versionSkew` (`protocolVersion: 2`), `slowSigning` (`latencyMs: 130_000`), `highLatency` (`latencyMs: 2_000`).
 
-Faults can also be toggled mid-test — connect cleanly, then degrade the transport and assert recovery:
+Faults can also be toggled mid-test — connect cleanly, then degrade the transport:
 
 ```ts
-test("signer recovers under a flaky transport", async ({ testHost }) => {
+test("a dropped signing request stalls under a flaky transport", async ({ testHost }) => {
   await testHost.waitForConnection();
-  await testHost.setFaults({ dropEveryNth: 3 });
-  // ... drive the product; assert the retry path recovers ...
+  await testHost.setFaults({ dropEveryNth: 1 }); // drop subsequent product→host frames
+  // ... drive a signing call; assert it does NOT settle within a bound ...
   await testHost.setFaults({}); // clear
 });
 ```
+
+> Note on recovery: a dropped request has **no retry path** on the current `@novasamatech` engine, so the affected call stalls rather than recovering. Assert the fault is *observable* (the call stalls / does not silently succeed). A true retry-recovery test needs a bounded request + a retry-capable signer (a follow-up tied to the `@parity/truapi-host` engine).
 
 Without the Playwright fixture, the same controls are on `window.__TEST_HOST__.setFaults(...)` / `getFaults()`.
 

@@ -56,10 +56,22 @@ export interface FaultConfig {
    */
   dropHandshake?: boolean;
   /**
-   * Drop every Nth inbound (product→host) message. Exercises the SDK's retry
-   * path under a flaky transport (e.g. `3` drops the 3rd, 6th, 9th… message).
+   * Drop every Nth inbound (product→host) message. Surfaces a flaky transport
+   * (e.g. `3` drops the 3rd, 6th, 9th… message). On the current engine a
+   * dropped request has no retry path, so the affected call stalls — use it to
+   * assert the SDK does not silently succeed, not that it recovers.
    */
   dropEveryNth?: number;
+  /**
+   * Simulate a version-skewed host: claim this u8 codec/protocol id on the
+   * product's handshake. Anything other than the host's supported id (`1`)
+   * makes the host answer the handshake with `UnsupportedProtocolVersion`, so
+   * the client detects skew at handshake instead of hanging. Implemented by
+   * rewriting the codec-id byte of the inbound `host_handshake_request`; the
+   * host's built-in handler emits the real error. (The wire carries a u8 codec
+   * id, not a semver — there is no semver field to set on this engine.)
+   */
+  protocolVersion?: number;
 }
 
 export interface CreateTestHostOptions {

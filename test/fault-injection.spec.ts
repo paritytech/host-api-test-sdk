@@ -7,6 +7,8 @@
  *   - droppedHandshake → the product never connects (the #200 repro)
  *   - latency          → the product still connects (correctness preserved)
  *   - setFaults        → runtime toggle round-trips
+ *   - versionSkew      → handshake rejected (UnsupportedProtocolVersion), no connect
+ *   - flakyTransport   → a dropped signing request stalls (no retry on this engine)
  *
  * The test product writes 'connected' into #status once
  * getProductAccount() resolves; it stays 'loading' until then.
@@ -111,6 +113,71 @@ test('setFaults/getFaults round-trips at runtime', async ({ page }) => {
       return h.getFaults();
     });
     expect(faults).toEqual({ dropEveryNth: 5, latencyMs: 100 });
+  } finally {
+    await host.close();
+    await product.close();
+  }
+});
+
+test('versionSkew: handshake is rejected, product does not connect', async ({ page }) => {
+  const product = await serveTestProduct();
+  const host = await createTestHostServer({
+    productUrl: product.url,
+    accounts: ['alice'],
+    faults: FAULT_SCENARIOS.versionSkew, // claims an unsupported codec id
+  });
+  try {
+    await page.goto(host.url);
+    await page.waitForFunction(() => !!(window as unknown as { __TEST_HOST__?: unknown }).__TEST_HOST__, {
+      timeout: 30_000,
+    });
+    const status = page.frameLocator('#product-frame').locator('#status');
+    // The host answers the handshake with UnsupportedProtocolVersion, so the
+    // product never reaches 'connected' (distinct mechanism from droppedHandshake:
+    // a real rejection, not a swallowed frame).
+    await page.waitForTimeout(8_000);
+    await expect(status).not.toHaveText('connected');
+  } finally {
+    await host.close();
+    await product.close();
+  }
+});
+
+test('flakyTransport: a dropped signing request stalls (no retry/recovery on this engine)', async ({ page }) => {
+  const product = await serveTestProduct();
+  const host = await createTestHostServer({ productUrl: product.url, accounts: ['alice', 'bob'] });
+  try {
+    await page.goto(host.url);
+    await page.waitForFunction(() => !!(window as unknown as { __TEST_HOST__?: unknown }).__TEST_HOST__, {
+      timeout: 30_000,
+    });
+    // Connect cleanly first: wait until legacy accounts are loaded.
+    await expect(
+      page.frameLocator('#product-frame').locator('#root-keys[data-ready="true"]'),
+    ).toBeVisible({ timeout: 30_000 });
+
+    // Degrade the transport: drop every inbound (product→host) frame.
+    await page.evaluate(() =>
+      (window as unknown as { __TEST_HOST__: { setFaults(f: unknown): void } }).__TEST_HOST__.setFaults({
+        dropEveryNth: 1,
+      }),
+    );
+
+    const productFrame = page.frames().find((f) => f.url().startsWith(product.url));
+    if (!productFrame) throw new Error('product frame not found');
+
+    // Drive a signing request. Its frame is dropped; there is no retry path on
+    // this engine, so the call never settles — assert it stalls (the observable
+    // fault), not that it recovers.
+    const outcome = await productFrame.evaluate(() =>
+      Promise.race([
+        (window as unknown as { __TEST_PRODUCT__: { trySignRaw(): Promise<unknown> } }).__TEST_PRODUCT__
+          .trySignRaw()
+          .then(() => 'settled', () => 'settled'),
+        new Promise((r) => setTimeout(() => r('pending'), 4_000)),
+      ]),
+    );
+    expect(outcome).toBe('pending');
   } finally {
     await host.close();
     await product.close();

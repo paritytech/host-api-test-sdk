@@ -8,6 +8,8 @@ import assert from 'node:assert/strict';
 import {
   createFaultProvider,
   isHandshakeResponse,
+  isHandshakeRequest,
+  rewriteHandshakeCodecId,
   HANDSHAKE_RESPONSE_INDEX,
 } from './dist/fault-provider.js';
 
@@ -143,4 +145,36 @@ test('faults are read per-message (runtime toggle)', () => {
   faults = { dropHandshake: true };
   fp.postMessage(frame('a', 1));
   assert.equal(fake.out.length, 1); // now dropped
+});
+
+test('isHandshakeRequest detects the request (enum index 0), rejects the response', () => {
+  assert.equal(isHandshakeRequest(frame('req-1', 0)), true);
+  assert.equal(isHandshakeRequest(frame('req-1', 1)), false);
+  assert.equal(isHandshakeRequest(frame('req-1', 5)), false);
+});
+
+test('rewriteHandshakeCodecId flips the trailing codec-id byte of a handshake request', () => {
+  // frame('r', 0) ends with the codec-id byte (0). Rewrite it to 2.
+  const original = frame('r', 0);
+  const out = rewriteHandshakeCodecId(original, 2);
+  assert.equal(out[out.length - 1], 2);
+  assert.equal(original[original.length - 1], 0); // original untouched (copy)
+});
+
+test('rewriteHandshakeCodecId leaves non-handshake frames untouched (same reference)', () => {
+  const other = frame('r', 5); // not a handshake request
+  assert.equal(rewriteHandshakeCodecId(other, 2), other); // same ref, no copy
+});
+
+test('protocolVersion rewrites the inbound handshake-request codec id; other frames pass through', () => {
+  const fake = fakeProvider();
+  const fp = createFaultProvider(fake.provider, () => ({ protocolVersion: 2 }));
+  const received = [];
+  fp.subscribe((m) => received.push(m));
+
+  fake.emitInbound(frame('r', 0)); // handshake request → codec id rewritten
+  fake.emitInbound(frame('r', 5)); // other request → untouched
+  assert.equal(received.length, 2);
+  assert.equal(received[0][received[0].length - 1], 2); // rewritten to claim codec id 2
+  assert.equal(received[1][received[1].length - 1], 0); // unchanged
 });
