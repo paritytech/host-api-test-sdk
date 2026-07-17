@@ -9,58 +9,13 @@
  */
 
 import { test, expect } from '@playwright/test';
-import { createServer } from 'node:http';
-import { readFileSync } from 'node:fs';
-import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { Keyring } from '@polkadot/keyring';
 import { cryptoWaitReady, sr25519Verify } from '@polkadot/util-crypto';
 import { compactFromU8a, hexToU8a, u8aToHex } from '@polkadot/util';
 import { createTestHostServer } from '../dist/index.js';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-
-// ── Test product server ─────────────────────────────────────────────
-
-async function serveTestProduct(): Promise<{ url: string; close: () => Promise<void> }> {
-  const html = readFileSync(join(__dirname, 'test-product.html'), 'utf-8');
-  const bundle = readFileSync(join(__dirname, 'test-product-bundle.js'), 'utf-8');
-
-  const server = createServer((req, res) => {
-    if (req.url?.endsWith('.js')) {
-      res.writeHead(200, { 'Content-Type': 'application/javascript' });
-      res.end(bundle);
-    } else {
-      res.writeHead(200, { 'Content-Type': 'text/html' });
-      res.end(html);
-    }
-  });
-
-  const url = await new Promise<string>((resolve, reject) => {
-    server.on('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const addr = server.address();
-      if (!addr || typeof addr === 'string') return reject(new Error('no address'));
-      resolve(`http://127.0.0.1:${addr.port}`);
-    });
-  });
-
-  return {
-    url,
-    close: () => new Promise<void>((resolve, reject) => {
-      server.close((err) => (err ? reject(err) : resolve()));
-    }),
-  };
-}
+import { loadHost, serveProduct } from './support';
 
 // ── Helpers ─────────────────────────────────────────────────────────
-
-/** Load the test host and wait for the product to connect. */
-async function loadHost(page: import('@playwright/test').Page, hostUrl: string) {
-  await page.goto(hostUrl);
-  await page.waitForFunction(() => !!window.__TEST_HOST__, { timeout: 15_000 });
-  return page.frameLocator('#product-frame');
-}
 
 /** Get the product iframe as a Frame (supports evaluate, unlike FrameLocator). */
 function getProductFrame(page: import('@playwright/test').Page, productUrl: string) {
@@ -95,13 +50,13 @@ async function getRootPublicKeys(page: import('@playwright/test').Page, hostUrl:
 
 // ── Setup ───────────────────────────────────────────────────────────
 
-let productServer: Awaited<ReturnType<typeof serveTestProduct>>;
+let productServer: Awaited<ReturnType<typeof serveProduct>>;
 let keyring: Keyring;
 
 test.beforeAll(async () => {
   await cryptoWaitReady();
   keyring = new Keyring({ type: 'sr25519', ss58Format: 42 });
-  productServer = await serveTestProduct();
+  productServer = await serveProduct('test-product.html', 'test-product-bundle.js');
 });
 
 test.afterAll(async () => {

@@ -668,3 +668,37 @@ The config type is renamed. The shape is identical (`id`, `name`, `genesisHash`,
 4. Optionally, add the extra networks your product connects to so mid-session chain switches resolve.
 
 ---
+
+# host-api-test-sdk 0.11.0
+
+## `@parity/truapi` 0.4 products connect out of the box
+
+Products that upgraded to `@parity/truapi` 0.4 (including everything built on
+recent `@parity/product-sdk`) change how the iframe channel is opened: instead
+of exchanging frames directly over window postMessage, the product posts
+`{ type: "truapi-ready" }` and expects the host to answer with
+`{ type: "truapi-init" }` carrying a transferred `MessagePort`. Against older
+test-sdk releases, that handshake went unanswered — the product waited 20
+seconds for a port that never arrived and `waitForConnection()` timed out.
+
+The test host now answers the handshake and serves all traffic over the
+transferred port. No test changes are needed:
+
+```ts
+const bobFixture = createTestHostFixture({
+  productUrl: "http://localhost:5260",
+  accounts: ["bob"],
+  networks: [PASEO_ASSET_HUB],
+});
+// waitForConnection() now resolves for truapi-0.4 products too
+```
+
+Products on the 0.3 bootstrap (`@novasamatech/host-api-wrapper`) are
+unaffected — the direct window postMessage channel is still served, and both
+kinds of product talk to the same container with the same handlers, logs, and
+permission model.
+
+## What you need to do
+
+1. Upgrade to `0.11.0`.
+2. Nothing else — both product generations connect without configuration.

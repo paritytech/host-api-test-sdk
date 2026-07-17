@@ -26,7 +26,6 @@ import {
 import type { Container } from "@novasamatech/host-container";
 import {
   createContainer,
-  createIframeProvider,
   deriveProductEntropy,
 } from "@novasamatech/host-container";
 import { Keyring } from "@polkadot/keyring";
@@ -41,6 +40,7 @@ import {
 import { ResultAsync } from "neverthrow";
 import { getWsProvider } from "polkadot-api/ws";
 
+import { createDualChannelIframeProvider } from "./truapi-port-handoff.js";
 import type {
   ChatBot,
   ChatMessageLogEntry,
@@ -353,7 +353,10 @@ function setupContainer(
   paymentCounter = 0;
   themeSubscribers.clear();
 
-  const provider = createIframeProvider({ iframe, url: config.productUrl });
+  const provider = createDualChannelIframeProvider({
+    iframe,
+    url: config.productUrl,
+  });
   const container = createContainer(provider);
 
   // Derive keypairs for all requested accounts

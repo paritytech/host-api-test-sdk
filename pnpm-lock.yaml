@@ -21,6 +21,9 @@ importers:
       '@novasamatech/host-container':
         specifier: ^0.8.8
         version: 0.8.8(esbuild@0.25.12)(rxjs@7.8.2)
+      '@parity/truapi':
+        specifier: ^0.4.1
+        version: 0.4.1
       '@polkadot/keyring':
         specifier: ^14.0.0
         version: 14.0.1(@polkadot/util-crypto@14.0.1(@polkadot/util@14.0.1))(@polkadot/util@14.0.1)
@@ -243,6 +246,9 @@ packages:
 
   '@novasamatech/scale@0.8.8':
     resolution: {integrity: sha512-cWg4RkrUoysc+q7zQnr2vC+JmcuRLZFft3ZITkq1U6d7wDAYGJjzTYGKLDxIe2HZ+mRhU7otFCz1aaFtBEu98w==}
+
+  '@parity/truapi@0.4.1':
+    resolution: {integrity: sha512-q050QvYUOBEJsGBOvmJn81G0c7ht5+8zm7IyWPa/PtuQEMiCaf7f/CwqH3Dv0hESm/rBgQ1hpF7Pt4ZtSrs0aA==}
 
   '@playwright/test@1.58.2':
     resolution: {integrity: sha512-akea+6bHYBBfA9uQqSYmlJXn61cTa+jbO87xVLCWbTqbWadRVmhxlXATaOjOgcBaWU4ePo0wB41KMFv3o35IXA==}
@@ -1358,6 +1364,12 @@ snapshots:
   '@novasamatech/scale@0.8.8':
     dependencies:
       '@polkadot-api/utils': 0.4.0
+      scale-ts: 1.6.1
+
+  '@parity/truapi@0.4.1':
+    dependencies:
+      '@noble/hashes': 2.2.0
+      neverthrow: 8.2.0
       scale-ts: 1.6.1
 
   '@playwright/test@1.58.2':

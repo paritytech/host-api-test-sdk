@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.11.0
+
+### Added
+
+- **`@parity/truapi` 0.4 product support (MessagePort handoff).** Products built on `@parity/truapi` ≥ 0.4 boot through `@parity/truapi/sandbox`: the iframe posts `{ type: "truapi-ready" }` to the parent window and waits (20s) for a `{ type: "truapi-init" }` answer carrying a transferred `MessagePort`, then runs all protocol traffic over that port — it never listens on direct window postMessage. The host page now answers that handshake with a fresh port pair on every product page load and routes wire frames to whichever channel the product opened. Products on the 0.3 bootstrap (`@novasamatech/host-api-wrapper`) continue to use the direct window postMessage channel; both kinds connect to the same container, and `waitForConnection()` and all handlers work unchanged. Wire frames are identical on both channels, so no codec changes were needed.
+
+### Internal
+
+- `src/browser/truapi-port-handoff.ts`: `createDualChannelIframeProvider({ iframe, url })` builds on the container's `createIframeProvider`, answering `truapi-ready` and swapping the port pair per page load (device-permission and deep-link reloads each re-handshake).
+- `test/truapi-product.spec.ts` + `test/test-product-truapi.ts`: integration coverage with a real `@parity/truapi@0.4` product bundle — asserts `getConnectionStatus()` turns `connected` and serves a localStorage roundtrip and product-account fetch over the port. `@parity/truapi` added as a devDependency.
+
 ## 0.10.0
 
 ### Breaking changes

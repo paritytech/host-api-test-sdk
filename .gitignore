@@ -3,6 +3,7 @@ dist/
 *.tgz
 .DS_Store
 test/test-product-bundle.js
+test/test-product-truapi-bundle.js
 test/test-results/
 test-results/
 
