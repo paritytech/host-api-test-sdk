@@ -207,11 +207,17 @@ Playwright test
   → registers handlers: accounts, signing, chain RPC, localStorage
 
 Product (in iframe)
-  → host-api-wrapper detects iframe parent
-  → injects window.injectedWeb3.spektr
+  → truapi ≥ 0.4 (@parity/truapi/sandbox): posts truapi-ready, host answers
+    truapi-init with a transferred MessagePort — all frames flow over the port
+  → truapi 0.3 (host-api-wrapper): exchanges frames directly over window
+    postMessage; injects window.injectedWeb3.spektr
   → gets accounts (Alice/Bob with real sr25519 public keys)
   → signing requests → host auto-signs with dev keypair → returns signature
 ```
+
+Both channels carry the same wire frames and feed the same container, so every
+handler, log, and control knob behaves identically for either product
+generation.
 
 The browser bundle (~780KB minified) includes `@novasamatech/host-container`, `@polkadot/keyring`, `@polkadot/types`, and WASM crypto. It's pre-built and inlined — consumers have zero build-time dependencies.
 
