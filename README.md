@@ -9,7 +9,7 @@
 
 Lightweight test host for E2E testing embedded Polkadot dapps that use the Spektr host-container protocol (`@novasamatech/host-container`).
 
-> **Upstream contract:** `0.9.x` tracks `@novasamatech/host-api`, `host-container`, and `host-api-wrapper` at `^0.8.0`. v0.8 is wire-incompatible with v0.7 — your product side must be on the same major as the test host.
+> **Upstream contract:** `0.12.x` tracks `@novasamatech/host-api`, `host-container`, and `host-api-wrapper` at `^0.9.1`, and serves products on `@parity/truapi` `^0.6.0`. v0.9 is wire-incompatible with v0.8 (RFC-0022 changed the product-account selector on the wire) — your product side must be on the same minor as the test host.
 
 ## Why
 
@@ -277,7 +277,9 @@ createTestHostFixture({
 > });
 > ```
 >
-> Unmapped identities fall back to production-style derivation (`//Bob//dotnsId/index`). If `accounts: []` (unsigned host), unmapped `getProductAccount` / `getProductAccountAlias` calls return `err(RequestCredentialsErr.NotConnected)`, matching `polkadot-desktop`. Pre-mapped entries in `productAccounts` are still served.
+> Unmapped identities fall back to production-style derivation (`//Bob//dotnsId/index`). If `accounts: []` (unsigned host), unmapped `getProductAccount` calls return `err(RequestCredentialsErr.NotConnected)` and `getProductAccountAlias` returns `err(GetAliasErr.Unknown)`, matching `polkadot-desktop`. Pre-mapped entries in `productAccounts` are still served.
+>
+> **Selector keys**: since RFC-0022 a product addresses its accounts with `Index(n)` or `Raw(32 bytes)` rather than a bare number. `productAccounts` keys are unchanged for plain indices — `"myapp.dot/0"` still means `Index(0)`, and the derived address is the same as before. A raw selector is keyed by its hex, e.g. `"myapp.dot/0x1234…"`.
 
 ### Payment control
 

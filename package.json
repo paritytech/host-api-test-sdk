@@ -1,6 +1,6 @@
 {
   "name": "@parity/host-api-test-sdk",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "description": "Lightweight test host for Spektr product E2E testing — embeds dapps with auto-signing dev accounts, no Docker needed",
   "license": "MIT",
   "repository": {
@@ -42,12 +42,12 @@
     }
   },
   "dependencies": {
-    "@novasamatech/host-api": "^0.8.8"
+    "@novasamatech/host-api": "^0.9.1"
   },
   "devDependencies": {
-    "@novasamatech/host-api-wrapper": "^0.8.8",
-    "@novasamatech/host-container": "^0.8.8",
-    "@parity/truapi": "^0.4.1",
+    "@novasamatech/host-api-wrapper": "^0.9.1",
+    "@novasamatech/host-container": "^0.9.1",
+    "@parity/truapi": "^0.6.0",
     "@polkadot/keyring": "^14.0.0",
     "@polkadot/types": "^16.0.0",
     "@polkadot/util": "^14.0.0",

@@ -702,3 +702,50 @@ permission model.
 
 1. Upgrade to `0.11.0`.
 2. Nothing else — both product generations connect without configuration.
+
+---
+
+# host-api-test-sdk 0.12.0
+
+Tracks upstream `@novasamatech/*@^0.9.1` ([triangle-js-sdks#239](https://github.com/paritytech/triangle-js-sdks/pull/239)) and serves products on `@parity/truapi@^0.6.0`. v0.9 is **wire-incompatible** with v0.8: RFC-0022 changes `DerivationIndex` from a bare `u32` to `Enum{Index(u32), Raw([u8; 32])}`, so your product side has to move in the same commit.
+
+Against `0.11.0` a truapi-0.6 product fails quietly: the wrong account for any index other than `0`, `signRaw` over a different payload than the one requested, and `createTransaction` dropped without a reply. `product-sdk`'s E2E suite goes from 2 failed to 54 passed on this release.
+
+## What changed on our side
+
+### Product accounts take a selector, not a number (breaking)
+
+`Index(n)` resolves exactly as the plain `n` did, so `productAccounts` keys and derived addresses are unchanged. Raw 32-byte selectors are new, keyed by hex (`"myapp.dot/0x1234…"`). The wrapper takes `number | Uint8Array` and normalises for you; hand-built requests wrap the index:
+
+```diff
+-hostApi.signRaw(enumValue("v1", { account: [dotnsId, 0], payload }));
++hostApi.signRaw(enumValue("v1", { account: [dotnsId, derivationIndexOf(0)], payload }));
+```
+
+### `accountCreateProof` returns a struct (breaking)
+
+```diff
+-const proofHex = u8aToHex(result.value);
++const proofHex = u8aToHex(result.value.proof);
+```
+
+Plus `contextualAlias`, `ringIndex`, `ringRevision`.
+
+### `accountGetAlias` rejects with `GetAliasErr` (breaking)
+
+Alias errors moved out of `RequestCredentialsErr` into their own enum (`RingNotFound` / `NotMember` / `Rejected` / `Unknown`).
+
+### `SmartContractAllowance` carries a selector (breaking)
+
+```diff
+-{ tag: "SmartContractAllowance", value: 0 }
++{ tag: "SmartContractAllowance", value: { tag: "Index", value: 0 } }
+```
+
+`handleAccountSignVrf` (RFC-0023, new upstream) is not implemented — the container answers `SignVrfErr.Unknown`.
+
+## What you need to do
+
+1. Upgrade to `0.12.0` and move your product side to `@parity/truapi@^0.6.0` or `@novasamatech/host-api-wrapper@^0.9.1` in the same commit.
+2. Through the wrapper, nothing else. Hand-built requests: wrap indices in `derivationIndexOf()` and adjust the three shapes above.
+3. If your fixtures still pass `chain:`, see 0.10.0 — it is silently ignored, so any `rpcUrl` override you set is being dropped.

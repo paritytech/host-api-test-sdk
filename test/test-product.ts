@@ -9,7 +9,7 @@
  */
 
 import { createAccountsProvider, hostApi, paymentManager, sandboxTransport } from '@novasamatech/host-api-wrapper';
-import { enumValue } from '@novasamatech/host-api';
+import { derivationIndexOf, enumValue } from '@novasamatech/host-api';
 import { hexToU8a, u8aToHex } from '@polkadot/util';
 
 const DOTNS_ID = 'test-product.dot';
@@ -24,6 +24,16 @@ interface TestResult {
   paymentId?: string;
   error?: string;
 }
+
+/**
+ * Ring the alias / proof requests are scoped to (RFC-0022 shape: a chain plus
+ * the junctions locating the ring on it). The test host ignores it, so a fixed
+ * placeholder is enough to exercise the call.
+ */
+const RING_LOCATION = {
+  chainId: '0x0000000000000000000000000000000000000000000000000000000000000000' as `0x${string}`,
+  junctions: [{ tag: 'PalletInstance' as const, value: 0 }],
+};
 
 /** Extract a readable error string from versioned protocol results. */
 function extractError(err: unknown): string {
@@ -231,7 +241,9 @@ async function init() {
 
       async getAccountAlias(dotnsId: string, index: number): Promise<TestResult & { context?: string; alias?: string }> {
         try {
-          const r = await hostApi.accountGetAlias(enumValue('v1', [dotnsId, index]));
+          const r = await hostApi.accountGetAlias(
+            enumValue('v1', [[dotnsId, derivationIndexOf(index)], RING_LOCATION]),
+          );
           if (r.isOk()) {
             return {
               ok: true,
@@ -414,7 +426,9 @@ async function init() {
             topics: [],
             data,
           };
-          const r = await hostApi.statementStoreCreateProof(enumValue('v1', [[dotnsId, index], statement]));
+          const r = await hostApi.statementStoreCreateProof(
+            enumValue('v1', [[dotnsId, derivationIndexOf(index)], statement]),
+          );
           if (r.isOk()) return { ok: true, proof: r.value.value };
           return { ok: false, error: extractError(r.error) };
         } catch (err) {
@@ -531,7 +545,7 @@ async function init() {
       async createTransaction(dotnsId: string, index: number) {
         try {
           const payload = {
-            signer: [dotnsId, index] as [string, number],
+            signer: [dotnsId, derivationIndexOf(index)] as const,
             genesisHash: new Uint8Array(32),
             callData: new Uint8Array([0, 0]),
             extensions: [] as Array<{ id: string; extra: Uint8Array; additionalSigned: Uint8Array }>,
@@ -631,7 +645,7 @@ async function init() {
       async signRawProduct(dotnsId: string, index: number, payloadHex: string) {
         try {
           const r = await hostApi.signRaw(enumValue('v1', {
-            account: [dotnsId, index] as [string, number],
+            account: [dotnsId, derivationIndexOf(index)] as const,
             payload: { tag: 'Bytes' as const, value: hexToU8a(payloadHex) },
           }));
           if (r.isOk()) {
@@ -669,13 +683,12 @@ async function init() {
       async accountCreateProof(dotnsId: string, index: number) {
         try {
           const message = new TextEncoder().encode('test-proof');
-          const location = {
-            genesisHash: '0x0000000000000000000000000000000000000000000000000000000000000000' as `0x${string}`,
-            ringRootHash: '0x0000000000000000000000000000000000000000000000000000000000000000' as `0x${string}`,
-            hints: undefined,
-          };
-          const r = await hostApi.accountCreateProof(enumValue('v1', [[dotnsId, index], location, message]));
-          if (r.isOk()) return { ok: true, proofHex: u8aToHex(r.value.value) };
+          const r = await hostApi.accountCreateProof(
+            enumValue('v1', [[dotnsId, derivationIndexOf(index)], RING_LOCATION, message]),
+          );
+          // RFC-0022: the proof is now a struct carrying the contextual alias
+          // and the ring coordinates alongside the signature bytes.
+          if (r.isOk()) return { ok: true, proofHex: u8aToHex(r.value.value.proof) };
           return { ok: false, error: extractError(r.error) };
         } catch (err) {
           return { ok: false, error: extractError(err) };

@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.12.0
+
+### Breaking changes
+
+- **Upstream `@novasamatech/*` → `^0.9.1`; the wire is incompatible with `0.8.x`.** A product on `@novasamatech/host-api-wrapper@^0.8.x` will no longer talk to this test host, and vice versa. Upgrade both sides in lockstep, the same way 0.9.0 required. The break is RFC-0022: `DerivationIndex` — the selector identifying an account inside a product's subtree — changed from a bare `u32` to `Enum{Index(u32), Raw([u8; 32])}`, one extra tag byte on every request carrying a product account.
+- **`ProductAccount` no longer carries `name`.** `handleAccountGet` used to return `{ publicKey, name }`, but the protocol struct only has `publicKey`, so the encoder dropped the name and it was never on the wire. The field is gone from the response; `productAccounts: { "myapp.dot/0": { name, uri } }` still accepts `name`, it just documents the mapping rather than reaching the product.
+- **`handleAccountGetAlias` now rejects with `GetAliasErr`, not `RequestCredentialsErr`.** Upstream split the alias errors out into their own enum, with `RingNotFound` / `NotMember` / `Rejected` / `Unknown`. An unsigned host (`accounts: []`) now answers unmapped alias requests with `GetAliasErr.Unknown`.
+
+### Changed
+
+- **`@parity/truapi` → `^0.6.0`** for the truapi-product integration coverage, matching what [product-sdk 0.20.0](https://github.com/paritytech/product-sdk/pull/271) ships. truapi 0.6 encodes the selector tag as `Left`/`Right` where `@novasamatech/host-api` decodes it as `Index`/`Raw` — different names, identical SCALE wire, so both connect to the same container.
+- **Product-account resolution accepts either selector form.** `Index(n)` resolves exactly as the plain `n` did before, so `productAccounts` keys (`"myapp.dot/0"`) and derived addresses (`//Bob//myapp.dot/0`) are **unchanged** — no test that asserts an address needs updating. `Raw(bytes)`, previously inexpressible, is keyed and derived by its hex. Products calling through `host-api-wrapper` need no code change either: it takes the ergonomic `AccountSelector` (`number | Uint8Array`) and normalises internally. Only code that builds protocol requests by hand has to wrap its index in `derivationIndexOf()`.
+- **`handleAccountGetAlias` request shape.** Now `[ProductProofContext, RingLocation]` instead of a bare `ProductAccountId`. The context is `[productId, suffix]` — structurally the same as a product account id, and the identity mapping on it — so the account a request resolves to is unchanged. `RingLocation` also changed (`{ genesisHash, ringRootHash, hints }` → `{ chainId, junctions }`); this host ignores it.
+- **`handleAccountCreateProof` response shape.** Now `{ proof, contextualAlias: { context, alias }, ringIndex, ringRevision }` instead of bare proof bytes. It remains a deterministic stand-in — an sr25519 signature over the message rather than a real ring VRF, as before — with `contextualAlias` matching what `handleAccountGetAlias` returns for the same account, and `ringIndex` / `ringRevision` fixed at `0`.
+- **`AllocatableResource.SmartContractAllowance` carries a selector**, so `requestResourceAllocation([{ tag: 'SmartContractAllowance', value: 0 }])` becomes `value: { tag: 'Index', value: 0 }`.
+
 ## 0.11.0
 
 ### Added
