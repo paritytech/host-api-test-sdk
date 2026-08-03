@@ -1213,7 +1213,8 @@ test.describe('Resource allocation', () => {
         window.__TEST_PRODUCT__.requestResourceAllocation([
           { tag: 'StatementStoreAllowance', value: undefined },
           { tag: 'BulletinAllowance', value: undefined },
-          { tag: 'SmartContractAllowance', value: 0 },
+          // RFC-0022: the allowance is scoped to an account selector, not a bare index.
+          { tag: 'SmartContractAllowance', value: { tag: 'Index', value: 0 } },
           { tag: 'AutoSigning', value: undefined },
         ]));
       expect(result.ok).toBe(true);

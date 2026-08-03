@@ -19,10 +19,12 @@ import {
   NavigateToErr,
   PaymentRequestErr,
   PaymentTopUpErr,
+  GetAliasErr,
   PreimageSubmitErr,
   RequestCredentialsErr,
   SigningErr,
 } from "@novasamatech/host-api";
+import type { CodecType, DerivationIndex } from "@novasamatech/host-api";
 import type { Container } from "@novasamatech/host-container";
 import {
   createContainer,
@@ -279,13 +281,26 @@ function getPairByAddress(address: string): KeyringPair | undefined {
   return undefined;
 }
 
+/**
+ * Canonical string form of an RFC-0022 account selector.
+ *
+ * `Index(n)` renders as the plain number, so `productAccounts` keys and the
+ * derivation URIs this host builds are byte-identical to the pre-RFC-0022
+ * ones — existing configs and derived addresses keep working. `Raw(bytes)`
+ * renders as its hex, the form byte-valued selectors take everywhere else.
+ */
+function selectorKey(index: CodecType<typeof DerivationIndex>): string {
+  return index.tag === "Index" ? String(index.value) : u8aToHex(index.value);
+}
+
 /** Resolve a product account [dotnsId, derivationIndex] to a keypair. */
 function getPairForProductAccount(
   config: HostConfig,
   pairs: { pair: KeyringPair; name: string }[],
   dotnsId: string,
-  idx: number,
+  index: CodecType<typeof DerivationIndex>,
 ): KeyringPair | undefined {
+  const idx = selectorKey(index);
   const key = `${dotnsId}/${idx}`;
   const override = config.productAccounts?.[key];
   if (override) {
@@ -509,15 +524,13 @@ function setupContainer(
   //   productAccounts: { 'myapp.dot/0': 'bob' }
   //   → getProductAccount("myapp.dot", 0) returns //Bob's keypair
   container.handleAccountGet((params, { ok, err }) => {
-    const key = `${params[0]}/${params[1]}`;
+    const idx = selectorKey(params[1]);
+    const key = `${params[0]}/${idx}`;
     const override = config.productAccounts?.[key];
 
     if (override) {
       const pair = getPair(override.uri);
-      return ok({
-        publicKey: pair.publicKey,
-        name: override.name,
-      });
+      return ok({ publicKey: pair.publicKey });
     }
 
     if (pairs.length === 0) {
@@ -527,11 +540,8 @@ function setupContainer(
     // Default: derive from the selected account (production behavior)
     const selectedPair = pairs[0];
     const selectedAccUri = urisByPair.get(selectedPair.pair);
-    const productPair = getPair(`${selectedAccUri}//${params[0]}/${params[1]}`);
-    return ok({
-      publicKey: productPair.publicKey,
-      name: undefined,
-    });
+    const productPair = getPair(`${selectedAccUri}//${params[0]}/${idx}`);
+    return ok({ publicKey: productPair.publicKey });
   });
 
   container.handleAccountConnectionStatusSubscribe((_, send) => {
@@ -545,16 +555,21 @@ function setupContainer(
   // (context, alias) pair derived from the product account — stable across
   // runs so tests can assert exact values if needed.
   container.handleAccountGetAlias((params, { ok, err }) => {
-    const key = `${params[0]}/${params[1]}`;
+    // RFC-0022: the request is now [ProductProofContext, RingLocation], where
+    // the context is [productId, suffix] — the same shape (and the identity
+    // mapping) as a ProductAccountId, so the account lookup is unchanged.
+    const [[productId, suffix]] = params;
+    const idx = selectorKey(suffix);
+    const key = `${productId}/${idx}`;
     const override = config.productAccounts?.[key];
 
     if (!override && pairs.length === 0) {
-      return err(new RequestCredentialsErr.NotConnected(undefined));
+      return err(new GetAliasErr.Unknown({ reason: "No accounts connected" }));
     }
 
     const pair = override
       ? getPair(override.uri)
-      : getPair(`${urisByPair.get(pairs[0].pair)}//${params[0]}/${params[1]}`);
+      : getPair(`${urisByPair.get(pairs[0].pair)}//${productId}/${idx}`);
 
     // Deterministic 32-byte context and alias from the account's public key.
     const context = blake2AsU8a(
@@ -574,10 +589,29 @@ function setupContainer(
   // Ring VRF proof: real hosts use an actual ring VRF; for test purposes,
   // sign the message with the product account's sr25519 key.
   container.handleAccountCreateProof((params, { ok }) => {
-    const [[dotnsId, idx], _ringLocation, message] = params;
-    const pair = getPairForProductAccount(config, pairs, dotnsId, idx);
+    const [[productId, suffix], _ringLocation, message] = params;
+    const pair = getPairForProductAccount(config, pairs, productId, suffix);
     const signature = pair ? pair.sign(message) : new Uint8Array(64);
-    return ok(signature);
+    const publicKey = pair?.publicKey ?? new Uint8Array(32);
+    const encoder = new TextEncoder();
+    // RFC-0022: the proof now carries the contextual alias plus the ring
+    // coordinates it was produced against. Deterministic stand-ins, matching
+    // what handleAccountGetAlias returns for the same account.
+    return ok({
+      proof: signature,
+      contextualAlias: {
+        context: blake2AsU8a(
+          new Uint8Array([...publicKey, ...encoder.encode("context")]),
+          256,
+        ),
+        alias: blake2AsU8a(
+          new Uint8Array([...publicKey, ...encoder.encode("alias")]),
+          256,
+        ),
+      },
+      ringIndex: 0,
+      ringRevision: 0,
+    });
   });
 
   container.handleCreateTransaction((params, { ok, err }) => {
@@ -586,7 +620,7 @@ function setupContainer(
     if (!pair) {
       return err(
         new CreateTransactionErr.Unknown({
-          reason: `No keypair for product account: ${dotnsId}/${idx}`,
+          reason: `No keypair for product account: ${dotnsId}/${selectorKey(idx)}`,
         }),
       );
     }
@@ -605,7 +639,7 @@ function setupContainer(
     if (!pair) {
       return err(
         new SigningErr.Unknown({
-          reason: `No keypair for product account: ${dotnsId}/${idx}`,
+          reason: `No keypair for product account: ${dotnsId}/${selectorKey(idx)}`,
         }),
       );
     }
@@ -647,7 +681,7 @@ function setupContainer(
     if (!pair) {
       return err(
         new SigningErr.Unknown({
-          reason: `No keypair for product account: ${dotnsId}/${idx}`,
+          reason: `No keypair for product account: ${dotnsId}/${selectorKey(idx)}`,
         }),
       );
     }
@@ -853,7 +887,6 @@ function setupContainer(
   });
 
   container.handleChatListSubscribe((_, send) => {
-    // Send current rooms on subscribe
     for (const room of chatRooms.values()) {
       send({ roomId: room.roomId, participatingAs: room.participatingAs });
     }

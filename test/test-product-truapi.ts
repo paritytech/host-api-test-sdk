@@ -47,15 +47,17 @@ async function main(): Promise<void> {
   }
 
   const account = await client.account.getAccount({
-    productAccountId: { dotNsIdentifier: DOTNS_ID, derivationIndex: 0 },
+    productAccountId: { dotNsIdentifier: DOTNS_ID, derivationIndex: { tag: 'Left', value: 0 } },
   });
   if (account.isErr()) {
     setResult('account', `error:${JSON.stringify(account.error)}`);
   } else {
     setResult('account', account.value.account.publicKey);
   }
+
 }
 
 main().catch((err) => {
   setResult('status', `boot-error:${err instanceof Error ? err.message : String(err)}`);
 });
+
