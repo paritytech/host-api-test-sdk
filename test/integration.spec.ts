@@ -12,7 +12,7 @@ import { test, expect } from '@playwright/test';
 import { Keyring } from '@polkadot/keyring';
 import { cryptoWaitReady, sr25519Verify } from '@polkadot/util-crypto';
 import { compactFromU8a, hexToU8a, u8aToHex } from '@polkadot/util';
-import { createTestHostServer } from '../dist/index.js';
+import { createTestHostServer, PASEO_ASSET_HUB } from '../dist/index.js';
 import { loadHost, serveProduct } from './support';
 
 // ── Helpers ─────────────────────────────────────────────────────────
@@ -1239,10 +1239,11 @@ test.describe('Feature check', () => {
     try {
       const product = await loadHostAndProduct(page, host.url, productServer.url);
 
-      // Default chain is PASEO_ASSET_HUB
-      const result = await product.evaluate(() =>
-        window.__TEST_PRODUCT__.featureSupported('Chain',
-          '0xbf0488dbe9daa1de1c08c5f743e26fdc2a4ecd74cf87dd1b4b1eeb99ae4ef19f'));
+      // Default chain is PASEO_ASSET_HUB. Read the genesis from the config
+      // rather than repeating the literal, so a chain reset only needs one edit.
+      const result = await product.evaluate((genesis: string) =>
+        window.__TEST_PRODUCT__.featureSupported('Chain', genesis),
+        PASEO_ASSET_HUB.genesisHash);
       expect(result.ok).toBe(true);
       expect(result.supported).toBe(true);
     } finally {

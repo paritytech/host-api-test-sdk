@@ -749,3 +749,29 @@ Alias errors moved out of `RequestCredentialsErr` into their own enum (`RingNotF
 1. Upgrade to `0.12.0` and move your product side to `@parity/truapi@^0.6.0` or `@novasamatech/host-api-wrapper@^0.9.1` in the same commit.
 2. Through the wrapper, nothing else. Hand-built requests: wrap indices in `derivationIndexOf()` and adjust the three shapes above.
 3. If your fixtures still pass `chain:`, see 0.10.0 — it is silently ignored, so any `rpcUrl` override you set is being dropped.
+
+---
+
+# host-api-test-sdk 0.12.1
+
+One fix. Drop-in upgrade from `0.12.0`.
+
+## Fixed
+
+- **All three built-in network genesis hashes refreshed after chain resets.** `PASEO_ASSET_HUB`, `PREVIEWNET`, and `PREVIEWNET_ASSET_HUB` were all pinned to genesis values from earlier deployments of those chains, verified dead against live RPC:
+
+  | Constant | Was | Now |
+  |---|---|---|
+  | `PASEO_ASSET_HUB` | `0xbf0488…ef19f` | `0x23e730eb1c6fecae09c917439a5038cb6122d0d48980e8b9bbf0ff56f94a2ca6` |
+  | `PREVIEWNET` | `0x477dd8…12525` | `0x8c27ddf678c2ae9bef0efebfc485a9309f3d735c6d3fbb8d947afc3ace0e80f4` |
+  | `PREVIEWNET_ASSET_HUB` | `0x860d75…c7867c` | `0x4d11c803cc6921429e3876638977ad006ea1bba8cd3976a0bca2f164e7026210` |
+
+The host routes each connection request to a network by genesis hash, so a stale pin means the host does not recognise the chain your product is asking for. The symptom is the product stuck at `connection-status: "connecting"` until the test times out, with a reachable RPC endpoint and nothing obviously wrong in the logs.
+
+One thing worth calling out: before this release the pins were wrong but *consistent*. A test host and a set of descriptors both generated against the same dead chain agree with each other perfectly, so a suite can be green while connected to a chain that no longer exists. If your e2e went green across one of these resets without you touching anything, that is what happened.
+
+## What you need to do
+
+- Upgrade to `0.12.1`. If you use the built-in network configs, that is the whole change — the correct hashes come with the upgrade.
+- If you hard-coded any of the three old hashes in your own `NetworkConfig` or in test assertions, update them. Better still, read them off the exported config (`PASEO_ASSET_HUB.genesisHash`) so the next reset costs you nothing.
+- These chains reset periodically. Treat a genesis literal in your own repo as something that will go stale, not as a constant.
