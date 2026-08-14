@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.12.1
+
+### Fixed
+
+- **All three built-in network genesis hashes refreshed after chain resets.** `PASEO_ASSET_HUB`, `PREVIEWNET`, and `PREVIEWNET_ASSET_HUB` all pinned genesis values from earlier deployments of those chains. Each was verified dead against live RPC via `chain_getBlockHash(0)`:
+
+  | Constant | Was | Now |
+  |---|---|---|
+  | `PASEO_ASSET_HUB` | `0xbf0488…ef19f` | `0x23e730eb1c6fecae09c917439a5038cb6122d0d48980e8b9bbf0ff56f94a2ca6` |
+  | `PREVIEWNET` | `0x477dd8…12525` | `0x8c27ddf678c2ae9bef0efebfc485a9309f3d735c6d3fbb8d947afc3ace0e80f4` |
+  | `PREVIEWNET_ASSET_HUB` | `0x860d75…c7867c` | `0x4d11c803cc6921429e3876638977ad006ea1bba8cd3976a0bca2f164e7026210` |
+
+### Internal
+
+- The chain-feature integration test now reads the expected genesis from `PASEO_ASSET_HUB.genesisHash` instead of repeating the literal, so the next reset is a one-line change in `src/networks.ts`.
+
 ## 0.12.0
 
 ### Breaking changes

@@ -3,7 +3,7 @@ import type { NetworkConfig, HexString } from './types.js';
 export const PASEO_ASSET_HUB: NetworkConfig = {
   id: 'paseo-asset-hub',
   name: 'Paseo Asset Hub',
-  genesisHash: '0xbf0488dbe9daa1de1c08c5f743e26fdc2a4ecd74cf87dd1b4b1eeb99ae4ef19f' as HexString,
+  genesisHash: '0x23e730eb1c6fecae09c917439a5038cb6122d0d48980e8b9bbf0ff56f94a2ca6' as HexString,
   rpcUrl: 'wss://paseo-asset-hub-next-rpc.polkadot.io',
   tokenSymbol: 'PAS',
   tokenDecimals: 10,
@@ -12,7 +12,7 @@ export const PASEO_ASSET_HUB: NetworkConfig = {
 export const PREVIEWNET: NetworkConfig = {
   id: 'previewnet',
   name: 'Previewnet',
-  genesisHash: '0x477dd87a881ae4d8072030073406be59de42215b4a7c4c337ce1a25727912525' as HexString,
+  genesisHash: '0x8c27ddf678c2ae9bef0efebfc485a9309f3d735c6d3fbb8d947afc3ace0e80f4' as HexString,
   rpcUrl: 'wss://previewnet.substrate.dev/relay/alice',
   tokenSymbol: 'UNIT',
   tokenDecimals: 12,
@@ -21,7 +21,7 @@ export const PREVIEWNET: NetworkConfig = {
 export const PREVIEWNET_ASSET_HUB: NetworkConfig = {
   id: 'previewnet-asset-hub',
   name: 'Previewnet Asset Hub',
-  genesisHash: '0x860d75a890388e2ad02c54aa451264d04af89765773a51cd56868b4293c7867c' as HexString,
+  genesisHash: '0x4d11c803cc6921429e3876638977ad006ea1bba8cd3976a0bca2f164e7026210' as HexString,
   rpcUrl: 'wss://previewnet.substrate.dev/asset-hub',
   tokenSymbol: 'UNIT',
   tokenDecimals: 12,
