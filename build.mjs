@@ -30,7 +30,19 @@ const cjsShared = {
   platform: 'node',
   target: 'es2022',
   sourcemap: false,
-  external: ['@novasamatech/host-api', '@playwright/test'],
+  // Ring-proof imports stay external: verifiablejs loads its wasm relative to
+  // its own module path, and polkadot-api is far too heavy to inline.
+  external: [
+    '@novasamatech/host-api',
+    '@playwright/test',
+    'verifiablejs',
+    'verifiablejs/*',
+    'polkadot-api',
+    'polkadot-api/*',
+    '@polkadot/util-crypto',
+    '@noble/hashes',
+    '@noble/hashes/*',
+  ],
   // Polyfill import.meta.url for CJS (used by host-page.ts to locate host-bundle.js)
   banner: {
     js: 'var __import_meta_url = require("url").pathToFileURL(__filename).href;',

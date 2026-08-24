@@ -71,6 +71,48 @@ export interface CreateTestHostOptions {
    * ```
    */
   productAccounts?: Record<string, Account>;
+  /**
+   * Answer `createRingVRFProof` with real bandersnatch ring-VRF proofs
+   * instead of the deterministic sr25519 stand-in.
+   *
+   * The server derives the RFC-0022 personhood member entropy from the
+   * account mnemonic, reads the ring the member sits in from the configured
+   * chains, and proves with verifiablejs. When personhood is minted for that
+   * member on the target network, the proof passes network verification, so
+   * product flows that submit proofs can be exercised end to end. Accounts
+   * without a mnemonic URI, such as the dev name `alice`, are rejected with
+   * guidance. They have no entropy to be a person with.
+   */
+  ringVrfProofs?: RingVrfProofsOptions;
+}
+
+/** An account selector inside a product subtree, per RFC-0022. */
+export type ProofSuffix =
+  | { tag: 'Index'; value: number }
+  | { tag: 'Raw'; value: Uint8Array };
+
+export interface RingVrfProofsOptions {
+  /** People-chain RPC holding `Members.Members` and `Members.RingKeys`. */
+  peopleRpcUrl: string;
+  /**
+   * RPC of the chain holding `MembersSubscriber.RingRoots` and the
+   * `AliasAccounts` constants. The Asset Hub on current testnets.
+   */
+  ringRootsRpcUrl: string;
+  /**
+   * dotNS TLD the member key derives under. RFC-0022 paths move with the
+   * TLD, so this must be the one the target network registers names under.
+   */
+  tld: string;
+  /**
+   * Proof context. `'product'`, the default, mirrors a real host:
+   * `blake2b256("product/" ++ productId ++ "/" ++ suffix)`. A hex value is
+   * used raw, which is what registry contracts that pin a global context
+   * verify against. Real hosts never issue raw contexts. This override
+   * exists so tests can cover such contracts ahead of that protocol
+   * decision.
+   */
+  context?: 'product' | HexString;
 }
 
 export interface SigningLogEntry {

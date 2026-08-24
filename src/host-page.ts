@@ -20,6 +20,9 @@ interface HostPageConfig {
   accounts: Account[];
   networks: NetworkConfig[];
   productAccounts?: Record<string, Account>;
+  /** When true the runtime posts proof requests to the server's
+   *  `/__create-proof` route instead of signing a stand-in. */
+  ringVrfProofs?: boolean;
 }
 
 function resolveAccount(entry: Account): { name: string; uri: string } {
@@ -53,6 +56,7 @@ export function generateHostPage(config: HostPageConfig): string {
       name: n.name,
     })),
     ...(productAccountConfigs && { productAccounts: productAccountConfigs }),
+    ...(config.ringVrfProofs && { ringVrfProofs: true }),
   });
 
   const bundleScript = getBundleScript();

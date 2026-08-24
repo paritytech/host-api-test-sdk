@@ -26,6 +26,8 @@ export type {
   StatementSubmissionLogEntry,
   PermissionBehavior,
   PermissionLogEntry,
+  ProofSuffix,
+  RingVrfProofsOptions,
   SigningLogEntry,
   TestHostAPI,
   TestHostServer,

@@ -11,6 +11,7 @@
 
 import {
   ChatMessagePostingErr,
+  CreateProofErr,
   CreateTransactionErr,
   DeriveEntropyErr,
   GenericError,
@@ -33,7 +34,7 @@ import {
 import { Keyring } from "@polkadot/keyring";
 import type { KeyringPair } from "@polkadot/keyring/types";
 import { TypeRegistry } from "@polkadot/types";
-import { compactToU8a, u8aToHex } from "@polkadot/util";
+import { compactToU8a, hexToU8a, u8aToHex } from "@polkadot/util";
 import {
   blake2AsHex,
   blake2AsU8a,
@@ -81,6 +82,8 @@ interface HostConfig {
   networks: ChainRuntimeConfig[];
   /** Maps "dotnsId/index" → { name, uri } for product account overrides. */
   productAccounts?: Record<string, AccountConfig>;
+  /** Post proof requests to the server for real ring-VRF proofs. */
+  ringVrfProofs?: boolean;
 }
 
 declare global {
@@ -291,6 +294,49 @@ function getPairByAddress(address: string): KeyringPair | undefined {
  */
 function selectorKey(index: CodecType<typeof DerivationIndex>): string {
   return index.tag === "Index" ? String(index.value) : u8aToHex(index.value);
+}
+
+/** Ask the test-host server for a real ring-VRF proof over `message`. */
+async function fetchServerRingProof(
+  uri: string | undefined,
+  productId: string,
+  suffix: CodecType<typeof DerivationIndex>,
+  message: Uint8Array,
+) {
+  if (!uri) throw new Error("No account connected to prove with");
+  const response = await fetch("/__create-proof", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      uri,
+      productId,
+      suffix:
+        suffix.tag === "Raw"
+          ? { tag: "Raw", value: u8aToHex(suffix.value) }
+          : suffix,
+      message: u8aToHex(message),
+    }),
+  });
+  const payload = (await response.json()) as {
+    proof: `0x${string}`;
+    context: `0x${string}`;
+    alias: `0x${string}`;
+    ringIndex: number;
+    ringRevision: number;
+    error?: string;
+  };
+  if (!response.ok) {
+    throw new Error(payload.error ?? `proof request failed (${response.status})`);
+  }
+  return {
+    proof: hexToU8a(payload.proof),
+    contextualAlias: {
+      context: hexToU8a(payload.context),
+      alias: hexToU8a(payload.alias),
+    },
+    ringIndex: payload.ringIndex,
+    ringRevision: payload.ringRevision,
+  };
 }
 
 /** Resolve a product account [dotnsId, derivationIndex] to a keypair. */
@@ -586,10 +632,29 @@ function setupContainer(
     return ok({ context, alias });
   });
 
-  // Ring VRF proof: real hosts use an actual ring VRF; for test purposes,
-  // sign the message with the product account's sr25519 key.
+  // Ring VRF proof. With `ringVrfProofs` configured, the server builds a real
+  // bandersnatch proof, since it holds the wasm prover. Otherwise sign the
+  // message with the product account sr25519 key as a stand-in.
   container.handleAccountCreateProof((params, { ok }) => {
     const [[productId, suffix], _ringLocation, message] = params;
+
+    if (config.ringVrfProofs) {
+      // Account precedence, including setAccounts overrides, lives here in
+      // the browser, so the URI to prove with resolves here and the server
+      // stays a pure prover.
+      const key = `${productId}/${selectorKey(suffix)}`;
+      const uri =
+        config.productAccounts?.[key]?.uri ??
+        (pairs.length > 0 ? urisByPair.get(pairs[0].pair) : undefined);
+      return ResultAsync.fromPromise(
+        fetchServerRingProof(uri, productId, suffix, message),
+        (e) =>
+          new CreateProofErr.Unknown({
+            reason: e instanceof Error ? e.message : String(e),
+          }),
+      );
+    }
+
     const pair = getPairForProductAccount(config, pairs, productId, suffix);
     const signature = pair ? pair.sign(message) : new Uint8Array(64);
     const publicKey = pair?.publicKey ?? new Uint8Array(32);
