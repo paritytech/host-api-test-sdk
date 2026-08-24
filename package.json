@@ -1,6 +1,6 @@
 {
   "name": "@parity/host-api-test-sdk",
-  "version": "0.12.1",
+  "version": "0.13.0",
   "description": "Lightweight test host for Spektr product E2E testing — embeds dapps with auto-signing dev accounts, no Docker needed",
   "license": "MIT",
   "repository": {
@@ -29,7 +29,7 @@
     "build:tsc": "tsc",
     "build": "pnpm run build:bundle && pnpm run build:tsc",
     "clean": "rm -rf dist",
-    "test": "node --test test-exports-esm.mjs test-exports-cjs.cjs",
+    "test": "node --test test-exports-esm.mjs test-exports-cjs.cjs test/ring-vrf-keys.test.mjs",
     "test:integration": "node test/build-test-product.mjs && pnpm exec playwright test --config test/playwright.config.ts",
     "typecheck": "tsc --noEmit"
   },
@@ -42,7 +42,11 @@
     }
   },
   "dependencies": {
-    "@novasamatech/host-api": "^0.9.1"
+    "@noble/hashes": "^1.7.2",
+    "@novasamatech/host-api": "^0.9.1",
+    "@polkadot/util-crypto": "^14.0.0",
+    "polkadot-api": "^2.2.2",
+    "verifiablejs": "^1.5.0"
   },
   "devDependencies": {
     "@novasamatech/host-api-wrapper": "^0.9.1",

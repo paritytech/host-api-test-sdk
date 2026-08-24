@@ -281,6 +281,25 @@ createTestHostFixture({
 >
 > **Selector keys**: since RFC-0022 a product addresses its accounts with `Index(n)` or `Raw(32 bytes)` rather than a bare number. `productAccounts` keys are unchanged for plain indices — `"myapp.dot/0"` still means `Index(0)`, and the derived address is the same as before. A raw selector is keyed by its hex, e.g. `"myapp.dot/0x1234…"`.
 
+### Real ring-VRF proofs
+
+By default `createRingVRFProof` answers with a deterministic stand-in, an sr25519 signature over the message, which no verifier accepts. The `ringVrfProofs` option makes the server build genuine bandersnatch proofs instead: it derives the RFC-0022 personhood member entropy from the account mnemonic at `//peopl.{tld}//index_bytes(0)` off the keyed ring-vrf tree, reads the ring the member sits in from the People chain, and validates the proof against the current ring root before answering. With personhood minted for that key on the target network, the proof passes network verification, so product flows that submit proofs can be exercised end to end.
+
+```ts
+createTestHostServer({
+  productUrl: 'http://localhost:3000',
+  accounts: [{ name: 'owner', uri: process.env.MNEMONIC }],
+  networks,
+  ringVrfProofs: {
+    peopleRpcUrl: 'wss://previewnet.substrate.dev/people',
+    ringRootsRpcUrl: 'wss://previewnet.substrate.dev/asset-hub',
+    tld: 'test',
+  },
+});
+```
+
+The proof context defaults to `'product'`, which is `blake2b256("product/" ++ productId ++ "/" ++ suffix)`, what a real host binds. Contracts that pin a global context can be covered with a raw 32-byte hex `context` override, which real hosts deliberately never issue. Dev accounts such as `alice` are rejected: they have no mnemonic entropy to be a person with. Proofs are built server-side because the `verifiablejs` wasm and the chain reads have no place in the browser, so the browser bundle is unchanged and the extra dependencies load only when the option is set.
+
 ### Payment control
 
 The host implements RFC-0006 (balance / topUp / requestPayment / status) and accepts the RFC-0021 `Coins` top-up variant. Every `paymentTopUp` call is recorded in `getPaymentLog()` with the attempted `amount`, `source`, and optional `purse` selector, regardless of outcome.

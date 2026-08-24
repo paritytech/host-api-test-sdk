@@ -775,3 +775,24 @@ One thing worth calling out: before this release the pins were wrong but *consis
 - Upgrade to `0.12.1`. If you use the built-in network configs, that is the whole change — the correct hashes come with the upgrade.
 - If you hard-coded any of the three old hashes in your own `NetworkConfig` or in test assertions, update them. Better still, read them off the exported config (`PASEO_ASSET_HUB.genesisHash`) so the next reset costs you nothing.
 - These chains reset periodically. Treat a genesis literal in your own repo as something that will go stale, not as a constant.
+
+# host-api-test-sdk 0.13.0
+
+## Real ring-VRF proofs
+
+`createRingVRFProof` has always answered with a stand-in, an sr25519 signature no verifier accepts, so flows that submit proofs, such as registry publishing or alias binding, could only be tested up to their failure path. The new `ringVrfProofs` option makes the test host build genuine bandersnatch proofs: it derives the RFC-0022 personhood member key from the account mnemonic, reads the live ring from your configured chains, and validates the proof against the current ring root before handing it to the product. If personhood is minted for that account on the target network, the proof passes network verification and your e2e can publish for real.
+
+```ts
+createTestHostServer({
+  productUrl: "http://localhost:3000",
+  accounts: [{ name: "owner", uri: process.env.MNEMONIC }],
+  networks,
+  ringVrfProofs: {
+    peopleRpcUrl: "wss://previewnet.substrate.dev/people",
+    ringRootsRpcUrl: "wss://previewnet.substrate.dev/asset-hub",
+    tld: "test",
+  },
+});
+```
+
+The proof context defaults to what a real host binds, `blake2b256("product/" ++ productId ++ "/" ++ suffix)`. Contracts that pin a global context can be covered with a raw 32-byte hex `context` override, which real hosts deliberately never issue. The override exists so tests can run ahead of that protocol decision. Dev accounts such as `alice` are rejected with guidance: they have no mnemonic entropy to be a person with. Without the option nothing changes: the stand-in stays, and none of the new dependencies load.

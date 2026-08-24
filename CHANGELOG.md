@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.13.0
+
+### Added
+
+- **Real ring-VRF proofs via the `ringVrfProofs` option.** `createRingVRFProof` used to answer with a deterministic stand-in, an sr25519 signature over the message, which no verifier accepts. Product flows that submit a proof, such as registry publishing or alias binding, could only ever be tested up to their failure path. With `ringVrfProofs` configured, the test-host server builds a genuine bandersnatch ring-VRF proof instead. It derives the RFC-0022 personhood member entropy from the account mnemonic at `//peopl.{tld}//index_bytes(0)` off the keyed ring-vrf tree, reads the ring the member sits in from the configured People chain, fetches the ring root from the subscriber chain, proves with `verifiablejs`, and validates against the live ring root before answering. When personhood is minted for that member on the target network, the proof passes network verification.
+
+  ```ts
+  createTestHostServer({
+    productUrl,
+    accounts: [{ name: 'owner', uri: process.env.MNEMONIC }],
+    networks,
+    ringVrfProofs: {
+      peopleRpcUrl: 'wss://previewnet.substrate.dev/people',
+      ringRootsRpcUrl: 'wss://previewnet.substrate.dev/asset-hub',
+      tld: 'test',
+    },
+  })
+  ```
+
+  The proof context defaults to `'product'`, which is `blake2b256("product/" ++ productId ++ "/" ++ suffix)`, exactly what a real host binds. It also accepts a raw 32-byte hex override for contracts that pin a global context such as `bytes32("dotns")`, a thing real hosts deliberately never issue. Accounts without a mnemonic URI, such as the dev name `alice`, are rejected with guidance, since they have no entropy to be a person with. Proof generation runs server-side behind a `/__create-proof` route: the wasm prover and the chain reads have no place in the browser bundle, and the option adds nothing to it. Without the option, the sr25519 stand-in behaves exactly as before.
+
+### Changed
+
+- **New runtime dependencies:** `verifiablejs`, `polkadot-api`, `@polkadot/util-crypto`, `@noble/hashes`. All are imported lazily behind the `ringVrfProofs` option and kept external to the CJS bundles, so consumers that never enable it load none of them.
+
 ## 0.12.1
 
 ### Fixed
