@@ -30,7 +30,6 @@ export function createDualChannelIframeProvider(options: {
   url: string;
 }): Provider {
   const { iframe, url } = options;
-  const inner = createIframeProvider({ iframe, url });
   const productOrigin = new URL(url, window.location.href).origin;
   const subscribers = new Set<(message: Uint8Array) => void>();
   let port: MessagePort | null = null;
@@ -39,15 +38,15 @@ export function createDualChannelIframeProvider(options: {
     for (const subscriber of subscribers) subscriber(message);
   };
 
-  const unsubscribeInner = inner.subscribe(deliver);
-
   const onWindowMessage = (event: MessageEvent): void => {
     if (event.source !== iframe.contentWindow) return;
     if (event.origin !== productOrigin) return;
-    if ((event.data as { type?: unknown } | null)?.type !== 'truapi-ready') return;
+    const data = event.data;
+    if (typeof data !== 'object' || data === null || !('type' in data)) return;
+    if (data.type !== 'truapi-ready') return;
 
-    // The product sends one ready ping per page load; each load needs its own
-    // port pair (device-permission reloads, deep-link reloads).
+    // Each product page load needs its own port pair. Repeated readiness
+    // announcements replace a handoff that the product has not adopted yet.
     port?.close();
     const channel = new MessageChannel();
     port = channel.port1;
@@ -57,6 +56,16 @@ export function createDualChannelIframeProvider(options: {
     iframe.contentWindow?.postMessage({ type: 'truapi-init' }, productOrigin, [channel.port2]);
   };
   window.addEventListener('message', onWindowMessage);
+  let inner: Provider;
+  try {
+    // createIframeProvider navigates the iframe, so the readiness listener must
+    // already exist before product code can execute.
+    inner = createIframeProvider({ iframe, url });
+  } catch (error) {
+    window.removeEventListener('message', onWindowMessage);
+    throw error;
+  }
+  const unsubscribeInner = inner.subscribe(deliver);
 
   return {
     logger: inner.logger,

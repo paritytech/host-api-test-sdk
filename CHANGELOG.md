@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.12.2
+
+### Fixed
+
+- Register the TrUAPI `truapi-ready` listener before navigating the product iframe. Fast-loading
+  products can no longer lose their only bootstrap message and remain stuck in `connecting`.
+- Recreate the container before account-switch navigation so the replacement listener is also
+  installed before the new product document runs.
+
 ## 0.12.1
 
 ### Fixed
