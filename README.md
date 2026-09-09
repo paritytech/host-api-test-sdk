@@ -200,10 +200,10 @@ If your test is asserting "permission rejected mid-session prevented submission"
 
 ```
 Playwright test
-  → createTestHostServer() starts a Node HTTP server
-  → serves a single HTML page with an inlined browser bundle
-  → the page creates an <iframe src="productUrl">
-  → host-container establishes Spektr postMessage channel
+  → creates an empty product iframe
+  → installs the TrUAPI and legacy host listeners
+  → navigates the iframe to productUrl only after those listeners are ready
+  → host-container establishes the selected channel
   → registers handlers: accounts, signing, chain RPC, localStorage
 
 Product (in iframe)

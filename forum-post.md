@@ -775,3 +775,13 @@ One thing worth calling out: before this release the pins were wrong but *consis
 - Upgrade to `0.12.1`. If you use the built-in network configs, that is the whole change — the correct hashes come with the upgrade.
 - If you hard-coded any of the three old hashes in your own `NetworkConfig` or in test assertions, update them. Better still, read them off the exported config (`PASEO_ASSET_HUB.genesisHash`) so the next reset costs you nothing.
 - These chains reset periodically. Treat a genesis literal in your own repo as something that will go stale, not as a constant.
+
+---
+
+# host-api-test-sdk 0.12.2
+
+Fast-loading TrUAPI products can no longer lose their iframe bootstrap message. The test host
+installs its `truapi-ready` listener before navigating the product iframe, including account
+switches that recreate the container.
+
+Upgrade to `0.12.2`; no fixture API changes are required.

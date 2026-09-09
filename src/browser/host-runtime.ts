@@ -1302,8 +1302,6 @@ async function init(): Promise<void> {
       const iframe = document.getElementById(
         "product-frame",
       ) as HTMLIFrameElement;
-      iframe.src = config.productUrl;
-
       currentContainer = setupContainer(iframe, config, accounts);
     },
 
