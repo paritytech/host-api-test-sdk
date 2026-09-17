@@ -56,7 +56,7 @@ function fromSecret(secretKey: Uint8Array): DevKeypair {
 
 /** Derive a dev account by hard junctions: `deriveDev('Alice', 'myapp.dot/0')`. */
 export function deriveDev(...junctions: string[]): DevKeypair {
-  let secretKey = ROOT_SECRET;
+  let secretKey: Uint8Array = ROOT_SECRET;
   for (const junction of junctions) {
     secretKey = HDKD.secretHard(secretKey, chainCode(junction));
   }

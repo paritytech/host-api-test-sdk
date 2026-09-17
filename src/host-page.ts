@@ -1,19 +1,5 @@
-import { readFileSync } from 'node:fs';
-import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { DEV_ACCOUNTS } from './accounts.js';
 import type { Account, NetworkConfig } from './types.js';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-
-let bundleCache: string | null = null;
-
-function getBundleScript(): string {
-  if (!bundleCache) {
-    bundleCache = readFileSync(join(__dirname, 'host-bundle.js'), 'utf-8');
-  }
-  return bundleCache;
-}
 
 interface HostPageConfig {
   productUrl: string;
@@ -58,8 +44,6 @@ export function generateHostPage(config: HostPageConfig): string {
     ...(productAccountConfigs && { productAccounts: productAccountConfigs }),
   });
 
-  const bundleScript = getBundleScript();
-
   // Escape closing script tags to prevent breaking out of inline script
   const safeConfigJson = configJson.replace(/<\//g, '<\\/');
 
@@ -77,7 +61,7 @@ export function generateHostPage(config: HostPageConfig): string {
 <body>
   <iframe id="product-frame" sandbox="allow-scripts allow-same-origin allow-forms allow-popups" allow="clipboard-read; clipboard-write"></iframe>
   <script>window.__TEST_HOST_CONFIG__ = ${safeConfigJson};</script>
-  <script>${bundleScript}</script>
+  <script type="module" src="/host-runtime.js"></script>
 </body>
 </html>`;
 }

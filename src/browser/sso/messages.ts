@@ -16,7 +16,7 @@
  * source.
  */
 import { Bytes, Enum, Result, Struct, Vector, _void, str, u8 } from 'scale-ts';
-import type { Codec } from 'scale-ts';
+import type { Codec, Decoder, Encoder } from 'scale-ts';
 import {
   AccountId,
   AllocatableResource,
@@ -227,9 +227,24 @@ const ListRingVrfKeysResponse = Result(Vector(RegisteredRingVrfKey), RingVrfErro
 const RingVrfSignResponse = Result(Bytes(), RingVrfError);
 
 /**
+ * "A codec, payload type irrelevant" — the bound for a table of mixed codecs.
+ *
+ * It cannot be `Codec<unknown>`: `Codec<T>` carries `T` in both an argument
+ * position (`Encoder<T>`) and a return position (`Decoder<T>`), so under
+ * `strictFunctionTypes` it is invariant and no concrete `Codec<X>` is assignable
+ * to any single instantiation of it. Splitting the two halves — accept anything
+ * that encodes at least nothing and decodes at most something — is the widest
+ * honest bound, and it still rejects a value that is not a codec at all.
+ */
+type AnyCodec = [Encoder<never>, Decoder<unknown>] & {
+  enc: Encoder<never>;
+  dec: Decoder<unknown>;
+};
+
+/**
  * Payload codec for every `v1::RemoteMessage` variant, keyed by name.
  *
- * `satisfies Record<RemoteMessageVariant, Codec<unknown>>` makes this a
+ * `satisfies Record<RemoteMessageVariant, AnyCodec>` makes this a
  * compile error if an entry is missing, misspelled, or extra — but it does
  * NOT check key *order*, which is what `Enum` actually uses to assign wire
  * indices (via `Object.keys`). Declaration order here is therefore
@@ -261,7 +276,7 @@ const REMOTE_MESSAGE_PAYLOADS = {
   ListRingVrfKeysResponse: Response(ListRingVrfKeysResponse),
   RingVrfSignRequest: ProductRequest(HostAccountRingVrfSignRequest),
   RingVrfSignResponse: Response(RingVrfSignResponse),
-} satisfies Record<RemoteMessageVariant, Codec<unknown>>;
+} satisfies Record<RemoteMessageVariant, AnyCodec>;
 
 /**
  * `v1::RemoteMessage`.

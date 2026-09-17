@@ -236,7 +236,12 @@ async function init(): Promise<void> {
     () => iframeHost?.iframe,
   );
 
-  const runtime = await createWebWorkerPairingHostRuntime(createHostWorker(), callbacks, {
+  // The worker is held in a local so a runtime that never takes ownership of it
+  // cannot leak it: `createWebWorkerPairingHostRuntime` rejects when the core
+  // fails to come up (a chunk that will not load, wasm that will not
+  // instantiate), and at that point nothing but this frame holds the worker.
+  const worker = createHostWorker();
+  const runtime = await createWebWorkerPairingHostRuntime(worker, callbacks, {
     hostConfig: {
       host: { name: 'Test Host', platform: 'Web' },
       // The loopback store answers this genesis in-page; the other two are
@@ -246,6 +251,9 @@ async function init(): Promise<void> {
       assetHub: { genesisHash: ZERO_HASH },
       pairing: { deeplinkScheme: 'testhost' },
     },
+  }).catch((cause: unknown) => {
+    worker.terminate();
+    throw cause;
   });
 
   // Two independent readouts, deliberately: `productStatus` is the PRODUCT

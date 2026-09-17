@@ -1,0 +1,15 @@
+{
+  // Type-check-only project for the in-page runtime under `src/browser/`.
+  //
+  // The browser code is compiled by esbuild into `dist/host/`, never by `tsc`,
+  // so it is excluded from the emitting project (`tsconfig.json`) — including it
+  // there would publish a second, unbundled copy of it in `dist/browser/`. That
+  // left it with no type gate at all: esbuild does not type-check and neither
+  // does vitest. This project closes that hole without changing what is emitted.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": []
+}

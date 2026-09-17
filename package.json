@@ -32,7 +32,10 @@
     "test": "node --test test-exports-esm.mjs test-exports-cjs.cjs",
     "test:integration": "node test/build-test-product.mjs && pnpm exec playwright test --config test/playwright.config.ts",
     "test:unit": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.browser.json"
+  },
+  "dependencies": {
+    "@parity/truapi": "0.17.0"
   },
   "peerDependencies": {
     "@playwright/test": ">=1.0.0"
@@ -46,7 +49,6 @@
     "@noble/ciphers": "2.4.0",
     "@noble/curves": "2.4.0",
     "@noble/hashes": "2.4.0",
-    "@parity/truapi": "0.17.0",
     "@parity/truapi-host": "0.17.0",
     "@parity/truapi-provider": "0.2.0",
     "@polkadot-labs/hdkd-helpers": "0.0.34",

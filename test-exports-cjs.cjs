@@ -62,20 +62,40 @@ describe('CJS require("@parity/host-api-test-sdk")', () => {
       assert.ok(html.includes('http://localhost:3001'), 'has product URL');
       assert.ok(html.includes('Alice'), 'has Alice account');
       assert.ok(html.includes('Bob'), 'has Bob account');
-      assert.ok(html.includes('__TEST_HOST__'), 'has test-host API');
-      assert.ok(html.length > 10000, 'has bundle script (page > 10KB)');
       assert.ok(
-        html.includes('Permission') && html.includes('approved'),
-        'has permission handler in bundle',
+        html.includes('<script type="module" src="/host-runtime.js">'),
+        'loads the runtime as a module',
       );
-      assert.ok(
-        html.includes('Navigation requested'),
-        'has navigation handler in bundle',
-      );
-      assert.ok(
-        html.includes('[test-host] Notification'),
-        'has notification handler in bundle',
-      );
+
+      // The page is a shell now: the runtime, the core worker and the wasm the
+      // core instantiates are separate assets, so a page that looks right is
+      // not enough — every asset it pulls in has to be served, and served with
+      // a content type the browser accepts.
+      const runtime = await fetch(`${server.url}/host-runtime.js`);
+      assert.strictEqual(runtime.status, 200, 'serves the host runtime chunk');
+      assert.match(runtime.headers.get('content-type'), /javascript/, 'runtime is a JS module');
+      const runtimeSource = await runtime.text();
+      assert.ok(runtimeSource.includes('__TEST_HOST__'), 'runtime publishes the test-host API');
+      assert.ok(runtimeSource.includes('worker-runtime.js'), 'runtime points at the worker chunk');
+
+      const worker = await fetch(`${server.url}/worker-runtime.js`);
+      assert.strictEqual(worker.status, 200, 'serves the core worker chunk');
+      await worker.body.cancel();
+
+      const wasm = await fetch(`${server.url}/truapi_server_bg.wasm`);
+      assert.strictEqual(wasm.status, 200, 'serves the core wasm');
+      assert.strictEqual(wasm.headers.get('content-type'), 'application/wasm', 'wasm mime type');
+      await wasm.body.cancel();
+
+      const missing = await fetch(`${server.url}/does-not-exist.js`);
+      assert.strictEqual(missing.status, 404, 'a missing asset 404s');
+      await missing.body.cancel();
+
+      // Percent-encoded so the traversal survives URL normalisation and actually
+      // reaches the server's own guard.
+      const escaping = await fetch(`${server.url}/%2e%2e%2fpackage.json`);
+      assert.strictEqual(escaping.status, 403, 'a traversing path is refused');
+      await escaping.body.cancel();
     });
   });
 
