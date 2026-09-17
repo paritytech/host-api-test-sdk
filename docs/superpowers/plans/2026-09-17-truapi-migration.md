@@ -1701,10 +1701,15 @@ git commit -m "feat: implement the twelve host callback groups"
 - Test: `src/browser/callbacks/chain.spec.ts`
 
 **Interfaces:**
-- Consumes: `PEOPLE_GENESIS_HASH` (`../constants.js`), `LoopbackStore` (`../loopback-chain.js`).
+- Consumes: `PEOPLE_GENESIS_HASH` (`../constants.js`), `LoopbackStore` (`../loopback-chain.js`), and the push-to-async-iterator bridge Task 10 put in `./passive.js`.
 - Produces: `createChainCallbacks(options: { store: LoopbackStore; networks: ChainRuntimeConfig[] }): { chain: { connect(genesisHash: Uint8Array): Promise<JsonRpcConnection> } }`
 
-Routing: `PEOPLE_GENESIS_HASH` → the loopback store; any configured network with an `rpcUrl` → `polkadot-api` v3's `getWsProvider`; anything else → throw, so an unroutable chain fails loudly instead of hanging.
+Routing: `PEOPLE_GENESIS_HASH` → the loopback store; any configured network with an `rpcUrl` → a WebSocket provider; anything else → throw, so an unroutable chain fails loudly instead of hanging.
+
+**Two corrections to earlier drafts of this plan, both verified against the installed packages:**
+
+1. The core's contract is `ChainProvider.connect(genesisHash: Uint8Array): Promise<JsonRpcConnection>`, where `JsonRpcConnection` is `{ send(request: string): void; responses(): AsyncIterable<string>; close(): void }`. The core **pulls** responses; it is not pushed to via an `onResponse` callback. Both routes must therefore return a `JsonRpcConnection`, reusing Task 10's bridge.
+2. `polkadot-api` 3.1.0 exposes its WebSocket entry at `polkadot-api/ws` (not `polkadot-api/ws-provider/web`), exporting `getWsProvider` and `getWsRawProvider`. Both are push-style, so the WS route needs the same bridge. Prefer `getWsRawProvider`, since the core exchanges raw JSON-RPC strings.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1719,18 +1724,29 @@ describe('chain routing', () => {
   it('routes the People genesis to the loopback store', async () => {
     const store = createLoopbackStore();
     const { chain } = createChainCallbacks({ store, networks: [] });
-    const onResponse = vi.fn();
-    const connection = await chain.connect(PEOPLE_GENESIS_HASH, onResponse);
+    const connection = await chain.connect(PEOPLE_GENESIS_HASH);
+    const responses = connection.responses()[Symbol.asyncIterator]();
 
     connection.send(
       JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'statement_submit', params: ['0x00'] }),
     );
-    expect(onResponse).toHaveBeenCalled();
+    // The loopback answers every request, so a response must arrive.
+    const { value } = await responses.next();
+    expect(JSON.parse(value as string).id).toBe(1);
+    connection.close();
+  });
+
+  it('ends the response stream on close', async () => {
+    const { chain } = createChainCallbacks({ store: createLoopbackStore(), networks: [] });
+    const connection = await chain.connect(PEOPLE_GENESIS_HASH);
+    const responses = connection.responses()[Symbol.asyncIterator]();
+    connection.close();
+    expect((await responses.next()).done).toBe(true);
   });
 
   it('rejects a genesis hash no network declares', async () => {
     const { chain } = createChainCallbacks({ store: createLoopbackStore(), networks: [] });
-    await expect(chain.connect(new Uint8Array(32).fill(9), () => {})).rejects.toThrow(
+    await expect(chain.connect(new Uint8Array(32).fill(9))).rejects.toThrow(
       /no chain configured/i,
     );
   });
@@ -1756,9 +1772,11 @@ Expected: FAIL — cannot resolve `./chain.js`.
  * is what keeps signing local. Product chains are matched by genesis against
  * the configured networks and opened over WebSocket.
  */
-import { getWsProvider } from 'polkadot-api/ws-provider/web';
+import { getWsRawProvider } from 'polkadot-api/ws';
+import type { JsonRpcConnection } from '@parity/truapi-host';
 import { PEOPLE_GENESIS_HASH } from '../constants.js';
 import type { LoopbackStore } from '../loopback-chain.js';
+import { createResponseStream } from './passive.js';
 
 export interface ChainRuntimeConfig {
   genesisHash: string;
@@ -1781,9 +1799,22 @@ export function createChainCallbacks(options: {
 
   return {
     chain: {
-      async connect(genesisHash: Uint8Array, onResponse: (json: string) => void) {
+      async connect(genesisHash: Uint8Array): Promise<JsonRpcConnection> {
+        // Both routes are push-style underneath; `createResponseStream` is the
+        // Task 10 bridge that buffers pushed values into the pulled iterable
+        // the core actually consumes.
+        const stream = createResponseStream();
+
         if (normalize(genesisHash) === normalize(PEOPLE_GENESIS_HASH)) {
-          return store.connect(onResponse);
+          const inner = store.connect((json) => stream.push(json));
+          return {
+            send: (request) => inner.send(request),
+            responses: () => stream.iterable,
+            close: () => {
+              inner.close();
+              stream.end();
+            },
+          };
         }
 
         const match = networks.find(
@@ -1793,11 +1824,14 @@ export function createChainCallbacks(options: {
           throw new Error(`no chain configured for genesis 0x${normalize(genesisHash)}`);
         }
 
-        const provider = getWsProvider(match.rpcUrl);
-        const connection = provider((message: string) => onResponse(message));
+        const inner = getWsRawProvider(match.rpcUrl)((message) => stream.push(message));
         return {
-          send: (request: string) => connection.send(request),
-          close: () => connection.disconnect(),
+          send: (request) => inner.send(request),
+          responses: () => stream.iterable,
+          close: () => {
+            inner.disconnect();
+            stream.end();
+          },
         };
       },
     },
@@ -1805,8 +1839,8 @@ export function createChainCallbacks(options: {
 }
 ```
 
-Confirm the `polkadot-api` v3 ws-provider entry point and connection shape
-before finalising — v3 moved these paths relative to v2.
+Confirm `getWsRawProvider`'s returned handle exposes `send`/`disconnect` under
+those names before finalising, and adjust if v3 spells them differently.
 
 - [ ] **Step 4: Run test to verify it passes**
 
