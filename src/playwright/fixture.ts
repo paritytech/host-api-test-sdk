@@ -112,6 +112,22 @@ export interface TestHost {
    * presence of `window.__TEST_HOST__` says nothing about the product.
    */
   waitForConnection(timeout?: number): Promise<void>;
+
+  /**
+   * The product connection: `'disconnected'` until the product's first wire
+   * frame, `'connected'` after. Returns to `'disconnected'` for the duration
+   * of an account switch. Prefer `waitForConnection()` as a gate; read this
+   * when a test needs to assert the product went quiet.
+   */
+  getConnectionStatus(): Promise<string>;
+
+  /**
+   * The host's own session: `'connecting'` until it activates, then
+   * `'connected'`, or `'disconnected'` if an account switch failed to
+   * re-establish it. This is what carries local signing, so a switch that
+   * leaves it `'disconnected'` means no signature will ever come back.
+   */
+  getChainStatus(): Promise<string>;
 }
 
 export interface TestHostFixtureOptions {
@@ -260,6 +276,14 @@ export function createTestHostFixture(defaults: TestHostFixtureOptions) {
             () => window.__TEST_HOST__?.getConnectionStatus() === 'connected',
             { timeout },
           );
+        },
+
+        async getConnectionStatus() {
+          return page.evaluate(() => window.__TEST_HOST__.getConnectionStatus());
+        },
+
+        async getChainStatus() {
+          return page.evaluate(() => window.__TEST_HOST__.getChainStatus());
         },
       };
 
