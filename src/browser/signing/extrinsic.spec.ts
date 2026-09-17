@@ -1,7 +1,7 @@
 import { verify } from '@scure/sr25519';
 import { describe, expect, it } from 'vitest';
 import { deriveDev } from '../dev-accounts.js';
-import { buildSignedV4Extrinsic, signRawBytes } from './extrinsic.js';
+import { buildSignedV4Extrinsic, rawPayloadBytes, signRawBytes } from './extrinsic.js';
 
 describe('extrinsic signing', () => {
   const alice = deriveDev('Alice');
@@ -45,5 +45,38 @@ describe('extrinsic signing', () => {
     expect(
       verify(new TextEncoder().encode('hello'), signature, alice.publicKey),
     ).toBe(true);
+  });
+});
+
+describe('raw payload bytes', () => {
+  const utf8 = (text: string) => new TextEncoder().encode(text);
+
+  it('leaves an unwatermarked payload untouched', () => {
+    expect(rawPayloadBytes({ tag: 'Payload', value: 'hello' }, false)).toEqual(utf8('hello'));
+  });
+
+  it('wraps a watermarked payload in <Bytes>', () => {
+    expect(rawPayloadBytes({ tag: 'Payload', value: 'hello' }, true)).toEqual(
+      utf8('<Bytes>hello</Bytes>'),
+    );
+  });
+
+  it('does not wrap a payload that already carries the watermark', () => {
+    const wrapped = utf8('<Bytes>hello</Bytes>');
+    expect(rawPayloadBytes({ tag: 'Bytes', value: wrapped }, true)).toEqual(wrapped);
+  });
+
+  it('decodes a 0x-prefixed even-length string as hex', () => {
+    expect(rawPayloadBytes({ tag: 'Payload', value: '0xdeadbeef' }, false)).toEqual(
+      new Uint8Array([0xde, 0xad, 0xbe, 0xef]),
+    );
+  });
+
+  it('treats an odd-length 0x string as UTF-8, as polkadot-app does', () => {
+    expect(rawPayloadBytes({ tag: 'Payload', value: '0xabc' }, false)).toEqual(utf8('0xabc'));
+  });
+
+  it('refuses a 0x-prefixed payload that is not valid hex', () => {
+    expect(() => rawPayloadBytes({ tag: 'Payload', value: '0xzz' }, false)).toThrow(/not valid hex/);
   });
 });

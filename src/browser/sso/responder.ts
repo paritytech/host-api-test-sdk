@@ -33,10 +33,11 @@
 import { blake2b } from '@noble/hashes/blake2.js';
 import { TypeRegistry } from '@polkadot/types';
 import { type HexString, scale } from '@parity/truapi';
+import { ss58Address } from '@polkadot-labs/hdkd-helpers';
 import { getPublicKey, sign } from '@scure/sr25519';
 import { type DevKeypair, deriveDev } from '../dev-accounts.js';
 import type { LoopbackStore } from '../loopback-chain.js';
-import { buildSignedV4Extrinsic, signRawBytes } from '../signing/index.js';
+import { type RawSignPayload, buildSignedV4Extrinsic, signRawBytes } from '../signing/index.js';
 import { open, seal, sessionAeadKey } from './crypto.js';
 import {
   RemoteMessageEnvelope,
@@ -71,12 +72,12 @@ export interface ResponderOptions {
   store: LoopbackStore;
   session: ResponderSession;
   /**
-   * Resolve the dev keypair behind one account.
+   * Resolve the dev keypair behind one product account.
    *
    * `derivationIndex` is the SCALE `DerivationIndex` as decoded, or
-   * `undefined` for the two requests that name no index: a product's subtree
-   * root, and a legacy account — whose `dotNsIdentifier` is then the account
-   * id as a `0x`-prefixed hex string rather than a DotNS name.
+   * `undefined` for `ProductSubtreeRequest`, which names a product's subtree
+   * root and carries no index. Legacy accounts never reach this callback: they
+   * name a bare `AccountId`, and only the session identity can answer for one.
    */
   resolveAccount: ResolveAccount;
 }
@@ -165,7 +166,7 @@ const digest = (...parts: Uint8Array[]) => blake2b(concat(parts), { dkLen: 32 })
 /** `RawPayload` as the wire carries it, adapted to what `signRawBytes` takes. */
 function rawPayload(
   payload: RemoteMessagePayload<'SignRawWithLegacyAccountRequest'>['data'],
-): Parameters<typeof signRawBytes>[1] {
+): RawSignPayload {
   return payload.tag === 'Bytes'
     ? { tag: 'Bytes', value: scale.hexToBytes(payload.value.bytes) }
     : { tag: 'Payload', value: payload.value.payload };
@@ -221,10 +222,32 @@ export function createSsoResponder(options: ResponderOptions): SsoResponder {
 
   const account = (handle: { dotNsIdentifier: string; derivationIndex: unknown }) =>
     resolveAccount(handle.dotNsIdentifier, handle.derivationIndex);
-  /** Legacy accounts name a bare `AccountId`; no derivation index applies. */
-  const legacyAccount = (accountId: string) => resolveAccount(accountId, undefined);
   /** The product's hard-subtree root — the key `ProductSubtreeRequest` reports. */
   const productSubtree = (productId: string) => resolveAccount(productId, undefined);
+
+  const identityKeypair: DevKeypair = {
+    secretKey: session.identitySecret,
+    publicKey: session.identityAccountId,
+    address: ss58Address(session.identityAccountId, 42),
+  };
+
+  /**
+   * The keypair for a bare `AccountId`.
+   *
+   * A legacy account is the wallet's own identity account, and this host holds
+   * exactly one. Refusing anything else is what stops a mismatched
+   * `resolveAccount` from signing — and attributing, since `buildExtrinsic`
+   * embeds the public key — a transaction with an unrelated key. Mirrors
+   * `sign_raw`/`create_transaction` in
+   * `../host-rust-core/rust/crates/truapi-server/src/runtime/signing_host.rs`,
+   * which error when the resolved public key is not the requested account.
+   */
+  const legacyAccount = (accountId: string): DevKeypair => {
+    if (accountId !== scale.bytesToHex(session.identityAccountId)) {
+      throw new Error(`the requested legacy account is not available to this host: ${accountId}`);
+    }
+    return identityKeypair;
+  };
 
   // ---- per-variant handlers -------------------------------------------------
 
@@ -235,16 +258,19 @@ export function createSsoResponder(options: ResponderOptions): SsoResponder {
           record('payload', request.value);
           return signPayloadData(account(request.value.account), request.value.payload);
         }
+        // Only `Raw` is watermarked; the two `…UnwatermarkedDeprecated`
+        // variants exist precisely to skip the `<Bytes>` wrapper.
         case 'raw':
         case 'rawUnwatermarkedDeprecated': {
           record('raw', request.value);
           const keypair = account(request.value.account);
-          return scale.bytesToHex(signRawBytes(keypair, rawPayload(request.value.payload)));
+          const payload = rawPayload(request.value.payload);
+          return scale.bytesToHex(signRawBytes(keypair, payload, request.tag === 'raw'));
         }
         case 'rawWithLegacyAccountUnwatermarkedDeprecated': {
           record('raw', request.value);
           const keypair = legacyAccount(request.value.account);
-          return scale.bytesToHex(signRawBytes(keypair, rawPayload(request.value.data)));
+          return scale.bytesToHex(signRawBytes(keypair, rawPayload(request.value.data), false));
         }
       }
     })();
@@ -268,7 +294,8 @@ export function createSsoResponder(options: ResponderOptions): SsoResponder {
     request: RemoteMessagePayload<'CreateTransactionWithLegacyAccountRequest'>,
   ): RemoteMessageValue {
     record('createTransaction', request.payload.value);
-    // Pairs by public key: the legacy signer is an `AccountId`, not a DotNS name.
+    // The legacy signer is an `AccountId`; `legacyAccount` refuses any account
+    // this host does not hold rather than signing with a diverging key.
     return reply('CreateTransactionResponse', {
       success: true,
       value: buildExtrinsic(legacyAccount(request.payload.value.signer), request.payload.value),
@@ -280,9 +307,10 @@ export function createSsoResponder(options: ResponderOptions): SsoResponder {
   ): RemoteMessageValue {
     record('raw', request);
     const keypair = legacyAccount(request.account);
+    // The top-level request is the watermarked flavour.
     return reply('SignRawWithLegacyAccountResponse', {
       success: true,
-      value: signRawBytes(keypair, rawPayload(request.data)),
+      value: signRawBytes(keypair, rawPayload(request.data), true),
     });
   }
 

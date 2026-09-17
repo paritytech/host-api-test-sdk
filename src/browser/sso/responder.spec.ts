@@ -1,6 +1,7 @@
 // src/browser/sso/responder.spec.ts
 import { blake2b } from '@noble/hashes/blake2.js';
 import { x25519 } from '@noble/curves/ed25519.js';
+import { verify } from '@scure/sr25519';
 import { scale } from '@parity/truapi';
 import { describe, expect, it, vi } from 'vitest';
 import { deriveDev } from '../dev-accounts.js';
@@ -139,6 +140,16 @@ function repliesIn(frames: CapturedFrame[]) {
 
 const replyValues = (frames: CapturedFrame[]) =>
   repliesIn(frames).map((reply) => reply.data.value);
+
+/** The signature bytes out of a `SignResponse`. */
+const signatureOf = (reply: { value: unknown }) =>
+  scale.hexToBytes(
+    (reply.value as { payload: { value: { signature: string } } }).payload.value.signature,
+  );
+
+const utf8 = (text: string) => new TextEncoder().encode(text);
+const watermark = (text: string) => utf8(`<Bytes>${text}</Bytes>`);
+const identityOf = (h: Harness) => scale.bytesToHex(h.session.identityAccountId);
 
 describe('sso responder', () => {
   it('starts with an empty signing log', () => {
@@ -488,6 +499,233 @@ describe('sso responder', () => {
     submitRequest(h, 'req-disposed', [buildSignRawMessage()]);
 
     expect(frames).toEqual([]);
+  });
+
+  it('watermarks a product raw signature and skips it for the deprecated variant', () => {
+    const h = harness();
+    const frames = listen(h);
+    const account = ACCOUNT;
+    const payload = { tag: 'Payload' as const, value: { payload: 'hello' } };
+
+    submitRequest(h, 'req-watermark', [
+      envelope('m-watermarked', 'SignRequest', { tag: 'raw', value: { account, payload } }),
+      envelope('m-plain', 'SignRequest', {
+        tag: 'rawUnwatermarkedDeprecated',
+        value: { account, payload },
+      }),
+    ]);
+
+    const publicKey = h.resolveAccount(PRODUCT, INDEX_0).publicKey;
+    const [watermarked, plain] = replyValues(frames);
+    expect(verify(watermark('hello'), signatureOf(watermarked), publicKey)).toBe(true);
+    expect(verify(utf8('hello'), signatureOf(watermarked), publicKey)).toBe(false);
+    expect(verify(utf8('hello'), signatureOf(plain), publicKey)).toBe(true);
+  });
+
+  it('decodes a 0x-prefixed text payload as hex before signing it', () => {
+    const h = harness();
+    const frames = listen(h);
+
+    submitRequest(h, 'req-ishex', [
+      envelope('m-ishex', 'SignRequest', {
+        tag: 'raw',
+        value: { account: ACCOUNT, payload: { tag: 'Payload', value: { payload: '0xdeadbeef' } } },
+      }),
+    ]);
+
+    const [reply] = replyValues(frames);
+    const wrapped = new Uint8Array([
+      ...utf8('<Bytes>'),
+      0xde,
+      0xad,
+      0xbe,
+      0xef,
+      ...utf8('</Bytes>'),
+    ]);
+    expect(verify(wrapped, signatureOf(reply), h.resolveAccount(PRODUCT, INDEX_0).publicKey)).toBe(
+      true,
+    );
+  });
+
+  it('signs a legacy raw request with the session identity, watermarked', () => {
+    const h = harness();
+    const frames = listen(h);
+
+    submitRequest(h, 'req-legacy-raw', [
+      envelope('m-legacy-raw', 'SignRawWithLegacyAccountRequest', {
+        account: identityOf(h),
+        data: { tag: 'Payload', value: { payload: 'hello' } },
+      }),
+    ]);
+
+    expect(h.responder.getSigningLog()[0].type).toBe('raw');
+    const [reply] = replyValues(frames);
+    expect(reply.tag).toBe('SignRawWithLegacyAccountResponse');
+    const signature = (reply.value as { payload: { value: Uint8Array } }).payload.value;
+    expect(verify(watermark('hello'), signature, h.session.identityAccountId)).toBe(true);
+  });
+
+  it('skips the watermark on the deprecated legacy raw variant', () => {
+    const h = harness();
+    const frames = listen(h);
+
+    submitRequest(h, 'req-legacy-plain', [
+      envelope('m-legacy-plain', 'SignRequest', {
+        tag: 'rawWithLegacyAccountUnwatermarkedDeprecated',
+        value: { account: identityOf(h), data: { tag: 'Payload', value: { payload: 'hello' } } },
+      }),
+    ]);
+
+    const [reply] = replyValues(frames);
+    expect(reply.tag).toBe('SignResponse');
+    expect(verify(utf8('hello'), signatureOf(reply), h.session.identityAccountId)).toBe(true);
+  });
+
+  it('builds a legacy transaction attributed to the session identity', () => {
+    const h = harness();
+    const frames = listen(h);
+
+    submitRequest(h, 'req-legacy-tx', [
+      envelope('m-legacy-tx', 'CreateTransactionWithLegacyAccountRequest', {
+        payload: {
+          tag: 'v1',
+          value: {
+            signer: identityOf(h),
+            genesisHash: toHex(topic(4)),
+            callData: '0x0400aabb',
+            extensions: [{ id: 'CheckNonce', extra: '0x00', additionalSigned: '0x01000000' }],
+            txExtVersion: 0,
+          },
+        },
+      }),
+    ]);
+
+    expect(h.responder.getSigningLog()[0].type).toBe('createTransaction');
+    const [reply] = replyValues(frames);
+    expect(reply.tag).toBe('CreateTransactionResponse');
+    const extrinsic = (reply.value as { payload: { value: Uint8Array } }).payload.value;
+    expect(extrinsic.subarray(4, 36)).toEqual(h.session.identityAccountId);
+  });
+
+  it('refuses a legacy request for an account it cannot sign for', () => {
+    const h = harness();
+    const frames = listen(h);
+    const reported = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const stranger = toHex(new Uint8Array(32).fill(0xee));
+
+    submitRequest(h, 'req-stranger', [
+      envelope('m-stranger', 'SignRawWithLegacyAccountRequest', {
+        account: stranger,
+        data: { tag: 'Payload', value: { payload: 'hello' } },
+      }),
+    ]);
+    reported.mockRestore();
+
+    const [reply] = replyValues(frames);
+    expect(reply.tag).toBe('SignRawWithLegacyAccountResponse');
+    const payload = (reply.value as { payload: { success: boolean; value: string } }).payload;
+    expect(payload.success).toBe(false);
+    expect(payload.value).toContain(stranger);
+  });
+
+  it('answers a VRF request with a deterministic pre-output and a signature', () => {
+    const h = harness();
+    const frames = listen(h);
+    const items: Array<{ label: `0x${string}`; value: `0x${string}` }> = [
+      { label: '0x01', value: '0x02' },
+    ];
+
+    submitRequest(h, 'req-vrf', [
+      envelope('m-vrf', 'SignVrfRequest', {
+        callingProductId: PRODUCT,
+        payload: { account: ACCOUNT, transcriptLabel: '0xaa', items },
+      }),
+      envelope('m-vrf-again', 'SignVrfRequest', {
+        callingProductId: PRODUCT,
+        payload: { account: ACCOUNT, transcriptLabel: '0xaa', items },
+      }),
+    ]);
+
+    const [first, second] = replyValues(frames);
+    expect(first.tag).toBe('SignVrfResponse');
+    const signatureFor = (reply: { value: unknown }) =>
+      (reply.value as { payload: { success: boolean; value: { preOutput: string; proof: string } } })
+        .payload;
+    expect(signatureFor(first).success).toBe(true);
+    expect(scale.hexToBytes(signatureFor(first).value.preOutput)).toHaveLength(32);
+    expect(scale.hexToBytes(signatureFor(first).value.proof)).toHaveLength(64);
+    // The pre-output is a digest, so it is stable for the same transcript.
+    expect(signatureFor(second).value.preOutput).toBe(signatureFor(first).value.preOutput);
+    const transcript = new Uint8Array([0xaa, 0x01, 0x02]);
+    expect(
+      verify(
+        transcript,
+        scale.hexToBytes(signatureFor(first).value.proof),
+        h.resolveAccount(PRODUCT, INDEX_0).publicKey,
+      ),
+    ).toBe(true);
+  });
+
+  it('answers an account-proof request with a signature over the message', () => {
+    const h = harness();
+    const frames = listen(h);
+
+    submitRequest(h, 'req-proof', [
+      envelope('m-proof', 'CreateAccountProofRequest', {
+        callingProductId: PRODUCT,
+        payload: {
+          keyHandle: ACCOUNT,
+          context: { productId: PRODUCT, suffix: INDEX_0 },
+          ringLocation: { chainId: toHex(topic(5)), junctions: [] },
+          message: '0xc0ffee',
+        },
+      }),
+    ]);
+
+    const [reply] = replyValues(frames);
+    expect(reply.tag).toBe('CreateAccountProofResponse');
+    const proof = (
+      reply.value as {
+        payload: {
+          success: boolean;
+          value: { proof: string; contextualAlias: { alias: string }; ringIndex: number; ringRevision: number };
+        };
+      }
+    ).payload;
+    expect(proof.success).toBe(true);
+    const publicKey = h.resolveAccount(PRODUCT, INDEX_0).publicKey;
+    expect(
+      verify(new Uint8Array([0xc0, 0xff, 0xee]), scale.hexToBytes(proof.value.proof), publicKey),
+    ).toBe(true);
+    expect(proof.value.ringIndex).toBe(0);
+    expect(proof.value.ringRevision).toBe(0);
+    // The alias matches what GetAccountAliasRequest reports for the same account.
+    const suffix = utf8('alias');
+    const input = new Uint8Array(publicKey.length + suffix.length);
+    input.set(publicKey, 0);
+    input.set(suffix, publicKey.length);
+    expect(proof.value.contextualAlias.alias).toBe(toHex(blake2b(input, { dkLen: 32 })));
+  });
+
+  it('grants a smart-contract allowance as the unit variant', () => {
+    const h = harness();
+    const frames = listen(h);
+
+    submitRequest(h, 'req-contract', [
+      envelope('m-contract', 'ResourceAllocationRequest', {
+        callingProductId: PRODUCT,
+        resources: [{ tag: 'SmartContractAllowance', value: INDEX_0 }],
+        onExisting: { tag: 'increase', value: undefined },
+      }),
+    ]);
+
+    const [reply] = replyValues(frames);
+    const outcomes = (
+      reply.value as { payload: { value: Array<{ tag: string; value: { tag: string } }> } }
+    ).payload.value;
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0].tag).toBe('allocated');
+    expect(outcomes[0].value.tag).toBe('smartContractAllowance');
   });
 
   it('refuses a request whose handler throws instead of leaving the core waiting', () => {
