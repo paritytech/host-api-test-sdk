@@ -7,6 +7,7 @@ export const PASEO_ASSET_HUB: NetworkConfig = {
   rpcUrl: 'wss://paseo-asset-hub-next-rpc.polkadot.io',
   tokenSymbol: 'PAS',
   tokenDecimals: 10,
+  chain: 'AssetHub',
 };
 
 export const PREVIEWNET: NetworkConfig = {
@@ -16,6 +17,7 @@ export const PREVIEWNET: NetworkConfig = {
   rpcUrl: 'wss://previewnet.substrate.dev/relay/alice',
   tokenSymbol: 'UNIT',
   tokenDecimals: 12,
+  chain: 'Relay',
 };
 
 export const PREVIEWNET_ASSET_HUB: NetworkConfig = {
@@ -25,6 +27,7 @@ export const PREVIEWNET_ASSET_HUB: NetworkConfig = {
   rpcUrl: 'wss://previewnet.substrate.dev/asset-hub',
   tokenSymbol: 'UNIT',
   tokenDecimals: 12,
+  chain: 'AssetHub',
 };
 
 export const DEFAULT_CHAIN = PASEO_ASSET_HUB;

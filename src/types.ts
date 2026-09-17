@@ -1,6 +1,28 @@
-import type { HexString } from '@novasamatech/host-api';
+// Type-only, and referenced solely by the non-exported drift guard below,
+// so it never reaches the emitted declarations.
+import type { ChainIdentifier as CoreChainIdentifier } from '@parity/truapi';
 
-export type { HexString } from '@novasamatech/host-api';
+/**
+ * A `0x`-prefixed hex string. Declared here rather than re-exported from a
+ * host-api package so the published types stand on their own.
+ */
+export type HexString = `0x${string}`;
+
+/**
+ * A network's protocol role.
+ *
+ * Mirrors `ChainIdentifier` in `@parity/truapi`, which the browser runtime
+ * reports through `features.supportedChains()`. It is spelled out here so
+ * this package's published types stand alone rather than depending on a
+ * package consumers do not install — and `_ChainIdentifierMirrorsCore`
+ * below fails the build if the two ever drift apart.
+ */
+export type ChainIdentifier = 'Relay' | 'AssetHub' | 'People' | 'Bulletin';
+
+type Equal<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
+type Expect<T extends true> = T;
+/** Compile-time guard, erased at emit: this mirror must equal the core's enum. */
+type _ChainIdentifierMirrorsCore = Expect<Equal<ChainIdentifier, CoreChainIdentifier>>;
 
 export interface NetworkConfig {
   id: string;
@@ -9,6 +31,12 @@ export interface NetworkConfig {
   rpcUrl: string;
   tokenSymbol: string;
   tokenDecimals: number;
+  /**
+   * This network's protocol role, if known. Reported to products through
+   * `supportedChains()`; a network that omits it is left out of that report
+   * rather than labelled by guesswork.
+   */
+  chain?: ChainIdentifier;
 }
 
 export type DevAccountName = 'alice' | 'bob' | 'charlie' | 'dave' | 'eve' | 'ferdie';
@@ -133,27 +161,6 @@ export interface PreimageEntry {
   timestamp: number;
 }
 
-export interface StatementSubmissionLogEntry {
-  /** The signed statement as submitted, unmodified. */
-  statement: unknown;
-  timestamp: number;
-}
-
-export interface PaymentLogEntry {
-  type: 'top-up' | 'request';
-  amount: bigint;
-  source?: unknown;
-  destination?: unknown;
-  paymentId?: string;
-  /**
-   * Optional purse selector (RFC-0017). For `'top-up'` this is the `into` purse
-   * the funds were added to; for `'request'` it's the `from` purse the funds
-   * came out of. Undefined means the product targeted the main purse.
-   */
-  purse?: number;
-  timestamp: number;
-}
-
 /**
  * Host theme (host_theme_subscribe payload, upstream 0.8).
  *
@@ -177,28 +184,6 @@ export type ThemeInput = 'light' | 'dark' | Theme;
  */
 export type PermissionBehavior = 'approve-all' | 'reject-all' | ((tag: string, value: unknown) => boolean);
 
-/**
- * Controls how the test host responds to login requests (RFC-0009).
- * - `'success'` — auto-approve login (default)
- * - `'reject'` — auto-reject login
- * - `(reason?: string) => boolean` — custom per-request decision
- */
-export type LoginBehavior = 'success' | 'reject' | ((reason: string | undefined) => boolean);
-
-/**
- * Controls how the test host responds to `paymentTopUp` requests (RFC-0006 / RFC-0021).
- * - `'ok'` — credit the full amount and return success (default)
- * - `{ type: 'partial'; credited }` — credit only `credited` and reject with
- *   `PaymentTopUpErr.PartialPayment({ credited })`. Mirrors real-host behavior
- *   when only some coins in a `Coins` top-up could be claimed.
- * - `{ type: 'reject'; reason }` — credit nothing and reject with the chosen
- *   `PaymentTopUpErr` variant.
- */
-export type PaymentTopUpBehavior =
-  | 'ok'
-  | { type: 'partial'; credited: bigint }
-  | { type: 'reject'; reason: 'InvalidSource' | 'InsufficientFunds' };
-
 /** Shape of window.__TEST_HOST__ — shared between browser bundle and Playwright fixture. */
 export interface TestHostAPI {
   switchAccount(name: string): Promise<void>;
@@ -216,10 +201,12 @@ export interface TestHostAPI {
   /** List currently granted permissions. */
   getGrantedPermissions(): string[];
   /**
-   * Enable or disable permission enforcement on signing.
-   * When enabled (default), signing requires ChainSubmit to have been
-   * granted — matching real host behavior. Disable for legacy tests that
-   * don't exercise the permission flow.
+   * Record whether permission enforcement is expected on signing.
+   *
+   * Signing is not gated by this host: it travels to the paired wallet over
+   * the SSO channel, and the core enforces `ChainSubmit` at
+   * `transaction_broadcast` itself. The flag is kept so existing tests keep
+   * working, but nothing in this host reads it.
    */
   setEnforcePermissions(enforce: boolean): void;
   /** Get the log of all permission requests and their outcomes. */
@@ -240,11 +227,17 @@ export interface TestHostAPI {
   getChatBots(): ChatBot[];
   /** Get the log of messages the product has posted to chat rooms. */
   getChatMessageLog(): ChatMessageLogEntry[];
-  /** Clear chat state: rooms, bots, messages, and subscribers. */
+  /**
+   * Clear chat state: rooms, bots and the message log. Live
+   * `subscribeChatRooms` streams stay open and are pushed the now-empty
+   * room list.
+   */
   clearChatState(): void;
   /**
-   * Inject an incoming chat action (e.g. peer message) into the product.
-   * Any subscribers registered via `chatActionSubscribe` will receive it.
+   * Inject an incoming chat action (e.g. a peer message) into the product.
+   *
+   * Published through the product's own runtime connection, which buffers it
+   * until the product subscribes to its chat action stream.
    */
   injectChatAction(action: { roomId: string; peer: string; payload: unknown }): void;
   /** List all preimages known to the test host (submitted by product + seeded by test). */
@@ -257,16 +250,6 @@ export interface TestHostAPI {
   seedPreimage(value: Uint8Array): HexString;
   /** Clear all preimages. */
   clearPreimages(): void;
-  /** Get the log of statements submitted by the product via `hostApi.statementStoreSubmit`. */
-  getSubmittedStatements(): StatementSubmissionLogEntry[];
-  /**
-   * Inject a statement into the statement store so it is delivered to
-   * active subscribers whose topic filter matches.
-   */
-  injectStatement(statement: unknown): void;
-  /** Clear the submitted-statements log and any seeded statements. */
-  clearStatements(): void;
-
   /**
    * Get the current theme as the upstream struct
    * (`{ name: { tag, value }, variant }`). Use `theme.variant` for the
@@ -282,33 +265,6 @@ export interface TestHostAPI {
    * `theme.name`).
    */
   setTheme(theme: ThemeInput): void;
-
-  /** Set how the host responds to login requests (RFC-0009). */
-  setLoginBehavior(behavior: LoginBehavior): void;
-  /** Whether the product is currently authenticated. */
-  getIsAuthenticated(): boolean;
-  /** Simulate user disconnect (unauthenticated state). */
-  simulateDisconnect(): void;
-  /** Simulate user reconnect (authenticated state). */
-  simulateReconnect(): void;
-
-  /** Set the mock payment balance (in smallest unit). */
-  setPaymentBalance(amount: bigint): void;
-  /** Get the log of payment operations (top-ups, requests). */
-  getPaymentLog(): PaymentLogEntry[];
-  /** Clear the payment log. */
-  clearPaymentLog(): void;
-  /**
-   * Set how the test host responds to `paymentTopUp`. The default is `'ok'`
-   * (credit full amount, return success). Use `{ type: 'partial', credited }`
-   * to drive products through the RFC-0021 `PartialPayment` error path —
-   * the balance is bumped by `credited` and the call rejects with
-   * `PaymentTopUpErr.PartialPayment({ credited })`. The `paymentLog` entry
-   * always records the attempted `amount` and `source`, regardless of outcome.
-   */
-  setPaymentTopUpBehavior(behavior: PaymentTopUpBehavior): void;
-  /** Manually set a payment's status and notify subscribers. */
-  simulatePaymentStatus(paymentId: string, status: { tag: string; value?: string }): void;
 
   dispose(): void;
 }

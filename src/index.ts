@@ -9,6 +9,7 @@ export {
 } from './networks.js';
 export type {
   Account,
+  ChainIdentifier,
   NetworkConfig,
   CreateTestHostOptions,
   DevAccountInfo,
@@ -17,13 +18,9 @@ export type {
   ChatMessageLogEntry,
   ChatRoom,
   HexString,
-  LoginBehavior,
   NavigationLogEntry,
   NotificationLogEntry,
-  PaymentLogEntry,
-  PaymentTopUpBehavior,
   PreimageEntry,
-  StatementSubmissionLogEntry,
   PermissionBehavior,
   PermissionLogEntry,
   SigningLogEntry,

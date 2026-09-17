@@ -1,7 +1,7 @@
 import type { Page, FrameLocator } from '@playwright/test';
 import { createTestHostServer } from '../server.js';
 import { DEFAULT_CHAIN } from '../networks.js';
-import type { ChatBot, ChatMessageLogEntry, ChatRoom, CreateTestHostOptions, DevAccountName, HexString, LoginBehavior, NavigationLogEntry, NotificationLogEntry, PaymentLogEntry, PaymentTopUpBehavior, PermissionBehavior, PermissionLogEntry, PreimageEntry, SigningLogEntry, StatementSubmissionLogEntry, TestHostAPI, Theme, ThemeInput } from '../types.js';
+import type { ChatBot, ChatMessageLogEntry, ChatRoom, CreateTestHostOptions, DevAccountName, HexString, NavigationLogEntry, NotificationLogEntry, PermissionBehavior, PermissionLogEntry, PreimageEntry, SigningLogEntry, TestHostAPI, Theme, ThemeInput } from '../types.js';
 
 export interface TestHost {
   /** The host page (contains the iframe) */
@@ -79,15 +79,6 @@ export interface TestHost {
   /** Clear all preimages */
   clearPreimages(): Promise<void>;
 
-  /** Get the log of statements submitted by the product */
-  getSubmittedStatements(): Promise<StatementSubmissionLogEntry[]>;
-
-  /** Inject a statement into the store; delivers to matching subscribers */
-  injectStatement(statement: unknown): Promise<void>;
-
-  /** Clear all statements */
-  clearStatements(): Promise<void>;
-
   /**
    * Get the current theme as the upstream struct (`{ name, variant }`).
    * Use `theme.variant` for the light/dark sub-mode (`'Light' | 'Dark'`).
@@ -101,38 +92,6 @@ export interface TestHost {
    * the matching variant) or the full `{ name, variant }` struct.
    */
   setTheme(theme: ThemeInput): Promise<void>;
-
-  /** Set how the host responds to login requests */
-  setLoginBehavior(behavior: LoginBehavior): Promise<void>;
-
-  /** Whether the product is currently authenticated */
-  getIsAuthenticated(): Promise<boolean>;
-
-  /** Simulate user disconnect (unauthenticated state) */
-  simulateDisconnect(): Promise<void>;
-
-  /** Simulate user reconnect (authenticated state) */
-  simulateReconnect(): Promise<void>;
-
-  /** Set the mock payment balance */
-  setPaymentBalance(amount: bigint): Promise<void>;
-
-  /** Get the log of payment operations */
-  getPaymentLog(): Promise<PaymentLogEntry[]>;
-
-  /** Clear the payment log */
-  clearPaymentLog(): Promise<void>;
-
-  /**
-   * Set how the host responds to `paymentTopUp` (default `'ok'`). Use
-   * `{ type: 'partial', credited }` to drive products through the RFC-0021
-   * `PartialPayment` error path; the balance is bumped by `credited` and the
-   * call rejects with `PaymentTopUpErr.PartialPayment({ credited })`.
-   */
-  setPaymentTopUpBehavior(behavior: PaymentTopUpBehavior): Promise<void>;
-
-  /** Manually set a payment's status and notify subscribers */
-  simulatePaymentStatus(paymentId: string, status: { tag: string; value?: string }): Promise<void>;
 
   /** Wait until the product-sdk has connected to the host container */
   waitForConnection(timeout?: number): Promise<void>;
@@ -269,75 +228,12 @@ export function createTestHostFixture(defaults: TestHostFixtureOptions) {
           await page.evaluate(() => window.__TEST_HOST__.clearPreimages());
         },
 
-        async getSubmittedStatements() {
-          return page.evaluate(() => window.__TEST_HOST__.getSubmittedStatements());
-        },
-
-        async injectStatement(statement: unknown) {
-          await page.evaluate((s) => window.__TEST_HOST__.injectStatement(s), statement);
-        },
-
-        async clearStatements() {
-          await page.evaluate(() => window.__TEST_HOST__.clearStatements());
-        },
-
         async getTheme() {
           return page.evaluate(() => window.__TEST_HOST__.getTheme());
         },
 
         async setTheme(theme: ThemeInput) {
           await page.evaluate((t) => window.__TEST_HOST__.setTheme(t), theme);
-        },
-
-        async setLoginBehavior(behavior: LoginBehavior) {
-          await page.evaluate((b) => window.__TEST_HOST__.setLoginBehavior(b), behavior);
-        },
-
-        async getIsAuthenticated() {
-          return page.evaluate(() => window.__TEST_HOST__.getIsAuthenticated());
-        },
-
-        async simulateDisconnect() {
-          await page.evaluate(() => window.__TEST_HOST__.simulateDisconnect());
-        },
-
-        async simulateReconnect() {
-          await page.evaluate(() => window.__TEST_HOST__.simulateReconnect());
-        },
-
-        async setPaymentBalance(amount: bigint) {
-          // BigInt can't be serialized by Playwright evaluate, pass as string
-          await page.evaluate((a) => window.__TEST_HOST__.setPaymentBalance(BigInt(a)), amount.toString());
-        },
-
-        async getPaymentLog() {
-          return page.evaluate(() => window.__TEST_HOST__.getPaymentLog());
-        },
-
-        async clearPaymentLog() {
-          await page.evaluate(() => window.__TEST_HOST__.clearPaymentLog());
-        },
-
-        async setPaymentTopUpBehavior(behavior: PaymentTopUpBehavior) {
-          // BigInt isn't structured-cloneable across page.evaluate; serialize partial.credited.
-          const wire =
-            typeof behavior === 'string' || behavior.type !== 'partial'
-              ? behavior
-              : { type: 'partial' as const, credited: behavior.credited.toString() };
-          await page.evaluate((b) => {
-            const hydrated =
-              typeof b === 'string' || b.type !== 'partial'
-                ? b
-                : { type: 'partial' as const, credited: BigInt(b.credited) };
-            window.__TEST_HOST__.setPaymentTopUpBehavior(hydrated);
-          }, wire);
-        },
-
-        async simulatePaymentStatus(paymentId: string, status: { tag: string; value?: string }) {
-          await page.evaluate(
-            ([id, s]) => window.__TEST_HOST__.simulatePaymentStatus(id, s),
-            [paymentId, status] as const,
-          );
         },
 
         async waitForConnection(timeout = 30_000) {

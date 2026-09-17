@@ -51,6 +51,9 @@ export function generateHostPage(config: HostPageConfig): string {
       genesisHash: n.genesisHash,
       rpcUrl: n.rpcUrl,
       name: n.name,
+      // Omitted when unset: the runtime leaves a network with no declared
+      // role out of `supportedChains()` rather than guessing one.
+      ...(n.chain && { chain: n.chain }),
     })),
     ...(productAccountConfigs && { productAccounts: productAccountConfigs }),
   });
