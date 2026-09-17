@@ -79,9 +79,7 @@ export interface TestHost {
   /**
    * Inject an incoming chat action (peer message) into the product.
    *
-   * Rejects if the action could not be delivered. Note that the action is
-   * structured-cloned into the page, so a payload carrying a `bigint` (e.g.
-   * `ChatFile.sizeBytes`) cannot cross this boundary.
+   * Rejects if the action could not be delivered.
    */
   injectChatAction(action: ChatActionInput): Promise<void>;
 

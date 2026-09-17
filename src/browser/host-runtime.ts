@@ -334,10 +334,16 @@ async function init(): Promise<void> {
         });
         unbridge();
 
-        provider.dispose();
-        provider = await runtime.createProvider({ productId });
+        try {
+          provider.dispose();
+          provider = await runtime.createProvider({ productId });
+        } finally {
+          // Unsubscribe even when the swap fails. A parking subscriber left
+          // attached would grow `parked` unboundedly and keep reporting the
+          // product as talking while no frame reaches any core.
+          stopParking();
+        }
 
-        stopParking();
         for (const frame of parked) provider.postMessage(frame);
         unbridge = bridgeProviders(portProvider, provider, productIsTalking);
         sessionStatus = 'connected';
