@@ -88,4 +88,99 @@ describe('loopback statement store', () => {
     store.publish({ topics: [topic(4)], data: new Uint8Array([1]) });
     expect(onResponse).not.toHaveBeenCalled();
   });
+
+  it('handles malformed filters without throwing', () => {
+    const store = createLoopbackStore();
+    const onResponse = vi.fn();
+    const connection = store.connect(onResponse);
+
+    // Bare string filter should not throw; should return an error response instead.
+    connection.send(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: 5,
+        method: 'statement_subscribeStatement',
+        params: ['bare-string-filter'],
+      }),
+    );
+
+    expect(onResponse).toHaveBeenCalledOnce();
+    const response = JSON.parse(onResponse.mock.calls[0][0]);
+    expect(response.result).toBeDefined(); // Should have a subscription ID, not an error.
+  });
+
+  it('continues publishing after a subscriber throws', () => {
+    const store = createLoopbackStore();
+    let callCount = 0;
+    const onResponse1 = vi.fn(() => {
+      callCount++;
+      // Throw only on the publish call (callCount > 1), not on subscription setup (callCount === 1).
+      if (callCount > 1) throw new Error('subscriber 1 error');
+    });
+    const onResponse2 = vi.fn();
+    const connection1 = store.connect(onResponse1);
+    const connection2 = store.connect(onResponse2);
+
+    connection1.send(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: 6,
+        method: 'statement_subscribeStatement',
+        params: [{ MatchAll: [toHex(topic(5))] }],
+      }),
+    );
+    connection2.send(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: 7,
+        method: 'statement_subscribeStatement',
+        params: [{ MatchAll: [toHex(topic(5))] }],
+      }),
+    );
+    onResponse1.mockClear();
+    onResponse2.mockClear();
+
+    store.publish({ topics: [topic(5)], data: new Uint8Array([1]) });
+
+    // Even though subscriber 1 threw, subscriber 2 should still receive the message.
+    expect(onResponse2).toHaveBeenCalledOnce();
+  });
+
+  it('drops only the closed connection\'s subscriptions', () => {
+    const store = createLoopbackStore();
+    const onResponse1 = vi.fn();
+    const onResponse2 = vi.fn();
+    const connection1 = store.connect(onResponse1);
+    const connection2 = store.connect(onResponse2);
+
+    // Both subscribe to the same topic.
+    connection1.send(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: 8,
+        method: 'statement_subscribeStatement',
+        params: [{ MatchAll: [toHex(topic(6))] }],
+      }),
+    );
+    connection2.send(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: 9,
+        method: 'statement_subscribeStatement',
+        params: [{ MatchAll: [toHex(topic(6))] }],
+      }),
+    );
+    onResponse1.mockClear();
+    onResponse2.mockClear();
+
+    // Close connection1.
+    connection1.close();
+
+    // Publish a matching statement.
+    store.publish({ topics: [topic(6)], data: new Uint8Array([1]) });
+
+    // Only connection2 should receive it.
+    expect(onResponse1).not.toHaveBeenCalled();
+    expect(onResponse2).toHaveBeenCalledOnce();
+  });
 });

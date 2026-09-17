@@ -55,7 +55,11 @@ export function createLoopbackStore(): LoopbackStore {
     if (Array.isArray(raw)) {
       return { kind: 'MatchAll', topics: raw.map((t) => fromHex(String(t))) };
     }
-    const filter = (raw ?? {}) as Record<string, unknown>;
+    // Guard against non-object primitives (strings, numbers, etc.) which would throw on `in` operator.
+    if (typeof raw !== 'object' || raw === null) {
+      return { kind: 'MatchAll', topics: [] };
+    }
+    const filter = raw as Record<string, unknown>;
     const kind: TopicFilterKind = 'MatchAny' in filter ? 'MatchAny' : 'MatchAll';
     const topics = (filter[kind] as unknown[] | undefined) ?? [];
     return { kind, topics: topics.map((t) => fromHex(String(t))) };
@@ -67,54 +71,75 @@ export function createLoopbackStore(): LoopbackStore {
 
       return {
         send(request: string) {
-          const { id, method, params = [] } = JSON.parse(request) as {
-            id: number | string;
-            method: string;
-            params?: unknown[];
-          };
-          const reply = (result: unknown) =>
-            onResponse(JSON.stringify({ jsonrpc: '2.0', id, result }));
+          try {
+            const { id, method, params = [] } = JSON.parse(request) as {
+              id: number | string;
+              method: string;
+              params?: unknown[];
+            };
+            const reply = (result: unknown) =>
+              onResponse(JSON.stringify({ jsonrpc: '2.0', id, result }));
 
-          switch (method) {
-            case 'statement_submit': {
-              const statement = decodeStatement(fromHex(String(params[0])));
-              // The host owns the store, so nothing can be rejected here.
-              reply('new');
-              for (const listener of submitListeners) listener(statement);
-              return;
-            }
-            case 'statement_subscribeStatement': {
-              const { kind, topics } = parseFilter(params[0]);
-              const subscriptionId = `sub-${nextSubscriptionId++}`;
-              const subscription: Subscription = {
-                id: subscriptionId,
-                kind,
-                topics,
-                notify: onResponse,
-              };
-              subscriptions.add(subscription);
-              owned.add(subscription);
-              reply(subscriptionId);
-              return;
-            }
-            case 'statement_unsubscribeStatement': {
-              const target = String(params[0]);
-              for (const subscription of owned) {
-                if (subscription.id !== target) continue;
-                subscriptions.delete(subscription);
-                owned.delete(subscription);
+            switch (method) {
+              case 'statement_submit': {
+                const statement = decodeStatement(fromHex(String(params[0])));
+                // The host owns the store, so nothing can be rejected here.
+                reply('new');
+                for (const listener of submitListeners) listener(statement);
+                return;
               }
-              reply(true);
-              return;
+              case 'statement_subscribeStatement': {
+                const { kind, topics } = parseFilter(params[0]);
+                const subscriptionId = `sub-${nextSubscriptionId++}`;
+                const subscription: Subscription = {
+                  id: subscriptionId,
+                  kind,
+                  topics,
+                  notify: onResponse,
+                };
+                subscriptions.add(subscription);
+                owned.add(subscription);
+                reply(subscriptionId);
+                return;
+              }
+              case 'statement_unsubscribeStatement': {
+                const target = String(params[0]);
+                for (const subscription of owned) {
+                  if (subscription.id !== target) continue;
+                  subscriptions.delete(subscription);
+                  owned.delete(subscription);
+                }
+                reply(true);
+                return;
+              }
+              default:
+                onResponse(
+                  JSON.stringify({
+                    jsonrpc: '2.0',
+                    id,
+                    error: { code: -32601, message: `unsupported method: ${method}` },
+                  }),
+                );
             }
-            default:
-              onResponse(
-                JSON.stringify({
-                  jsonrpc: '2.0',
-                  id,
-                  error: { code: -32601, message: `unsupported method: ${method}` },
-                }),
-              );
+          } catch (error) {
+            // Try to extract id from the request for error response.
+            let id: number | string = 'unknown';
+            try {
+              const parsed = JSON.parse(request) as { id?: number | string };
+              if (parsed.id !== undefined) id = parsed.id;
+            } catch {
+              // If we can't even parse the request, we can't get the id.
+            }
+            onResponse(
+              JSON.stringify({
+                jsonrpc: '2.0',
+                id,
+                error: {
+                  code: -32603,
+                  message: error instanceof Error ? error.message : String(error),
+                },
+              }),
+            );
           }
         },
         close() {
@@ -128,13 +153,18 @@ export function createLoopbackStore(): LoopbackStore {
       const result = toHex(encodeStatement(statement));
       for (const subscription of subscriptions) {
         if (!matchesTopics(statement, subscription.kind, subscription.topics)) continue;
-        subscription.notify(
-          JSON.stringify({
-            jsonrpc: '2.0',
-            method: 'statement_subscribeStatement',
-            params: { subscription: subscription.id, result },
-          }),
-        );
+        // Isolate each subscriber's errors so one throwing callback doesn't starve the rest.
+        try {
+          subscription.notify(
+            JSON.stringify({
+              jsonrpc: '2.0',
+              method: 'statement_subscribeStatement',
+              params: { subscription: subscription.id, result },
+            }),
+          );
+        } catch {
+          // Subscriber threw; swallow and continue to avoid cascading failures.
+        }
       }
     },
 
