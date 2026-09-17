@@ -105,6 +105,37 @@ export function deriveDev(...junctions: string[]): DevKeypair {
 }
 
 /**
+ * Witness bytes for a soft derivation's child nonce.
+ *
+ * `HDKD.secretSoft` takes this as its `random` argument and folds it into the
+ * child's NONCE only — the child's scalar, and therefore its public key and
+ * address, come from the transcript alone. schnorrkel's own `derived_key`
+ * randomises that nonce; this host pins it to zero so a derived account is
+ * reproducible across runs. Nothing is weakened by it: the nonce is one of
+ * three witness inputs (the parent nonce and the parent secret are the other
+ * two), and `@scure/sr25519`'s `sign` draws fresh randomness per signature
+ * regardless.
+ */
+const SOFT_DERIVATION_WITNESS = new Uint8Array(32);
+
+/**
+ * Soft-derive a child keypair at a 32-byte chain code.
+ *
+ * The counterpart of schnorrkel's `derived_key_simple(ChainCode(cc), [])`,
+ * which is what the core calls for a product account
+ * (`host_logic/product_account.rs`). Soft means the child public key is also
+ * derivable from the parent PUBLIC key alone — which is exactly why the core
+ * can derive product accounts itself from a subtree public key, and why this
+ * host must use the same junction when it signs for one.
+ */
+export function deriveSoft(parent: DevKeypair, chainCode: Uint8Array): DevKeypair {
+  if (chainCode.length !== 32) {
+    throw new Error(`soft derivation chain code must be 32 bytes, got ${chainCode.length}`);
+  }
+  return fromSecret(HDKD.secretSoft(parent.secretKey, chainCode, SOFT_DERIVATION_WITNESS));
+}
+
+/**
  * Derive from a Substrate URI. Only hard junctions (`//x`) are supported —
  * every path this host builds uses them, and a soft junction would silently
  * produce a different address.

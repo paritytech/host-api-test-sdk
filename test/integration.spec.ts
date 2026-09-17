@@ -23,7 +23,10 @@ import { createTestHostServer, PASEO_ASSET_HUB } from '../dist/index.js';
 import type {} from '../dist/playwright/index.js';
 // The SDK's own derivation, so expected keys come from one source of truth
 // rather than a second keyring implementation in the tests.
-import { deriveDev, deriveFromUri } from '../src/browser/dev-accounts.js';
+import { deriveDev, deriveFromUri, deriveSoft } from '../src/browser/dev-accounts.js';
+// `index_bytes(n)` — the soft chain code the CORE derives a product account
+// at. Imported rather than restated so the two cannot drift apart.
+import { indexBytes } from '../src/browser/product-accounts.js';
 import { loadHost, serveProduct } from './support.js';
 
 // ── Helpers ─────────────────────────────────────────────────────────
@@ -65,6 +68,13 @@ async function loadHostAndProduct(page: Page, hostUrl: string, productUrl: strin
 async function getProductPublicKey(page: Page, hostUrl: string): Promise<string> {
   const frame = await loadHost(page, hostUrl);
   const key = frame.locator('#product-key[data-ready="true"]');
+  await expect(key).toBeAttached({ timeout: 30_000 });
+  return (await key.textContent())!;
+}
+
+/** The same key, off a product frame that is already loaded. */
+async function readProductKey(product: Frame): Promise<string> {
+  const key = product.locator('#product-key[data-ready="true"]');
   await expect(key).toBeAttached({ timeout: 30_000 });
   return (await key.textContent())!;
 }
@@ -113,96 +123,105 @@ test.afterAll(async () => {
 
 test.describe('Product account derivation', () => {
   /**
-   * All four are `fixme` against a HOST defect, not a test mistake.
-   *
-   * The core no longer asks the host for an indexed product account. It asks
-   * once for the product's hard subtree (`ProductSubtreeRequest`) and then
-   * derives every account itself, in-core, as ONE SOFT junction over that
-   * subtree public key: `derive_product_public_key(subtree, index_bytes(n))`
+   * The host does not answer for an indexed product account, and cannot: the
+   * core asks once for the product's HARD SUBTREE (`ProductSubtreeRequest`)
+   * and then derives every account under it ITSELF, as one soft junction over
+   * that subtree public key —
+   * `derive_product_public_key(subtree, index_bytes(n))`
    * (`truapi-server/src/host_logic/product_account.rs`, reached from
-   * `runtime.rs::product_account_public_key`). `index_bytes(0)` is
-   * `0x00000000` + `blake2_256("product-account-index")[..28]`.
+   * `runtime.rs::product_account_public_key`).
    *
-   * This host still resolves an indexed product account by HARD-deriving
-   * `//Selected//dotnsId/index` (`src/browser/product-accounts.ts`), which is
-   * what it also SIGNS with. So two things are wrong at once:
-   *
-   *   1. `productAccounts['dotnsId/index']` can no longer steer what
-   *      `getAccount` reports — the core never asks. Only a subtree-level
-   *      override (`productAccounts['dotnsId']`) still moves the address.
-   *   2. The account the product is told it has and the key the host signs
-   *      for that same handle are DIFFERENT keys, so a product's own
-   *      signature does not verify against its own address. See the note on
-   *      `Sign raw › signs a raw payload locally with no network`.
-   *
-   * Fixing it means deriving the indexed account the way the core does — soft
-   * junction `index_bytes(n)` over the subtree keypair — which moves every
-   * product account address and narrows the documented `productAccounts`
-   * option to subtree granularity. That is a breaking public-API change, so it
-   * is reported rather than taken unilaterally here.
+   * So the host's one lever is WHICH keypair is the subtree, and its job is to
+   * sign with the same soft derivation. That is the property the first test
+   * below checks end to end: a signature the product obtains verifies against
+   * the address the CORE reported to it.
    */
-  test.fixme('by default, product account is derived (production behavior)', async ({ page }) => {
+
+  /** The account the core derives for `dotnsId` index `n` under one subtree. */
+  const productAccount = (subtreeUri: string, index: number) =>
+    deriveSoft(deriveFromUri(subtreeUri), indexBytes(index));
+
+  test('a product signs with the very key the core reported to it', async ({ page }) => {
     const host = await createTestHostServer({
       productUrl: productServer.url,
       accounts: ['bob'],
     });
 
     try {
-      // The product calls getAccount("test-product.dot", 0), so the derived
-      // path is //Bob//test-product.dot/0.
-      const productKey = await getProductPublicKey(page, host.url);
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
 
-      expect(productKey).toBe(keyOf('//Bob//test-product.dot/0'));
-      expect(productKey).not.toBe(keyOf('//Bob'));
+      // The product calls getAccount("test-product.dot", 0). With no mapping
+      // the subtree is //Bob//test-product.dot and the account is that subtree
+      // soft-derived at index_bytes(0).
+      const reported = await readProductKey(product);
+      expect(reported).toBe(u8aToHex(productAccount('//Bob//test-product.dot', 0).publicKey));
+      expect(reported).not.toBe(keyOf('//Bob'));
+      // The subtree root itself is a different account from index 0.
+      expect(reported).not.toBe(keyOf('//Bob//test-product.dot'));
+
+      // The regression this suite exists for: before the host signed with the
+      // soft derivation, it hard-derived //Bob//test-product.dot/0 instead, so
+      // this verify() failed against the product's own address.
+      const payload = `0x${'5a'.repeat(16)}`;
+      const signed = expectOk(
+        await product.evaluate(
+          (p) => window.__TEST_PRODUCT__.signRawProduct('test-product.dot', 0, p),
+          payload,
+        ),
+      );
+      expect(
+        verify(watermarked(hexToU8a(payload)), hexToU8a(signed.signature), hexToU8a(reported)),
+      ).toBe(true);
     } finally {
       await host.close();
     }
   });
 
-  test.fixme('productAccounts maps a product account to a specific dev account', async ({ page }) => {
+  test('productAccounts moves a product subtree to a specific dev account', async ({ page }) => {
     const host = await createTestHostServer({
       productUrl: productServer.url,
       accounts: ['bob'],
-      productAccounts: {
-        'test-product.dot/0': 'bob',
-      },
+      // Keyed by the bare product id: the mapping replaces the SUBTREE, and
+      // every indexed account under it moves with it.
+      productAccounts: { 'test-product.dot': 'alice' },
     });
 
     try {
-      expect(await getProductPublicKey(page, host.url)).toBe(keyOf('//Bob'));
+      expect(await getProductPublicKey(page, host.url)).toBe(
+        u8aToHex(productAccount('//Alice', 0).publicKey),
+      );
     } finally {
       await host.close();
     }
   });
 
-  test.fixme('productAccounts supports custom URIs', async ({ page }) => {
+  test('productAccounts supports custom URIs', async ({ page }) => {
     const host = await createTestHostServer({
       productUrl: productServer.url,
       accounts: ['bob'],
-      productAccounts: {
-        'test-product.dot/0': { name: 'Charlie', uri: '//Charlie' },
-      },
+      productAccounts: { 'test-product.dot': { name: 'Charlie', uri: '//Charlie' } },
     });
 
     try {
-      expect(await getProductPublicKey(page, host.url)).toBe(keyOf('//Charlie'));
+      expect(await getProductPublicKey(page, host.url)).toBe(
+        u8aToHex(productAccount('//Charlie', 0).publicKey),
+      );
     } finally {
       await host.close();
     }
   });
 
-  test.fixme('unmapped product accounts fall back to derivation', async ({ page }) => {
+  test('unmapped products fall back to the derived subtree', async ({ page }) => {
     const host = await createTestHostServer({
       productUrl: productServer.url,
       accounts: ['bob'],
-      productAccounts: {
-        'other-app/0': 'alice', // different key, won't match
-      },
+      productAccounts: { 'other-app.dot': 'alice' }, // different product, won't match
     });
 
     try {
-      // "test-product.dot/0" is NOT in productAccounts, so it derives.
-      expect(await getProductPublicKey(page, host.url)).toBe(keyOf('//Bob//test-product.dot/0'));
+      expect(await getProductPublicKey(page, host.url)).toBe(
+        u8aToHex(productAccount('//Bob//test-product.dot', 0).publicKey),
+      );
     } finally {
       await host.close();
     }
@@ -1234,11 +1253,12 @@ test.describe('Sign raw', () => {
       );
       expect(result.signature).toMatch(/^0x[0-9a-f]{128}$/);
 
-      // Signed by the key THIS HOST resolves for the handle. Note that that is
-      // not the account the core reports to the product for the same handle —
-      // see the note on `Product account derivation` above; when that defect is
-      // fixed this expectation moves to the soft-derived key.
-      const signer = deriveDev('Alice', 'test-product.dot/0').publicKey;
+      // The signer is the product's subtree soft-derived at index_bytes(0) —
+      // the same key the core reports for this handle. `Product account
+      // derivation` above checks that equality against the reported address
+      // itself; this pins the derivation path.
+      const signer = deriveSoft(deriveFromUri('//Alice//test-product.dot'), indexBytes(0))
+        .publicKey;
       expect(
         verify(watermarked(hexToU8a(payload)), hexToU8a(result.signature), signer),
       ).toBe(true);
@@ -1353,7 +1373,9 @@ test.describe('Create transaction', () => {
       expect(tx.addressType).toBe(0x00); // MultiAddress::Id
       expect(tx.signatureType).toBe(0x01); // MultiSignature::Sr25519
       expect(Array.from(tx.callData)).toEqual([0, 0]);
-      expect(u8aToHex(tx.signer)).toBe(keyOf('//Alice//test-product.dot/0'));
+      expect(u8aToHex(tx.signer)).toBe(
+        u8aToHex(deriveSoft(deriveFromUri('//Alice//test-product.dot'), indexBytes(0)).publicKey),
+      );
 
       // signing payload = callData || extras || additionalSigned; here just callData
       expect(verify(tx.callData, tx.signature, tx.signer)).toBe(true);
@@ -1519,10 +1541,18 @@ test.describe('Session and connection state', () => {
       expect(underBob.signature).not.toBe(underAlice.signature);
       const signed = watermarked(hexToU8a(payload));
       expect(
-        verify(signed, hexToU8a(underAlice.signature), deriveDev('Alice', 'test-product.dot/0').publicKey),
+        verify(
+          signed,
+          hexToU8a(underAlice.signature),
+          deriveSoft(deriveFromUri('//Alice//test-product.dot'), indexBytes(0)).publicKey,
+        ),
       ).toBe(true);
       expect(
-        verify(signed, hexToU8a(underBob.signature), deriveDev('Bob', 'test-product.dot/0').publicKey),
+        verify(
+          signed,
+          hexToU8a(underBob.signature),
+          deriveSoft(deriveFromUri('//Bob//test-product.dot'), indexBytes(0)).publicKey,
+        ),
       ).toBe(true);
 
       // The signing log survives the switch: both signatures are on it.

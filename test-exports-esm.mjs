@@ -115,10 +115,12 @@ describe('ESM import("@parity/host-api-test-sdk")', () => {
     });
 
     it('passes productAccounts to host config when set', async () => {
+      // Keys are bare product identifiers: the entry replaces a product's
+      // account SUBTREE, which is the only granularity the core leaves a host.
       serverWithMap = await sdk.createTestHostServer({
         productUrl: 'http://localhost:3001',
         accounts: ['bob'],
-        productAccounts: { 'myapp.dot/0': 'bob', 'myapp.dot/2': 'charlie' },
+        productAccounts: { 'myapp.dot': 'bob', 'other.dot': 'charlie' },
       });
 
       const res = await fetch(serverWithMap.url);
@@ -128,8 +130,20 @@ describe('ESM import("@parity/host-api-test-sdk")', () => {
       assert.ok(match, 'config found in page');
       const config = JSON.parse(match[1]);
       assert.ok(config.productAccounts, 'productAccounts present');
-      assert.strictEqual(config.productAccounts['myapp.dot/0'].uri, '//Bob');
-      assert.strictEqual(config.productAccounts['myapp.dot/2'].uri, '//Charlie');
+      assert.strictEqual(config.productAccounts['myapp.dot'].uri, '//Bob');
+      assert.strictEqual(config.productAccounts['other.dot'].uri, '//Charlie');
+
+      // A pre-0.13 per-index key cannot be honoured and must not be accepted
+      // silently: the core derives indexed accounts itself.
+      await assert.rejects(
+        () =>
+          sdk.createTestHostServer({
+            productUrl: 'http://localhost:3001',
+            accounts: ['bob'],
+            productAccounts: { 'myapp.dot/0': 'bob' },
+          }),
+        /product identifiers, not "dotnsId\/index"/,
+      );
     });
 
     it('omits productAccounts from config when not set', async () => {

@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { canonicalSecretKey, deriveDev, deriveFromUri } from './dev-accounts.js';
+import { HDKD, getPublicKey, secretFromSeed } from '@scure/sr25519';
+import { entropyToMiniSecret, ss58Address } from '@polkadot-labs/hdkd-helpers';
+import { canonicalSecretKey, deriveDev, deriveFromUri, deriveSoft } from './dev-accounts.js';
 
 describe('dev account derivation', () => {
   it('reproduces the canonical dev addresses', () => {
@@ -56,6 +58,78 @@ describe('dev account derivation', () => {
 
     it('refuses a secret that is not 64 bytes', () => {
       expect(() => canonicalSecretKey(new Uint8Array(32))).toThrow(/64 bytes/);
+    });
+  });
+
+  describe('deriveSoft', () => {
+    const hex = (bytes: Uint8Array) =>
+      Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+
+    /** SCALE chain code for a hard string junction, as `deriveDev` builds it. */
+    const junction = (label: string) => {
+      const encoded = new TextEncoder().encode(label);
+      const cc = new Uint8Array(32);
+      cc[0] = encoded.length << 2;
+      cc.set(encoded, 1);
+      return cc;
+    };
+
+    /**
+     * Cross-implementation check against schnorrkel, NOT a self-computed pin.
+     *
+     * The three expected values below are the ones the core's own Rust tests
+     * assert in `truapi-server/src/host_logic/product_account.rs`
+     * (`root_keypair_from_entropy_regression_pin` and
+     * `wire_index_derivation_matches_the_mobile_vector`), where schnorrkel
+     * computed them. Reproducing the last one here proves `HDKD.secretSoft`
+     * is the counterpart of `derived_key_simple(ChainCode(cc), [])` — the
+     * junction `derive_product_public_key` applies — down to the byte.
+     */
+    it("reproduces schnorrkel's product-account vector", () => {
+      const root = secretFromSeed(entropyToMiniSecret(new Uint8Array(16).fill(0xab)));
+      expect(hex(getPublicKey(root))).toBe(
+        '0062ba8ae929ea64bc2ad6f21359e96a29e236a41d376d1c5ba76491da94fc72',
+      );
+
+      // `//product//myapp.dot`, the hard subtree the core firewalls a product
+      // behind and the only thing it asks a host for.
+      const subtreeSecret = HDKD.secretHard(
+        HDKD.secretHard(root, junction('product')),
+        junction('myapp.dot'),
+      );
+      const publicKey = getPublicKey(subtreeSecret);
+      const subtree = {
+        secretKey: subtreeSecret,
+        publicKey,
+        address: ss58Address(publicKey, 42),
+      };
+
+      // `derivation_index_bytes(DerivationIndex::Index(0))`, spelled out from
+      // the core's own `index_bytes_matches_ios_vector` rather than recomputed,
+      // so this test does not lean on `product-accounts.ts`.
+      const indexZero = Uint8Array.from(
+        '0000000012e86013736c5498f050b03cdc16957dff0e422fb92ca77ec3ab168f'.match(/../g)!,
+        (byte) => Number.parseInt(byte, 16),
+      );
+      const account = deriveSoft(subtree, indexZero);
+
+      expect(hex(account.publicKey)).toBe(
+        '1c1ae478b564572f806ffa6352b4273d612beb01610b19f4e5bf444521cd5b5c',
+      );
+      expect(account.address).toBe('5ChZBnBw9eDQUMBhnXUKrGMdK5MTfGrca3T1xZZtBQhW8eis');
+      // The secret and public halves of the junction agree, which is what lets
+      // the core derive an address this host can then sign for.
+      expect(hex(HDKD.publicSoft(subtree.publicKey, indexZero))).toBe(hex(account.publicKey));
+    });
+
+    it('is deterministic: the same parent and chain code give the same secret', () => {
+      const alice = deriveDev('Alice');
+      const cc = new Uint8Array(32).fill(7);
+      expect(deriveSoft(alice, cc).secretKey).toEqual(deriveSoft(alice, cc).secretKey);
+    });
+
+    it('refuses a chain code that is not 32 bytes', () => {
+      expect(() => deriveSoft(deriveDev('Alice'), new Uint8Array(16))).toThrow(/32 bytes/);
     });
   });
 });

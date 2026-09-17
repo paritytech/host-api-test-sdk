@@ -153,12 +153,6 @@ export function buildControlApi(options: ControlApiOptions): TestHostAPI {
       return [...state.grantedPermissions];
     },
 
-    setEnforcePermissions(_enforce: boolean) {
-      // Signing is not gated here: it leaves for the paired wallet over the
-      // SSO channel, and the core enforces `ChainSubmit` itself at
-      // `transaction_broadcast`. Kept so existing tests keep working.
-    },
-
     getPermissionLog() {
       return [...state.permissionLog];
     },

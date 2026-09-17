@@ -43,9 +43,6 @@ export interface TestHost {
   /** List currently granted permissions */
   getGrantedPermissions(): Promise<string[]>;
 
-  /** Enable or disable permission enforcement on signing (default: enabled) */
-  setEnforcePermissions(enforce: boolean): Promise<void>;
-
   /** Get the log of all permission requests and their outcomes */
   getPermissionLog(): Promise<PermissionLogEntry[]>;
 
@@ -137,7 +134,8 @@ export interface TestHostFixtureOptions {
   accounts?: CreateTestHostOptions['accounts'];
   /** Networks the host can route (default: [PASEO_ASSET_HUB]) */
   networks?: CreateTestHostOptions['networks'];
-  /** Map product account requests to specific accounts (see CreateTestHostOptions.productAccounts) */
+  /** Map a product's account subtree to a specific account, keyed by the bare
+   * product id (see `CreateTestHostOptions.productAccounts`) */
   productAccounts?: CreateTestHostOptions['productAccounts'];
   /**
    * Trusted executable kind declared for the product (default: `'App'`).
@@ -204,10 +202,6 @@ export function createTestHostFixture(defaults: TestHostFixtureOptions) {
 
         async getGrantedPermissions() {
           return page.evaluate(() => window.__TEST_HOST__.getGrantedPermissions());
-        },
-
-        async setEnforcePermissions(enforce: boolean) {
-          await page.evaluate((e) => window.__TEST_HOST__.setEnforcePermissions(e), enforce);
         },
 
         async getPermissionLog() {

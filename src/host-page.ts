@@ -28,6 +28,18 @@ export function generateHostPage(config: HostPageConfig): string {
   if (config.productAccounts) {
     productAccountConfigs = {};
     for (const [key, value] of Object.entries(config.productAccounts)) {
+      // A pre-0.13 `"dotnsId/index"` key can no longer be honoured: the core
+      // derives indexed accounts itself from the product subtree and never
+      // asks the host for one. Silently ignoring such a key would leave the
+      // caller believing an address had moved when it had not, so it is a
+      // hard error that names the replacement.
+      if (key.includes('/')) {
+        throw new Error(
+          `productAccounts keys are product identifiers, not "dotnsId/index": ` +
+            `use "${key.split('/')[0]}" to move the whole product subtree. ` +
+            `The core derives every indexed account from that subtree itself.`,
+        );
+      }
       productAccountConfigs[key] = resolveAccount(value);
     }
   }

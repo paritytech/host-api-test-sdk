@@ -7,24 +7,22 @@
 > [!WARNING]
 > The following is a prototype, reference implementation, and proof-of-concept. This open source code is provided for research, experimentation, and developer education only. This code has not been audited, is actively experimental, and may contain bugs, vulnerabilities, or incomplete features. Use at your own risk.
 
-Lightweight test host for E2E testing embedded Polkadot dapps that use the Spektr host-container protocol (`@novasamatech/host-container`).
+Lightweight test host for E2E testing embedded Polkadot products built on [TrUAPI](https://github.com/paritytech/truapi) — dev accounts that auto-sign with no prompts, no Docker, no wallet, and no network.
 
-> **Upstream contract:** `0.12.x` tracks `@novasamatech/host-api`, `host-container`, and `host-api-wrapper` at `^0.9.1`, and serves products on `@parity/truapi` `^0.6.0`. v0.9 is wire-incompatible with v0.8 (RFC-0022 changed the product-account selector on the wire) — your product side must be on the same minor as the test host.
+> **Upstream contract:** `0.13.x` runs the TrUAPI core itself — `@parity/truapi-host` `0.17.0` (the Rust core compiled to WebAssembly), `@parity/truapi-provider` `0.2.0` for chain transport, and `@parity/truapi` `0.17.0` for the protocol codecs. **Your product must boot through `@parity/truapi/sandbox` on the same `0.17` minor.** A product on `@novasamatech/host-api-wrapper`, or on any earlier truapi minor, will not connect: the old `@novasamatech/host-container` protocol is gone entirely.
 
 ## Why
 
-Products built with `@novasamatech/host-api-wrapper` (formerly `@novasamatech/product-sdk`) run inside an iframe and communicate with the host via `postMessage`. The SDK injects `window.injectedWeb3.spektr` only when it detects a real parent frame running `@novasamatech/host-container`.
+A TrUAPI product runs inside an iframe and speaks the protocol over a `MessagePort` to a host that runs the core. In production that host is a real wallet: accounts, an SSO pairing with a signing device, a chain connection, and a human tapping "approve" on every signature.
 
-To E2E test a product today you'd need the full triangle-web-host running — Next.js, React, wallet UI, DotNS, Service Workers. That's heavy and unnecessary for product tests.
+To E2E test a product you do not want any of that. This package gives you a **thin host page** that:
 
-This package gives you a **thin host page** that:
-
-- Embeds your product in an iframe with the real Spektr protocol
-- Injects dev accounts (Alice, Bob, ...) with known keypairs
-- Auto-signs all extrinsic and raw signing requests — no popups
-- Proxies chain RPC via WebSocket
-- Exposes a control API for Playwright assertions (signing log, account switching)
-- Handles remote permission requests (auto-approve by default, configurable per test)
+- Embeds your product in an iframe and runs the real TrUAPI core (as WebAssembly, in a Web Worker)
+- Provides dev accounts (Alice, Bob, …) with known keypairs
+- **Auto-signs every signing request, with no prompts** — the host plays both ends of the SSO session in-page
+- Routes product chain traffic by genesis hash to the RPC endpoints you configure
+- Exposes a control API for Playwright assertions (signing log, permission log, account switching, chat, preimages, theme)
+- Answers remote and device permission requests (auto-approve by default, configurable per test)
 
 No Docker, no React, no wallet UI. Just `pnpm add -D` and write tests.
 
@@ -61,15 +59,13 @@ export { expect };
 import { test, expect } from "./setup";
 
 test("transfer flow", async ({ testHost }) => {
+  // Wait until the product has actually spoken to the host.
+  await testHost.waitForConnection();
   const frame = testHost.productFrame();
 
-  // Product receives Alice's account via Spektr protocol
-  await expect(frame.getByText("Alice")).toBeVisible();
-
-  // Interact with the product UI
   await frame.getByRole("button", { name: "Transfer" }).click();
 
-  // Signing happens automatically — verify it was requested
+  // Signing happens automatically — verify it was requested.
   const log = await testHost.getSigningLog();
   expect(log).toHaveLength(1);
   expect(log[0].type).toBe("payload");
@@ -127,6 +123,7 @@ const network: NetworkConfig = {
   rpcUrl: "ws://127.0.0.1:9944",
   tokenSymbol: "WND",
   tokenDecimals: 12,
+  chain: "AssetHub", // optional protocol role, reported via supportedChains()
 };
 
 const server = await createTestHostServer({
@@ -135,9 +132,13 @@ const server = await createTestHostServer({
 });
 ```
 
+A network with no `chain` is still routable by genesis hash; it is simply left out of `supportedChains()` rather than labelled by guesswork.
+
+**Signing never touches a network.** The People chain is served in-page by a loopback statement store, which is what carries the SSO signing round trip. Only a product's own chain calls go out to `rpcUrl`, so a test that never reads chain state runs fully offline.
+
 ## Permission testing
 
-The test host auto-approves all remote permission requests by default. You can change this per test to verify your product handles rejections correctly:
+The test host auto-approves all permission requests by default. You can change this per test to verify your product handles rejections correctly:
 
 ```ts
 test("handles permission rejection", async ({ testHost }) => {
@@ -159,9 +160,7 @@ test("handles permission rejection", async ({ testHost }) => {
 
 test("selective permissions", async ({ testHost }) => {
   // Custom logic: approve ChainSubmit, reject Remote
-  await testHost.setPermissionBehavior(
-    (tag) => tag === "ChainSubmit"
-  );
+  await testHost.setPermissionBehavior((tag) => tag === "ChainSubmit");
 
   // ... test product behavior ...
 });
@@ -181,45 +180,43 @@ const log = await page.evaluate(() =>
 
 ### What `permissionLog` records (and what it doesn't)
 
-The permission log is narrower than the name suggests. It records **only explicit `hostApi.permission(...)` calls** — RemotePermission requests the product makes before signing or accessing a feature. It does **not** record:
+The permission log is narrower than the name suggests. It records the two prompts the host is actually asked to answer — **remote permission requests** (`RemotePermission`, one entry per request, with its `tag` and `value`) and **device permission requests** (`Camera`, `Microphone`, `Location`, `Bluetooth`, recorded under the request name with `value: undefined`). A granted device permission also updates the iframe's `allow` attribute, matching how a real host delegates browser-level access.
 
-- **Signing requests** (`hostApi.signPayload` / `signRaw`). Signing is not gated behind a permission at the test-sdk level — that's a deliberate match with real hosts (the previous "ChainSubmit gates signing" behavior was reverted in 0.7.1). Use `getSigningLog()` as the oracle for "did signing happen".
-- **Transaction broadcast denials.** `ChainSubmit` is enforced inside `host-container` at the `transaction_broadcast` level, after signing. The container handles this internally; it never reaches the test-sdk's `handlePermission`, so it doesn't land in `permissionLog`. The current canonical oracle for "broadcast was denied" is whatever error your product surfaces in the UI; there's no test-sdk observable for it yet.
+It does **not** record:
+
+- **Signing requests.** Signing is not gated behind a permission here, deliberately: real hosts do not gate it either. A signing request leaves for the paired signer over the SSO channel and comes back as a signature. Use `getSigningLog()` as the oracle for "did signing happen".
+- **Transaction broadcast denials.** `ChainSubmit` is enforced by the core itself, at `transaction_broadcast`, after signing. It never reaches the host's permission callback, so it never lands in `permissionLog`. The oracle for "broadcast was denied" is whatever error your product surfaces.
 
 A typical flow:
 
 ```
-product → hostApi.permission(ChainSubmit) → handlePermission → permissionLog ✅
-product → hostApi.signPayload(...)        → handleSignPayload → signingLog   ✅
-product → submit signed bytes              → container's broadcast gate       ❌ invisible
+product → requestRemotePermission(ChainSubmit) → host callback → permissionLog ✅
+product → signing.signRaw(...)                 → SSO round trip → signingLog   ✅
+product → submit signed bytes                   → the core's broadcast gate     ❌ invisible
 ```
-
-If your test is asserting "permission rejected mid-session prevented submission", check the product's error UI rather than the permission log.
 
 ## How it works
 
 ```
 Playwright test
   → createTestHostServer() starts a Node HTTP server
-  → serves a single HTML page with an inlined browser bundle
-  → the page creates an <iframe src="productUrl">
-  → host-container establishes Spektr postMessage channel
-  → registers handlers: accounts, signing, chain RPC, localStorage
+  → it serves an HTML shell plus dist/host/: host-runtime.js, worker-runtime.js
+    and the two .wasm payloads
+  → the page starts the TrUAPI core in a Web Worker (Rust → WebAssembly)
+  → the page mints an SSO session for the selected dev account and activates it
+  → the page creates an <iframe src="productUrl"> and answers the product's
+    truapi-ready handshake with a transferred MessagePort
 
-Product (in iframe)
-  → truapi ≥ 0.4 (@parity/truapi/sandbox): posts truapi-ready, host answers
-    truapi-init with a transferred MessagePort — all frames flow over the port
-  → truapi 0.3 (host-api-wrapper): exchanges frames directly over window
-    postMessage; injects window.injectedWeb3.spektr
-  → gets accounts (Alice/Bob with real sr25519 public keys)
-  → signing requests → host auto-signs with dev keypair → returns signature
+Product (in iframe, @parity/truapi/sandbox)
+  → posts truapi-ready, receives truapi-init with the port, speaks the protocol
+  → account.getAccount(productAccountId) → the core derives the address from the
+    product subtree the host reported
+  → signing.signRaw / createTransaction → the core sends an encrypted request
+    over the People statement store → the in-page responder signs with the dev
+    key → the signature comes back the same way
 ```
 
-Both channels carry the same wire frames and feed the same container, so every
-handler, log, and control knob behaves identically for either product
-generation.
-
-The browser bundle (~780KB minified) includes `@novasamatech/host-container`, `@polkadot/keyring`, `@polkadot/types`, and WASM crypto. It's pre-built and inlined — consumers have zero build-time dependencies.
+The People chain is a **loopback statement store inside the page**: no node, no network, no Docker. That is what makes auto-signing possible without a wallet, and it is also why the four assets above are all a consumer needs — they are pre-built and shipped, so there are zero build-time dependencies for you.
 
 ## API reference
 
@@ -227,17 +224,28 @@ The browser bundle (~780KB minified) includes `@novasamatech/host-container`, `@
 
 | Method | Description |
 |--------|-------------|
+| `testHost.page` | The host page (contains the iframe) |
 | `testHost.productFrame()` | Playwright `FrameLocator` for the product iframe |
-| `testHost.switchAccount(name)` | Recreate container with a single account (iframe reloads) |
-| `testHost.setAccounts(names)` | Recreate container with multiple accounts |
-| `testHost.getSigningLog()` | All auto-signed payloads since last clear |
+| `testHost.waitForConnection(timeout?)` | Wait until the product's first wire frame reaches the host |
+| `testHost.getConnectionStatus()` | Product connection: `'disconnected'` until that first frame, then `'connected'` |
+| `testHost.getChainStatus()` | The host's own session: `'connecting'`, `'connected'`, or `'disconnected'` |
+| `testHost.switchAccount(name)` | Re-mint the session under one account (the iframe is **not** reloaded) |
+| `testHost.setAccounts(names)` | Re-mint the session under several accounts |
+| `testHost.getSigningLog()` | All auto-signed requests since last clear |
 | `testHost.clearSigningLog()` | Reset the signing log |
-| `testHost.setPermissionBehavior(behavior)` | Set permission response: `'approve-all'`, `'reject-all'`, or `(tag, value) => boolean` |
-| `testHost.getPermissionLog()` | All permission requests and outcomes since last clear |
-| `testHost.clearPermissionLog()` | Reset the permission log |
-| `testHost.waitForConnection(timeout?)` | Wait for host-api-wrapper to connect |
+| `testHost.setPermissionBehavior(behavior)` | `'approve-all'`, `'reject-all'`, or `(tag, value) => boolean` |
+| `testHost.grantPermission(tag)` / `revokePermission(tag)` / `getGrantedPermissions()` | Pre-grant, revoke, inspect |
+| `testHost.getPermissionLog()` / `clearPermissionLog()` | Permission requests and outcomes |
+| `testHost.getNavigationLog()` / `clearNavigationLog()` | `navigateTo` attempts from the product |
+| `testHost.getNotificationLog()` / `clearNotificationLog()` | Push notifications, including scheduled and cancelled ones |
+| `testHost.getChatRooms()` / `getChatBots()` / `getChatMessageLog()` / `clearChatState()` | Chat state (needs `executionKind: 'Worker'`) |
+| `testHost.injectChatAction(action)` | Deliver an incoming chat action to the product; rejects if it cannot be delivered |
+| `testHost.getPreimages()` / `seedPreimage(value)` / `clearPreimages()` | Preimage store |
+| `testHost.getTheme()` / `setTheme(theme)` | Host theme (`{ name, variant }`, or the `'light' \| 'dark'` shorthand) |
 
 Fixture options: `productUrl`, `accounts`, `networks`, `productAccounts`, `executionKind` (see [Execution kind](#execution-kind)).
+
+Every one of these is also on `window.__TEST_HOST__` inside the host page, synchronously, for tests that do not use the fixture.
 
 ### Dev accounts
 
@@ -250,40 +258,46 @@ Fixture options: `productUrl`, `accounts`, `networks`, `productAccounts`, `execu
 | `eve` | `//Eve` | `5HGjWAeFDfFCWPsjFQdVV2Msvz2XtMktvgocEZcCj68kUMaw` |
 | `ferdie` | `//Ferdie` | `5CiPPseXPECbkjWCa6MnjNokrgYjMqmKndv2rSneWj6JDfPN` |
 
-These are standard Substrate dev accounts (sr25519, ss58Format=42). Products may re-encode them to a different SS58 prefix — the host matches by public key.
+These are the standard Substrate dev accounts (sr25519, ss58Format=42), and they have not moved across any release. Products may re-encode them to a different SS58 prefix — the host matches by public key.
 
-Both `accounts` and `productAccounts` accept dev account names or custom `{ name, uri }` objects. The `uri` is any [Substrate URI](https://polkadot-js.github.io/docs/keyring/start/suri/) — dev paths, mnemonics, or hex seeds:
+Both `accounts` and `productAccounts` accept dev account names or custom `{ name, uri }` objects:
 
 ```ts
 createTestHostFixture({
   productUrl: 'http://localhost:3000',
   accounts: [
     'bob',
-    { name: 'From mnemonic', uri: 'word1 word2 word3 ... word12' },
-    { name: 'Derived', uri: '//Alice//custom/0' },
+    { name: 'Derived', uri: '//Alice//custom' },
   ],
 });
 ```
 
-> **Product accounts**: In production, `host-api-wrapper` derives a unique keypair per product via `getProductAccount(dotnsId, index)`. By default the test host does the same derivation. Use `productAccounts` to map specific identities to funded dev accounts:
->
-> ```ts
-> createTestHostFixture({
->   productUrl: 'http://localhost:3000',
->   accounts: ['bob'],
->   productAccounts: {
->     'myapp.dot/0': 'bob',      // main account → //Bob (funded)
->     'myapp.dot/2': 'charlie',  // secondary → //Charlie (funded)
->     'myapp.dot/5': { name: 'Custom', uri: '//My//Custom' },
->   },
-> });
-> ```
->
-> Unmapped identities fall back to production-style derivation (`//Bob//dotnsId/index`). If `accounts: []` (unsigned host), unmapped `getProductAccount` calls return `err(RequestCredentialsErr.NotConnected)` and `getProductAccountAlias` returns `err(GetAliasErr.Unknown)`, matching `polkadot-desktop`. Pre-mapped entries in `productAccounts` are still served.
->
-> **Selector keys**: since RFC-0022 a product addresses its accounts with `Index(n)` or `Raw(32 bytes)` rather than a bare number. `productAccounts` keys are unchanged for plain indices — `"myapp.dot/0"` still means `Index(0)`, and the derived address is the same as before. A raw selector is keyed by its hex, e.g. `"myapp.dot/0x1234…"`.
->
-> **Known issue (0.13.0)**: an *indexed* key no longer steers what `getAccount` reports. The core asks the host only for the product's hard subtree and then soft-derives each account itself, so only a subtree-level key — `productAccounts: { "myapp.dot": "bob" }` — still moves the address. The host also still hard-derives `//Selected//myapp.dot/0` when it signs for that handle, so a product's own signature does not verify against the address it was given. See the CHANGELOG for the full diagnosis; the fix is a breaking change held for its own release.
+> [!IMPORTANT]
+> **`uri` is a path of hard junctions, not a full polkadot-js SURI.** The host derives keys in-page with `@scure/sr25519` and accepts only `//`-separated hard junctions: `'//Alice'`, `'//Alice//custom'`. Mnemonics and hex seeds are **not** supported and throw, and a `/` inside a segment (`'//Alice//custom/0'`) is part of that junction's *label* — it is not a polkadot-js soft junction and will not produce the address polkadot-js would.
+
+### Product accounts
+
+In production a product gets its own keypairs, derived from the account holder's key rather than shared with it. The core does that derivation itself: it asks the host **once** for the product's hard subtree and then derives every indexed account from it as a soft junction, `index_bytes(n)`. The host's whole say in the matter is which keypair that subtree is.
+
+By default the subtree is `//Selected//dotnsId` under the selected account, so `getAccount("myapp.dot", 0)` for `accounts: ['bob']` lands on the soft child of `//Bob//myapp.dot`.
+
+Use `productAccounts` to point a product's subtree somewhere else — a funded account, say. Keys are **bare product identifiers**:
+
+```ts
+createTestHostFixture({
+  productUrl: 'http://localhost:3000',
+  accounts: ['bob'],
+  productAccounts: {
+    'myapp.dot': 'charlie',                              // subtree → //Charlie
+    'other.dot': { name: 'Custom', uri: '//My//Custom' },
+  },
+});
+```
+
+Unmapped products fall back to the default subtree. Because the entry replaces the subtree, it moves **all** of that product's indexed accounts together — index 0, index 5 and a `Raw` selector alike.
+
+> [!WARNING]
+> **Per-index keys are gone.** `productAccounts: { 'myapp.dot/0': 'bob' }` threw away half the story — the core never asks the host about index `0`, so such a key could not move the address — and it is now rejected with an error naming the replacement. Use the bare product id. See [Migrating to 0.13](#migrating-from-012x-to-0130).
 
 ### Execution kind
 
@@ -300,31 +314,9 @@ The same option is accepted by `createTestHostServer`, and the type is exported 
 
 A chat `icon` is validated by the core, not passed through: it must be empty, an `https` URL, or an inline `data:` image of an allowed media type. Anything else is refused with *"icon carries a scheme that cannot be rendered"*.
 
-### Payment control
-
-The host implements RFC-0006 (balance / topUp / requestPayment / status) and accepts the RFC-0021 `Coins` top-up variant. Every `paymentTopUp` call is recorded in `getPaymentLog()` with the attempted `amount`, `source`, and optional `purse` selector, regardless of outcome.
-
-`setPaymentTopUpBehavior(...)` drives the host into the partial-credit or reject error paths so tests can cover them:
-
-```ts
-// Default — credit full amount, resolve with ok(undefined).
-await testHost.setPaymentTopUpBehavior('ok');
-
-// Credit `credited` and reject with PaymentTopUpErr.PartialPayment({ credited }).
-// The balance subscription receives the partial credit before the promise rejects,
-// matching how real hosts report a partially-fulfilled `Coins` top-up.
-await testHost.setPaymentTopUpBehavior({ type: 'partial', credited: 200n });
-
-// Credit nothing and reject.
-await testHost.setPaymentTopUpBehavior({ type: 'reject', reason: 'InvalidSource' });
-await testHost.setPaymentTopUpBehavior({ type: 'reject', reason: 'InsufficientFunds' });
-```
-
-Other payment helpers: `setPaymentBalance(amount)`, `getPaymentLog()`, `clearPaymentLog()`, `simulatePaymentStatus(paymentId, status)`.
-
 ### Theme control
 
-The host delivers `host_theme_subscribe` as a `{ name, variant }` struct (upstream v0.8). `setTheme('light' | 'dark')` is a shorthand that maps to `{ name: { tag: 'Default', value: undefined }, variant: 'Light' | 'Dark' }`; pass the full struct to exercise custom-named theme branches:
+The host delivers the theme subscription as a `{ name, variant }` struct. `setTheme('light' | 'dark')` is a shorthand that maps to `{ name: { tag: 'Default', value: undefined }, variant: 'Light' | 'Dark' }`; pass the full struct to exercise custom-named theme branches:
 
 ```ts
 await testHost.setTheme('dark'); // shorthand → Default / Dark
@@ -348,7 +340,7 @@ const theme = await testHost.getTheme();
 
 ### Account switching
 
-Product-sdk's `accounts.subscribe()` is one-shot. Changing accounts requires disposing the container and recreating it, which reloads the iframe. This matches how production hosts work. For multi-actor tests, prefer `setAccounts(['alice', 'bob'])` upfront and use the product's own account selector.
+`switchAccount` / `setAccounts` re-mint the host's SSO session under the new account and replace the product's core connection underneath it. The **iframe is not reloaded**: its `MessagePort` is transferred exactly once at load and cannot be handed over again, so the product keeps running and is not told. Reload the page yourself if a test needs the product to re-initialise, and wait for `getChainStatus() === 'connected'` before expecting a signature — a switch that leaves it `'disconnected'` means no signature will come back.
 
 ## Contributing
 
@@ -362,16 +354,21 @@ Contributions are welcome! Please open an issue first if you want to discuss a l
 ### Development
 
 ```bash
-# Install dependencies
 pnpm install
 
-# Build everything (browser bundle + TypeScript + CJS bundles)
+# Build everything (browser assets + TypeScript + CJS bundles)
 pnpm run build
 
-# Run tests (ESM + CJS export verification)
+# Unit tests
+pnpm run test:unit
+
+# ESM + CJS export verification
 pnpm test
 
-# Typecheck without emitting
+# Playwright E2E against a real product in an iframe
+pnpm run test:integration
+
+# Typecheck without emitting (two projects: Node side and browser side)
 pnpm run typecheck
 ```
 
@@ -379,24 +376,43 @@ pnpm run typecheck
 
 ```
 src/
-├── index.ts                  # Main entry point
-├── types.ts                  # Shared type definitions
-├── server.ts                 # Node HTTP server
+├── index.ts                  # Package entry point
+├── types.ts                  # Published type definitions
+├── server.ts                 # Node HTTP server (serves the page and dist/host/)
 ├── accounts.ts               # Dev account definitions
 ├── networks.ts               # Built-in network configs
-├── host-page.ts              # HTML page generation
-├── browser/
-│   └── host-runtime.ts       # Browser runtime (bundled into IIFE)
+├── host-page.ts              # HTML shell generation
+├── browser/                  # Everything that runs in the page (bundled by esbuild)
+│   ├── host-runtime.ts       #   boot: worker, session, iframe, control API
+│   ├── host-worker.ts        #   the core's Web Worker entry
+│   ├── control-api.ts        #   window.__TEST_HOST__
+│   ├── dev-accounts.ts       #   in-page sr25519 derivation
+│   ├── product-accounts.ts   #   product subtree + soft index derivation
+│   ├── loopback-chain.ts     #   the in-page People statement store
+│   ├── callbacks/            #   host callbacks the core calls
+│   ├── signing/              #   extrinsic assembly and raw signing
+│   └── sso/                  #   the paired-signer half of the SSO session
 └── playwright/
     ├── index.ts              # Playwright entry point
     └── fixture.ts            # Playwright test fixture
 ```
 
-The build produces three outputs:
+The build produces three kinds of output:
 
-1. **Browser bundle** (`dist/host-bundle.js`) — IIFE built with esbuild, inlined into the host page at runtime
-2. **ESM modules** (`dist/*.js`) — TypeScript compiled with `tsc`
-3. **CJS bundles** (`dist/*.cjs`) — bundled with esbuild for CommonJS compatibility
+1. **Browser assets** (`dist/host/`) — ESM chunks built with esbuild, plus the two `.wasm` payloads, served by the test host's own HTTP server
+2. **ESM modules** (`dist/*.js`) — the Node-side API compiled with `tsc`
+3. **CJS bundles** (`dist/index.cjs`, `dist/playwright.cjs`) — the same API for CommonJS consumers
+
+## Migrating from 0.12.x to 0.13.0
+
+0.13 replaces the whole upstream stack. See the [CHANGELOG](./CHANGELOG.md) for the full list; the parts that touch test code are:
+
+- **Your product must be on `@parity/truapi` `0.17` and boot through `@parity/truapi/sandbox`.** There is no `@novasamatech/host-container` protocol any more, so both sides move together.
+- **`productAccounts` keys are bare product ids.** `'myapp.dot/0': 'bob'` → `'myapp.dot': 'bob'`, and it now moves every index of that product. A per-index key throws.
+- **Product-account addresses moved**, because the core derives them now (a soft junction over the product subtree) rather than asking the host. Root dev accounts — `//Alice` and friends — are unchanged. If a test pins a product-account address, re-read it from the host.
+- **Removed controls**: `getSubmittedStatements`, `injectStatement`, `clearStatements`, `setLoginBehavior`, `getIsAuthenticated`, `simulateDisconnect`, `simulateReconnect`, `setPaymentBalance`, `getPaymentLog`, `clearPaymentLog`, `setPaymentTopUpBehavior`, `simulatePaymentStatus`, `setEnforcePermissions`. The removed types are `LoginBehavior`, `PaymentLogEntry`, `PaymentTopUpBehavior` and `StatementSubmissionLogEntry`.
+- **`injectChatAction` is now async** and takes the protocol's own action type (`ChatActionInput`); `await` it.
+- **Chat needs `executionKind: 'Worker'`.**
 
 ## Migrating from 0.1.x to 0.2.x
 
@@ -432,4 +448,4 @@ For Parity's security disclosure process, and Bug Bounty program, feel free to v
 
 ## License
 
-[MIT](./LICENSE)
+[MIT](./LICENSE). Third-party components are listed in [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md).

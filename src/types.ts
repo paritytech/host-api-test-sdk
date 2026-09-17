@@ -92,14 +92,17 @@ export type DevAccountName = 'alice' | 'bob' | 'charlie' | 'dave' | 'eve' | 'fer
 export interface DevAccountInfo {
   name: string;
   /**
-   * Substrate URI — passed to `@polkadot/keyring.addFromUri()`.
+   * A path of HARD junctions under the dev seed.
    *
-   * Examples:
+   * The host derives in-page with `@scure/sr25519` — there is no keyring — so
+   * this is narrower than a polkadot-js SURI:
    *  - `'//Alice'` — dev account
-   *  - `'//Alice//myapp/0'` — derivation from dev seed
-   *  - `'word1 word2 ... word12'` — mnemonic
-   *  - `'word1 word2 ... word12//hard/soft'` — mnemonic + derivation
-   *  - `'0xabcdef...'` — hex seed
+   *  - `'//Alice//myapp'` — a further hard junction
+   *
+   * A mnemonic or a hex seed is NOT accepted and throws, and a `/` inside a
+   * segment (`'//Alice//myapp/0'`) is part of that junction's label rather
+   * than a polkadot-js soft junction, so it does not name the address
+   * polkadot-js would give it.
    */
   uri: string;
 }
@@ -136,25 +139,29 @@ export interface CreateTestHostOptions {
    */
   executionKind?: ProductExecutionKind;
   /**
-   * Map product account requests to specific accounts.
+   * Map a product's account SUBTREE to a specific account.
    *
-   * Keys are `"dotnsId/derivationIndex"` (e.g. `"myapp.dot/0"`).
-   * Values are dev account names or custom `{ name, uri }` objects.
+   * Keys are bare product identifiers (e.g. `"myapp.dot"`). Values are dev
+   * account names or custom `{ name, uri }` objects.
    *
-   * When a product calls `getProductAccount(dotnsId, index)`:
-   *   - If `productAccounts` has a matching key → return that account
-   *   - Otherwise → derive as production: `//Bob//dotnsId/index`
-   *
-   * This lets you map product accounts to funded dev accounts while
-   * keeping different derivation indices distinct:
+   * The host answers one question per product — which keypair is that
+   * product's subtree root — and the core derives every indexed account from
+   * it itself, as a soft junction. So an entry moves ALL of a product's
+   * accounts together:
    *
    * ```ts
    * productAccounts: {
-   *   'myapp.dot/0': 'bob',      // main account → //Bob (funded)
-   *   'myapp.dot/2': 'charlie',  // secondary → //Charlie (funded)
-   *   'myapp.dot/5': { name: 'Custom', uri: '//My//Custom' },
+   *   'myapp.dot': 'bob',                                // subtree → //Bob
+   *   'other.dot': { name: 'Custom', uri: '//My//Custom' },
    * }
    * ```
+   *
+   * Without an entry the subtree is `//Selected//dotnsId` under the selected
+   * account, and index `n` is that subtree soft-derived at `index_bytes(n)`.
+   *
+   * Per-index keys (`"myapp.dot/0"`) are NOT accepted and throw: the core no
+   * longer asks the host for an indexed account, so such a key could not move
+   * an address. Use the bare product id instead.
    */
   productAccounts?: Record<string, Account>;
 }
@@ -271,15 +278,6 @@ export interface TestHostAPI {
   revokePermission(tag: string): void;
   /** List currently granted permissions. */
   getGrantedPermissions(): string[];
-  /**
-   * Record whether permission enforcement is expected on signing.
-   *
-   * Signing is not gated by this host: it travels to the paired wallet over
-   * the SSO channel, and the core enforces `ChainSubmit` at
-   * `transaction_broadcast` itself. The flag is kept so existing tests keep
-   * working, but nothing in this host reads it.
-   */
-  setEnforcePermissions(enforce: boolean): void;
   /** Get the log of all permission requests and their outcomes. */
   getPermissionLog(): PermissionLogEntry[];
   /** Clear the permission log. */

@@ -2,20 +2,53 @@
 
 ## 0.13.0
 
+A rewrite of everything below the public API: the host no longer speaks the
+`@novasamatech/host-container` protocol, it **runs the TrUAPI core itself** —
+`truapi-server` compiled to WebAssembly, in a Web Worker. Both sides of the
+wire move together, so a product must be on `@parity/truapi` 0.17 and boot
+through `@parity/truapi/sandbox`.
+
+### Breaking changes
+
+- **Upstream stack replaced.** Every `@novasamatech/*` dependency is gone: `host-api`, `host-container` and `host-api-wrapper` are no longer installed, imported or bundled. In their place: `@parity/truapi` `0.17.0` (a real runtime dependency, because the published type declarations name its chat types), plus `@parity/truapi-host` `0.17.0` and `@parity/truapi-provider` `0.2.0`. A product on the old protocol, or on an earlier truapi minor, will not connect at all.
+- **Signing is an SSO round trip, not a synchronous host callback.** The core never signs. It encrypts each signing request to its paired signer and publishes it as a statement on the People chain; the host answers as that peer. To keep "no network" true, the People chain is an **in-page loopback statement store** — no node, no Docker, no RPC — and the host mints both halves of the session at boot. Tests that awaited a signature already work; tests that read `getSigningLog()` immediately after triggering an action must now await the product's own promise first.
+- **Product-account addresses moved, and `productAccounts` is keyed by the bare product id.** The core stopped asking the host for an indexed product account. It asks once for the product's hard subtree (`ProductSubtreeRequest`) and derives every account from it itself, as one soft junction — `derive_product_public_key(subtree, index_bytes(n))` (`truapi-server/src/host_logic/product_account.rs`). The host's only remaining lever is which keypair the subtree is, so:
+  - `productAccounts: { 'myapp.dot/0': 'bob' }` → `productAccounts: { 'myapp.dot': 'bob' }`. A per-index key is now **rejected with an error** naming the replacement, rather than silently ignored.
+  - An entry moves every indexed account of that product together, `Raw` selectors included.
+  - Unmapped, the subtree is still `//Selected//dotnsId`, but index `n` under it is now the soft child at `index_bytes(n)` rather than the hard junction `//Selected//dotnsId/n`. **Any test pinning a product-account address must re-read it.** Root dev accounts are untouched: `//Alice` is still `5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY`.
+- **Removed controls.** Each of these is gone from `TestHostAPI`, `window.__TEST_HOST__` and the Playwright fixture — grep your tests for them:
+  - statement store: `getSubmittedStatements`, `injectStatement`, `clearStatements`
+  - login: `setLoginBehavior`, `getIsAuthenticated`, `simulateDisconnect`, `simulateReconnect`
+  - payments: `setPaymentBalance`, `getPaymentLog`, `clearPaymentLog`, `setPaymentTopUpBehavior`, `simulatePaymentStatus`
+  - permissions: `setEnforcePermissions`
+- **Removed types.** `LoginBehavior`, `PaymentLogEntry`, `PaymentTopUpBehavior`, `StatementSubmissionLogEntry` are no longer exported from the package root.
+- **`injectChatAction` is async and typed by the protocol.** It takes `ChatActionInput` (the core's own `HostChatActionSubscribeItem`) instead of `{ roomId, peer, payload }`, and returns a promise that rejects if the action cannot be delivered. `await` it.
+- **`accounts[].uri` accepts only hard junctions.** Keys are derived in-page with `@scure/sr25519`; there is no keyring. `'//Alice'` and `'//Alice//custom'` work, a mnemonic or hex seed now throws, and `'//Alice//custom/0'` treats `custom/0` as one junction label rather than a polkadot-js soft junction.
+- **The browser bundle is no longer one inlined IIFE.** The host page is a shell that loads `dist/host/host-runtime.js`, `dist/host/worker-runtime.js` and two `.wasm` payloads from the same server. `dist/host-bundle.js` no longer exists. Nothing in a consumer's test code refers to these, but a fork that copied the page generation will need updating.
+
 ### Added
 
 - **`executionKind` option on `createTestHostServer` and the Playwright fixture** (`'App' | 'Widget' | 'Worker'`, default `'App'`). The core gates every Chat entry point on the connection's execution kind — `chat_platform_for` denies anything but `Worker` (`truapi-server/src/runtime/chat.rs`) — so a test that drives `chatCreateRoom`, `chatRegisterBot`, `chatPostMessage`, the room subscription or `injectChatAction` must declare `executionKind: 'Worker'`. The default stays `'App'` because that is what an iframe-embedded product genuinely is; declaring every product headless to unlock one modality would misreport what the host runs. `ProductExecutionKind` is exported from the package root.
+- **`getChainStatus()`** alongside `getConnectionStatus()`: the host's own session (`'connecting'` → `'connected'`, or `'disconnected'` after a failed account switch) as distinct from the product's connection. Signing travels over the session, so a switch that leaves it `'disconnected'` means no signature will come back.
+- **`NetworkConfig.chain`** — a network's protocol role (`'Relay' | 'AssetHub' | 'People' | 'Bulletin'`), reported to products through `supportedChains()`. A network that omits it is left out of that report rather than labelled by guesswork. `ChainIdentifier` is exported from the package root.
+- **`ChatActionInput` and `ChatActionPayload`** exported, for building an `injectChatAction` argument.
 
 ### Fixed
 
+- **An indexed product account was reported under one key and signed for under another.** The core reported `soft(subtree, index_bytes(n))` while the host signed with the hard derivation `//Selected//dotnsId/n`, so a product's own signature did not verify against its own address — and no `productAccounts` entry could reconcile them. The host now derives the signer with the same soft junction the core uses (`@scure/sr25519`'s `HDKD.secretSoft` over the subtree keypair, chain code `index_bytes(n)`; `Raw` selectors pass through unchanged, as `derivation_index_bytes` does). Verified against schnorrkel's own pinned vector, not just against itself: the core's `wire_index_derivation_matches_the_mobile_vector` value is reproduced byte-for-byte in `dev-accounts.spec.ts`. The four `Product account derivation` integration tests now run, and one of them signs and verifies against the address the core reported.
 - **`statement_submit` was rejected by the core, which blocked ALL signing.** The in-page loopback statement store replied with the bare JSON string `"new"`. The core reads a *field*: `result.get("status")` must be `"new"` or `"known"` (`truapi-server/src/runtime/statement_store_rpc.rs`), and `.get()` on a JSON string is `None`, so every SSO request died with `statement_submit not accepted: "new"` and no signing request ever reached the responder. The store now replies `{ "status": "new" }`.
 - **Statement subscription items were delivered in the wrong envelope.** The store pushed the SCALE statement as a bare hex `result`; the core decodes every item with `parse_new_statements_result`, which requires `{ "event": "newStatements", "data": { "statements": [...], "remaining": n } }` and otherwise fails with `malformed statement-store frame: result is not a newStatements event`. The store now sends that envelope, under the notification method name Substrate uses for this subscription.
 - **Topic filters were parsed under the wrong key spelling.** `parseFilter` matched `MatchAll` / `MatchAny`, but the core emits lower-camel `matchAll` / `matchAny`. A real filter therefore parsed as `MatchAll` with an *empty* topic list — which matches every statement — and a `matchAny` filter was silently narrowed to `matchAll`. Both spellings are now honoured, `matchAny` is probed first so it can never be narrowed, and an unreadable filter still subscribes to everything rather than to nothing.
 - **The AutoSigning capability was refused as an invalid subtree secret.** schnorrkel has two 64-byte secret encodings, and `@scure/sr25519` hands out the cofactor-multiplied (ed25519-shifted) one, which `SecretKey::from_bytes` rejects on its canonicity check. `validate_auto_signing_key` (`truapi-server/src/runtime/pairing_host.rs`) and `derive_product_keypair_from_subtree_secret` accept only the canonical form — unlike `Sr25519Signer::from_secret_bytes`, which falls back. Every raw secret this host hands the core (the AutoSigning `productRootPrivateKey` and both allowance `slotAccountKey`s) is now converted with the new `canonicalSecretKey`. Both encodings name the same scalar, so no key and no signature moves.
 
-### Known issue
+### Internal
 
-- **An indexed product account is reported and signed for under two different keys.** The core no longer asks the host for an indexed product account: it asks once for the product's hard subtree and then derives each account itself as one soft junction, `derive_product_public_key(subtree, index_bytes(n))`. This host still hard-derives `//Selected//dotnsId/index` for the same handle, which is also what it signs with, so a product's own signature does not verify against the address the core reported to it — and `productAccounts['dotnsId/index']` can no longer steer `getAccount` (only a subtree-level `productAccounts['dotnsId']` still moves the address). The four `Product account derivation` integration tests are marked `fixme` against this. Fixing it moves every product-account address and narrows `productAccounts` to subtree granularity, so it is a breaking change held for its own release.
+- `THIRD_PARTY_NOTICES.md` rewritten against what `pnpm pack` actually ships. Note the licence change it records: `truapi_provider_bg.wasm` links `smoldot` / `smoldot-light`, **GPL-3.0-or-later WITH Classpath-exception-2.0**, so the shipped tree is no longer free of copyleft as earlier releases claimed. Everything else remains MIT or Apache-2.0.
+- Unit coverage grew from 114 to 129 tests; the integration suite runs 47 with none skipped.
+
+### Downstream
+
+- **`../host-playground` pins `@parity/host-api-test-sdk` at `0.12.1`** and uses the old product bootstrap. It needs its own update against 0.13.0 — at minimum the truapi 0.17 sandbox bootstrap, the `productAccounts` key change, and any assertion that pins a product-account address.
 
 ## 0.12.1
 

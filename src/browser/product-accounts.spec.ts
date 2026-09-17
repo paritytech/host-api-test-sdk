@@ -1,67 +1,141 @@
 import { describe, expect, it } from 'vitest';
-import { deriveFromUri } from './dev-accounts.js';
-import { accountKey, resolveProductAccount, selectorOf } from './product-accounts.js';
+import { HDKD, getPublicKey, sign, verify } from '@scure/sr25519';
+import { deriveFromUri, deriveSoft } from './dev-accounts.js';
+import {
+  derivationIndexBytes,
+  indexBytes,
+  resolveProductAccount,
+  resolveProductSubtree,
+} from './product-accounts.js';
 
 /** The selected account every case below derives under. */
 const ALICE = { accounts: [{ uri: '//Alice' }] };
+
+const hex = (bytes: Uint8Array) =>
+  Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
 
 /** Pin the derivation PATH, not just the address: `dev-accounts.spec.ts` already pins addresses. */
 const derivesAt = (keypair: { address: string }, uri: string) =>
   expect(keypair.address).toBe(deriveFromUri(uri).address);
 
-describe('selectorOf', () => {
-  it('renders Index as the plain number, as the pre-migration host did', () => {
-    expect(selectorOf({ tag: 'Index', value: 0 })).toBe('0');
-    expect(selectorOf({ tag: 'Index', value: 7 })).toBe('7');
+/** The account the CORE would report for this subtree and index. */
+const coreAccount = (subtreeUri: string, index: number) =>
+  deriveSoft(deriveFromUri(subtreeUri), indexBytes(index));
+
+describe('indexBytes', () => {
+  /**
+   * The core's `index_bytes` vector, pinned in
+   * `host_logic/product_account.rs::index_bytes_matches_ios_vector` and
+   * cross-checked there against polkadot-app-ios-v2.
+   */
+  it('matches the core (and iOS) vector for index 0', () => {
+    expect(hex(indexBytes(0))).toBe(
+      '0000000012e86013736c5498f050b03cdc16957dff0e422fb92ca77ec3ab168f',
+    );
   });
 
-  it('renders Raw as lowercased hex, whichever case the wire used', () => {
-    expect(selectorOf({ tag: 'Raw', value: '0xAABB' })).toBe('0xaabb');
-    expect(selectorOf({ tag: 'Raw', value: new Uint8Array([0xaa, 0x0b]) })).toBe('0xaa0b');
+  it('puts the index little-endian in front of the magic', () => {
+    expect(Array.from(indexBytes(5).subarray(0, 4))).toEqual([5, 0, 0, 0]);
+    expect(hex(indexBytes(5).subarray(4))).toBe(hex(indexBytes(0).subarray(4)));
   });
 
-  it('has no selector for a subtree request', () => {
-    expect(selectorOf(undefined)).toBeUndefined();
-  });
-
-  it('throws on a shape it does not recognise, rather than inventing a path', () => {
-    expect(() => selectorOf({ tag: 'Something', value: 1 })).toThrow(/unsupported derivation index/);
-    expect(() => selectorOf('0')).toThrow(/unsupported derivation index/);
-    expect(() => selectorOf({ tag: 'Index', value: 'zero' })).toThrow(/unsupported derivation index/);
+  it('refuses anything that is not a u32', () => {
+    expect(() => indexBytes(-1)).toThrow(/not a u32/);
+    expect(() => indexBytes(2 ** 32)).toThrow(/not a u32/);
+    expect(() => indexBytes(1.5)).toThrow(/not a u32/);
   });
 });
 
-describe('accountKey', () => {
-  it('separates an indexed account from its subtree root', () => {
-    expect(accountKey('myapp.dot', { tag: 'Index', value: 0 })).toBe('myapp.dot/0');
-    expect(accountKey('myapp.dot', undefined)).toBe('myapp.dot');
+describe('derivationIndexBytes', () => {
+  it('routes Index through index_bytes', () => {
+    expect(hex(derivationIndexBytes({ tag: 'Index', value: 7 }))).toBe(hex(indexBytes(7)));
+  });
+
+  it('passes a Raw index through unchanged, as the core does', () => {
+    const raw = `0x${'ee'.repeat(32)}`;
+    expect(hex(derivationIndexBytes({ tag: 'Raw', value: raw }))).toBe('ee'.repeat(32));
+    expect(hex(derivationIndexBytes({ tag: 'Raw', value: new Uint8Array(32).fill(0xee) }))).toBe(
+      'ee'.repeat(32),
+    );
+  });
+
+  it('keeps raw index space disjoint from plain index space', () => {
+    // `index_bytes(0)`'s magic cannot collide with a raw index of all zeroes.
+    expect(hex(derivationIndexBytes({ tag: 'Raw', value: `0x${'00'.repeat(32)}` }))).not.toBe(
+      hex(indexBytes(0)),
+    );
+  });
+
+  it('throws on a shape it does not recognise, rather than inventing a chain code', () => {
+    expect(() => derivationIndexBytes({ tag: 'Something', value: 1 })).toThrow(
+      /unsupported derivation index/,
+    );
+    expect(() => derivationIndexBytes('0')).toThrow(/unsupported derivation index/);
+    expect(() => derivationIndexBytes({ tag: 'Index', value: 'zero' })).toThrow(
+      /unsupported derivation index/,
+    );
+    expect(() => derivationIndexBytes({ tag: 'Raw', value: '0xaabb' })).toThrow(
+      /must be 32 bytes/,
+    );
+  });
+});
+
+describe('resolveProductSubtree', () => {
+  it("derives a subtree at the product's own hard junction", () => {
+    derivesAt(resolveProductSubtree(ALICE, 'myapp.dot'), '//Alice//myapp.dot');
+  });
+
+  it('follows the selected account, so switching accounts moves the subtree', () => {
+    derivesAt(resolveProductSubtree({ accounts: [{ uri: '//Bob' }] }, 'myapp.dot'), '//Bob//myapp.dot');
+  });
+
+  it('lets a productAccounts entry replace the subtree', () => {
+    const config = { ...ALICE, productAccounts: { 'myapp.dot': { uri: '//Charlie' } } };
+    derivesAt(resolveProductSubtree(config, 'myapp.dot'), '//Charlie');
+    // Another product is untouched by the entry.
+    derivesAt(resolveProductSubtree(config, 'other.dot'), '//Alice//other.dot');
+  });
+
+  it('refuses to derive with no selected account', () => {
+    expect(() => resolveProductSubtree({ accounts: [] }, 'myapp.dot')).toThrow(
+      /no account is selected/,
+    );
   });
 });
 
 describe('resolveProductAccount', () => {
-  it('derives an indexed account at the pre-migration path', () => {
-    derivesAt(
-      resolveProductAccount(ALICE, 'myapp.dot', { tag: 'Index', value: 0 }),
-      '//Alice//myapp.dot/0',
-    );
-    derivesAt(
-      resolveProductAccount(ALICE, 'myapp.dot', { tag: 'Index', value: 2 }),
-      '//Alice//myapp.dot/2',
+  /**
+   * The property the whole file exists for: the key this host SIGNS with must
+   * be the key the core DERIVES and reports, and the core derives it from the
+   * subtree PUBLIC key alone (`derive_product_public_key`). Reproduced here
+   * with `HDKD.publicSoft` — the public-only half of the same junction.
+   */
+  it('signs with the key the core derives from the subtree public key', () => {
+    const subtree = resolveProductSubtree(ALICE, 'myapp.dot');
+    for (const index of [0, 1, 9]) {
+      const signer = resolveProductAccount(ALICE, 'myapp.dot', { tag: 'Index', value: index });
+      const reported = HDKD.publicSoft(subtree.publicKey, indexBytes(index));
+      expect(hex(signer.publicKey)).toBe(hex(reported));
+      // And it really is a usable keypair, not just a matching public key.
+      const message = new Uint8Array([1, 2, 3]);
+      expect(verify(message, sign(signer.secretKey, message), reported)).toBe(true);
+      expect(hex(getPublicKey(signer.secretKey))).toBe(hex(reported));
+    }
+  });
+
+  it('derives the same account from a Raw index as the core would', () => {
+    const subtree = resolveProductSubtree(ALICE, 'myapp.dot');
+    const raw = `0x${'ee'.repeat(32)}`;
+    const signer = resolveProductAccount(ALICE, 'myapp.dot', { tag: 'Raw', value: raw });
+    expect(hex(signer.publicKey)).toBe(
+      hex(HDKD.publicSoft(subtree.publicKey, new Uint8Array(32).fill(0xee))),
     );
   });
 
-  it('derives a Raw selector at its lowercased hex path', () => {
-    derivesAt(
-      resolveProductAccount(ALICE, 'myapp.dot', { tag: 'Raw', value: '0xAABB' }),
-      '//Alice//myapp.dot/0xaabb',
-    );
-    // Case only affects the label, so both spellings reach the same key.
-    expect(resolveProductAccount(ALICE, 'myapp.dot', { tag: 'Raw', value: '0xAABB' }).address).toBe(
-      resolveProductAccount(ALICE, 'myapp.dot', { tag: 'Raw', value: '0xaabb' }).address,
-    );
-  });
+  // The cross-implementation pin against schnorrkel's own vector lives with the
+  // primitive, in `dev-accounts.spec.ts` (`deriveSoft`).
 
-  it("derives a subtree root at the product's own junction, with no index", () => {
+  it('answers a subtree request with the subtree root itself', () => {
     derivesAt(resolveProductAccount(ALICE, 'myapp.dot', undefined), '//Alice//myapp.dot');
   });
 
@@ -71,39 +145,35 @@ describe('resolveProductAccount', () => {
     );
   });
 
-  it('follows the selected account, so switching accounts moves the derivation', () => {
-    derivesAt(
-      resolveProductAccount({ accounts: [{ uri: '//Bob' }] }, 'myapp.dot', { tag: 'Index', value: 0 }),
-      '//Bob//myapp.dot/0',
+  it('moves every indexed account when productAccounts replaces the subtree', () => {
+    const config = { ...ALICE, productAccounts: { 'myapp.dot': { uri: '//Bob' } } };
+    for (const index of [0, 3]) {
+      expect(
+        resolveProductAccount(config, 'myapp.dot', { tag: 'Index', value: index }).address,
+      ).toBe(coreAccount('//Bob', index).address);
+      // …and away from where the unmapped product derives.
+      expect(
+        resolveProductAccount(config, 'myapp.dot', { tag: 'Index', value: index }).address,
+      ).not.toBe(coreAccount('//Alice//myapp.dot', index).address);
+    }
+  });
+
+  it('leaves an unmapped product on the default subtree', () => {
+    const config = { ...ALICE, productAccounts: { 'other.dot': { uri: '//Bob' } } };
+    expect(resolveProductAccount(config, 'myapp.dot', { tag: 'Index', value: 0 }).address).toBe(
+      coreAccount('//Alice//myapp.dot', 0).address,
     );
   });
 
-  it('lets a productAccounts entry override an indexed account', () => {
-    const config = {
-      ...ALICE,
-      productAccounts: { 'myapp.dot/0': { uri: '//Bob' } },
-    };
-    derivesAt(resolveProductAccount(config, 'myapp.dot', { tag: 'Index', value: 0 }), '//Bob');
-    // A different index is untouched by the override.
-    derivesAt(
-      resolveProductAccount(config, 'myapp.dot', { tag: 'Index', value: 1 }),
-      '//Alice//myapp.dot/1',
-    );
+  it('gives each index its own account', () => {
+    const zero = resolveProductAccount(ALICE, 'myapp.dot', { tag: 'Index', value: 0 });
+    const one = resolveProductAccount(ALICE, 'myapp.dot', { tag: 'Index', value: 1 });
+    expect(zero.address).not.toBe(one.address);
   });
 
-  it('lets a productAccounts entry override a subtree root, keyed by the bare id', () => {
-    const config = { ...ALICE, productAccounts: { 'myapp.dot': { uri: '//Charlie' } } };
-    derivesAt(resolveProductAccount(config, 'myapp.dot', undefined), '//Charlie');
-    // The bare key must not capture the indexed accounts.
-    derivesAt(
-      resolveProductAccount(config, 'myapp.dot', { tag: 'Index', value: 0 }),
-      '//Alice//myapp.dot/0',
-    );
-  });
-
-  it('refuses to derive with no selected account', () => {
-    expect(() => resolveProductAccount({ accounts: [] }, 'myapp.dot', undefined)).toThrow(
-      /no account is selected/,
+  it('is deterministic across calls, so an account does not move mid-run', () => {
+    expect(resolveProductAccount(ALICE, 'myapp.dot', { tag: 'Index', value: 0 }).secretKey).toEqual(
+      resolveProductAccount(ALICE, 'myapp.dot', { tag: 'Index', value: 0 }).secretKey,
     );
   });
 });
