@@ -81,13 +81,40 @@ export function createChainCallbacks(options: {
       // implementation, which does `JSON.parse`/`JSON.stringify` at the
       // socket boundary) — the core's `JsonRpcConnection` contract is
       // string-based, so the (de)serialisation happens right here.
-      const socket = getWsRawProvider(network.rpcUrl)((message) =>
-        channel.push(JSON.stringify(message)),
-      );
+      const socket = getWsRawProvider(network.rpcUrl, {
+        // The provider reconnects forever on its own and never surfaces a
+        // failure to its caller, so an unreachable `rpcUrl` would otherwise
+        // present as a silently pending `responses()`. Surfacing status keeps
+        // a misconfigured network diagnosable from the test host's console.
+        onStatusChanged: (status) => {
+          if (status.type === 'ERROR' || status.type === 'CLOSE') {
+            console.warn(`[test-host] ${network.name} websocket ${status.type}`, status.event);
+          }
+        },
+      })((message) => channel.push(JSON.stringify(message)));
 
       return {
         send(request: string): void {
-          socket.send(JSON.parse(request));
+          // Mirror the loopback route: a request the core cannot have meant is
+          // answered with a JSON-RPC error rather than thrown back at it, so a
+          // malformed frame never escapes as a synchronous exception.
+          let message: Parameters<typeof socket.send>[0];
+          try {
+            message = JSON.parse(request);
+          } catch (error) {
+            channel.push(
+              JSON.stringify({
+                jsonrpc: '2.0',
+                id: 'unknown',
+                error: {
+                  code: -32700,
+                  message: error instanceof Error ? error.message : String(error),
+                },
+              }),
+            );
+            return;
+          }
+          socket.send(message);
         },
         responses(): AsyncIterable<string> {
           return channel.iterable;
