@@ -61,7 +61,11 @@ export type RpcProviderLoader = (
 /** Hex-normalise a genesis hash so string configs and raw bytes compare equal. */
 const normalize = (value: Uint8Array | string): string => {
   if (typeof value === 'string') {
-    return (value.startsWith('0x') ? value.slice(2) : value).toLowerCase();
+    // Trimmed as well as lower-cased, so this agrees exactly with
+    // `features.ts`'s normaliser: a config hash with stray whitespace must
+    // not be reported supported by one and unroutable by the other.
+    const hex = value.trim();
+    return (hex.startsWith('0x') ? hex.slice(2) : hex).toLowerCase();
   }
   return Array.from(value, (b) => b.toString(16).padStart(2, '0')).join('');
 };
