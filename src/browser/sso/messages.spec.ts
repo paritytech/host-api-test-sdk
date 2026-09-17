@@ -25,6 +25,267 @@ describe('sso messages', () => {
     expect(REMOTE_MESSAGE_VARIANTS.indexOf('RingVrfSignResponse')).toBe(23);
   });
 
+  // Exhaustive regression guard: the five spot checks above only cover
+  // indices 0, 1, 14, 16, and 23. Everything in between (3-13, 17-22) was
+  // previously pinned by nothing but a human aligning REMOTE_MESSAGE_VARIANTS
+  // and the RemoteMessage Enum's payload map by eye. This enumerates every
+  // one of the 24 `v1::RemoteMessage` variants from
+  // `../host-rust-core/rust/crates/truapi-server/src/host_logic/sso/messages/v1.rs`
+  // against its exact declared (and, for 14-23, explicitly
+  // `#[codec(index = N)]`-pinned) position, so any future reorder or drop of
+  // a single entry fails here instead of silently shifting the wire index of
+  // everything after it.
+  it('pins every RemoteMessage variant to its exact wire index (all 24)', () => {
+    const expectedIndexByVariant: Record<(typeof REMOTE_MESSAGE_VARIANTS)[number], number> = {
+      Disconnected: 0,
+      SignRequest: 1,
+      SignResponse: 2,
+      GetAccountAliasRequest: 3,
+      GetAccountAliasResponse: 4,
+      ResourceAllocationRequest: 5,
+      ResourceAllocationResponse: 6,
+      CreateTransactionRequest: 7,
+      CreateTransactionResponse: 8,
+      CreateTransactionWithLegacyAccountRequest: 9,
+      SignRawWithLegacyAccountRequest: 10,
+      SignRawWithLegacyAccountResponse: 11,
+      CreateAccountProofRequest: 12,
+      CreateAccountProofResponse: 13,
+      SignVrfRequest: 14,
+      SignVrfResponse: 15,
+      ProductSubtreeRequest: 16,
+      ProductSubtreeResponse: 17,
+      RegisterRingVrfKeyRequest: 18,
+      RegisterRingVrfKeyResponse: 19,
+      ListRingVrfKeysRequest: 20,
+      ListRingVrfKeysResponse: 21,
+      RingVrfSignRequest: 22,
+      RingVrfSignResponse: 23,
+    };
+
+    expect(Object.keys(expectedIndexByVariant)).toHaveLength(REMOTE_MESSAGE_VARIANTS.length);
+    for (const [variant, expectedIndex] of Object.entries(expectedIndexByVariant)) {
+      expect(REMOTE_MESSAGE_VARIANTS.indexOf(variant as never)).toBe(expectedIndex);
+    }
+  });
+
+  // Stronger version of the same guard: rather than checking the array
+  // against itself, this drives the *actual* `RemoteMessage` codec for every
+  // one of the 24 variants and asserts the real encoded wire byte, so it also
+  // catches a bug in how `RemoteMessage`'s key order is derived from
+  // `REMOTE_MESSAGE_VARIANTS` (not just a reorder of the array itself).
+  it('encodes and round-trips every RemoteMessage variant at its exact wire index (all 24)', () => {
+    const hex = (byteLen: number, byte = '11') => ('0x' + byte.repeat(byteLen)) as `0x${string}`;
+    const productAccountId = (dotNsIdentifier: string) => ({
+      dotNsIdentifier,
+      derivationIndex: { tag: 'Index' as const, value: 0 },
+    });
+    const ringLocation = { chainId: hex(32), junctions: [] as never[] };
+
+    const fixtures: Array<{ index: number; tag: string; value: unknown }> = [
+      { index: 0, tag: 'Disconnected', value: undefined },
+      {
+        index: 1,
+        tag: 'SignRequest',
+        value: {
+          tag: 'raw',
+          value: {
+            account: productAccountId('myapp.dot'),
+            payload: { tag: 'Bytes', value: { bytes: hex(2) } },
+          },
+        },
+      },
+      {
+        index: 2,
+        tag: 'SignResponse',
+        value: { respondingTo: 'm1', payload: { success: true, value: { signature: hex(1) } } },
+      },
+      {
+        index: 3,
+        tag: 'GetAccountAliasRequest',
+        value: {
+          callingProductId: 'caller.dot',
+          payload: {
+            keyHandle: productAccountId('peopl.dot'),
+            context: { productId: 'voting.dot', suffix: { tag: 'Index', value: 0 } },
+            ringLocation,
+          },
+        },
+      },
+      {
+        index: 4,
+        tag: 'GetAccountAliasResponse',
+        value: {
+          respondingTo: 'm-alias',
+          payload: { success: true, value: { context: hex(32), alias: hex(2) } },
+        },
+      },
+      {
+        index: 5,
+        tag: 'ResourceAllocationRequest',
+        value: {
+          callingProductId: 'truapi-playground.dot',
+          resources: [{ tag: 'StatementStoreAllowance', value: undefined }],
+          onExisting: { tag: 'ignore', value: undefined },
+        },
+      },
+      {
+        index: 6,
+        tag: 'ResourceAllocationResponse',
+        value: {
+          respondingTo: 'm-resource',
+          payload: { success: true, value: [{ tag: 'rejected', value: undefined }] },
+        },
+      },
+      {
+        index: 7,
+        tag: 'CreateTransactionRequest',
+        value: {
+          payload: {
+            tag: 'v1',
+            value: {
+              signer: productAccountId('truapi-playground.dot'),
+              genesisHash: hex(32),
+              callData: hex(2),
+              extensions: [],
+              txExtVersion: 0,
+            },
+          },
+        },
+      },
+      {
+        index: 8,
+        tag: 'CreateTransactionResponse',
+        value: { respondingTo: 'm-tx', payload: { success: true, value: new Uint8Array([1, 2, 3]) } },
+      },
+      {
+        index: 9,
+        tag: 'CreateTransactionWithLegacyAccountRequest',
+        value: {
+          payload: {
+            tag: 'v1',
+            value: {
+              signer: hex(32),
+              genesisHash: hex(32),
+              callData: hex(2),
+              extensions: [],
+              txExtVersion: 0,
+            },
+          },
+        },
+      },
+      {
+        index: 10,
+        tag: 'SignRawWithLegacyAccountRequest',
+        value: { account: hex(32), data: { tag: 'Bytes', value: { bytes: hex(2) } } },
+      },
+      {
+        index: 11,
+        tag: 'SignRawWithLegacyAccountResponse',
+        value: { respondingTo: 'm-legacy-raw', payload: { success: true, value: new Uint8Array([4, 5]) } },
+      },
+      {
+        index: 12,
+        tag: 'CreateAccountProofRequest',
+        value: {
+          callingProductId: 'caller.dot',
+          payload: {
+            keyHandle: productAccountId('peopl.dot'),
+            context: { productId: 'voting.dot', suffix: { tag: 'Index', value: 0 } },
+            ringLocation,
+            message: hex(4),
+          },
+        },
+      },
+      {
+        index: 13,
+        tag: 'CreateAccountProofResponse',
+        value: {
+          respondingTo: 'm-proof',
+          payload: {
+            success: true,
+            value: {
+              proof: hex(2),
+              contextualAlias: { context: hex(32), alias: hex(2) },
+              ringIndex: 7,
+              ringRevision: 9,
+            },
+          },
+        },
+      },
+      {
+        index: 14,
+        tag: 'SignVrfRequest',
+        value: {
+          callingProductId: 'browse.dot',
+          payload: {
+            account: productAccountId('browse.dot'),
+            transcriptLabel: hex(3),
+            items: [{ label: hex(2), value: hex(1) }],
+          },
+        },
+      },
+      {
+        index: 15,
+        tag: 'SignVrfResponse',
+        value: { respondingTo: 'req', payload: { success: true, value: { preOutput: hex(32), proof: hex(64) } } },
+      },
+      { index: 16, tag: 'ProductSubtreeRequest', value: { productId: 'browse.dot' } },
+      {
+        index: 17,
+        tag: 'ProductSubtreeResponse',
+        value: { respondingTo: 'request', payload: { success: true, value: new Uint8Array(32).fill(0xab) } },
+      },
+      {
+        index: 18,
+        tag: 'RegisterRingVrfKeyRequest',
+        value: {
+          callingProductId: 'game.dot',
+          payload: { index: { tag: 'Index', value: 4 }, ring: ringLocation },
+        },
+      },
+      {
+        index: 19,
+        tag: 'RegisterRingVrfKeyResponse',
+        value: { respondingTo: 'r', payload: { success: true, value: new Uint8Array(32).fill(1) } },
+      },
+      {
+        index: 20,
+        tag: 'ListRingVrfKeysRequest',
+        value: { callingProductId: 'game.dot', payload: { owner: 'peopl.dot', disclosure: 'PublicKey' } },
+      },
+      {
+        index: 21,
+        tag: 'ListRingVrfKeysResponse',
+        value: { respondingTo: 'r', payload: { success: true, value: [] } },
+      },
+      {
+        index: 22,
+        tag: 'RingVrfSignRequest',
+        value: {
+          callingProductId: 'game.dot',
+          payload: { keyHandle: productAccountId('peopl.dot'), message: hex(2) },
+        },
+      },
+      {
+        index: 23,
+        tag: 'RingVrfSignResponse',
+        value: {
+          respondingTo: 'r1',
+          payload: { success: false, value: { tag: 'notMember', value: undefined } },
+        },
+      },
+    ];
+
+    expect(fixtures).toHaveLength(REMOTE_MESSAGE_VARIANTS.length);
+    for (const { index, tag, value } of fixtures) {
+      expect(REMOTE_MESSAGE_VARIANTS.indexOf(tag as never)).toBe(index);
+      const encoded = RemoteMessage.enc({ tag, value } as never);
+      expect(encoded[0]).toBe(index);
+      expect(RemoteMessage.dec(encoded)).toEqual({ tag, value });
+    }
+  });
+
   it('round-trips the unit Disconnected variant at its pinned wire index', () => {
     const encoded = RemoteMessage.enc({ tag: 'Disconnected', value: undefined });
     expect(encoded).toEqual(new Uint8Array([0]));

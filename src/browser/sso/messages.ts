@@ -227,10 +227,16 @@ const ListRingVrfKeysResponse = Result(Vector(RegisteredRingVrfKey), RingVrfErro
 const RingVrfSignResponse = Result(Bytes(), RingVrfError);
 
 /**
- * `v1::RemoteMessage`. One entry per `REMOTE_MESSAGE_VARIANTS` name, in the
- * same order — see the module doc comment for why order is load-bearing.
+ * Payload codec for every `v1::RemoteMessage` variant, keyed by name.
+ *
+ * `satisfies Record<RemoteMessageVariant, Codec<unknown>>` makes this a
+ * compile error if an entry is missing, misspelled, or extra — but it does
+ * NOT check key *order*, which is what `Enum` actually uses to assign wire
+ * indices (via `Object.keys`). Declaration order here is therefore
+ * cosmetic only; see `RemoteMessage` below for how the real wire order is
+ * pinned to `REMOTE_MESSAGE_VARIANTS`.
  */
-export const RemoteMessage = Enum({
+const REMOTE_MESSAGE_PAYLOADS = {
   Disconnected: _void,
   SignRequest: SignRequest,
   SignResponse: Response(SignResponse),
@@ -255,6 +261,28 @@ export const RemoteMessage = Enum({
   ListRingVrfKeysResponse: Response(ListRingVrfKeysResponse),
   RingVrfSignRequest: ProductRequest(HostAccountRingVrfSignRequest),
   RingVrfSignResponse: Response(RingVrfSignResponse),
-});
+} satisfies Record<RemoteMessageVariant, Codec<unknown>>;
+
+/**
+ * `v1::RemoteMessage`.
+ *
+ * scale-ts's `Enum` assigns each variant's wire index by the position of its
+ * key in `Object.keys(...)` of the object passed here. Rather than relying on
+ * a second hand-aligned object literal to agree with `REMOTE_MESSAGE_VARIANTS`
+ * (which a future edit could silently desync in the untested middle of the
+ * range), this object's key order is *derived* from `REMOTE_MESSAGE_VARIANTS`
+ * by construction: walk the array, look up each name's codec in
+ * `REMOTE_MESSAGE_PAYLOADS`. The two therefore cannot drift out of sync — the
+ * array is the only place variant order is ever written down.
+ *
+ * The `as typeof REMOTE_MESSAGE_PAYLOADS` cast only restores the precise
+ * per-key codec types that `Object.fromEntries` widens away; it has no
+ * runtime effect and does not touch key order.
+ */
+export const RemoteMessage = Enum(
+  Object.fromEntries(
+    REMOTE_MESSAGE_VARIANTS.map((variant) => [variant, REMOTE_MESSAGE_PAYLOADS[variant]] as const),
+  ) as typeof REMOTE_MESSAGE_PAYLOADS,
+);
 
 export const VersionedRemoteMessage = Enum({ V1: RemoteMessage });
