@@ -1,9 +1,23 @@
 // src/browser/sso/statement.spec.ts
 import { describe, expect, it } from 'vitest';
+import { compact } from 'scale-ts';
 import { deriveDev } from '../dev-accounts.js';
-import { decodeStatement, encodeStatement, matchesTopics, signStatement } from './statement.js';
+import {
+  decodeStatement,
+  encodeStatement,
+  matchesTopics,
+  signStatement,
+  stripCompactPrefix,
+} from './statement.js';
 
 const topic = (fill: number) => new Uint8Array(32).fill(fill);
+
+function concatBytes(a: Uint8Array, b: Uint8Array): Uint8Array {
+  const out = new Uint8Array(a.length + b.length);
+  out.set(a, 0);
+  out.set(b, a.length);
+  return out;
+}
 
 describe('statement codec', () => {
   const base = {
@@ -40,5 +54,19 @@ describe('statement codec', () => {
     const statement = { ...base, topics: [topic(1)] };
     expect(matchesTopics(statement, 'MatchAny', [topic(1), topic(3)])).toBe(true);
     expect(matchesTopics(statement, 'MatchAny', [topic(3)])).toBe(false);
+  });
+});
+
+describe('stripCompactPrefix', () => {
+  const payload = new Uint8Array([9, 9, 9]);
+
+  it.each([
+    ['single-byte mode', 3n],
+    ['two-byte mode', 1000n],
+    ['four-byte mode', 100_000n],
+    ['big-integer mode', 2n ** 32n],
+  ])('strips the prefix in %s', (_label, value) => {
+    const prefix = compact.enc(value);
+    expect(stripCompactPrefix(concatBytes(prefix, payload))).toEqual(payload);
   });
 });

@@ -106,9 +106,16 @@ export function signStatement(secretKey: Uint8Array, statement: Statement): Stat
   return { ...statement, proof: { signature, signer: getPublicKey(secretKey) } };
 }
 
-function stripCompactPrefix(encoded: Uint8Array): Uint8Array {
+/**
+ * Length of a SCALE compact-encoded integer's prefix, in bytes.
+ *
+ * The big-integer mode (marker `0b11`) stores `byteCount - 4` in the upper
+ * six bits of the mode byte, so the total prefix is the mode byte itself,
+ * plus the implied 4, plus that remainder: `1 + 4 + (encoded[0] >> 2)`.
+ */
+export function stripCompactPrefix(encoded: Uint8Array): Uint8Array {
   const marker = encoded[0] & 0b11;
-  const prefixLen = marker === 0 ? 1 : marker === 1 ? 2 : marker === 2 ? 4 : 1 + (encoded[0] >> 2);
+  const prefixLen = marker === 0 ? 1 : marker === 1 ? 2 : marker === 2 ? 4 : 5 + (encoded[0] >> 2);
   return encoded.subarray(prefixLen);
 }
 
