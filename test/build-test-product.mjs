@@ -2,7 +2,6 @@ import { build } from 'esbuild';
 
 const products = [
   { entry: 'test/test-product.ts', outfile: 'test/test-product-bundle.js' },
-  { entry: 'test/test-product-truapi.ts', outfile: 'test/test-product-truapi-bundle.js' },
 ];
 
 await Promise.all(

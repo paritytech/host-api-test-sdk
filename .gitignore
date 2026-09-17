@@ -4,7 +4,6 @@ dist/
 .DS_Store
 .idea
 test/test-product-bundle.js
-test/test-product-truapi-bundle.js
 test/test-results/
 test-results/
 

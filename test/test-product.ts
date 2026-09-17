@@ -1,703 +1,449 @@
 /**
- * Minimal product page for integration tests.
+ * Minimal product page for the integration tests.
  *
- * Connects to the host via product-sdk, requests both product and
- * non-product accounts, and exposes the public keys in the DOM.
+ * Boots through `@parity/truapi/sandbox`, which performs the product half of
+ * the `truapi-ready` / `truapi-init` MessagePort handover the host's
+ * `createIframeHost` drives — so there is no manual wiring here, just
+ * `getClientSync()`.
  *
- * Also exposes window.__TEST_PRODUCT__ with methods for permission
- * and signing E2E tests.
+ * Requests its product account and the session's legacy account, writes both
+ * into the DOM, and exposes `window.__TEST_PRODUCT__` so the Playwright spec
+ * can drive every call the host answers from inside the product realm.
  */
 
-import { createAccountsProvider, hostApi, paymentManager, sandboxTransport } from '@novasamatech/host-api-wrapper';
-import { derivationIndexOf, enumValue } from '@novasamatech/host-api';
-import { hexToU8a, u8aToHex } from '@polkadot/util';
+import type { Result } from 'neverthrow';
+import { getClientSync, subscribeConnectionStatus } from '@parity/truapi/sandbox';
+import type { ConnectionStatus } from '@parity/truapi/sandbox';
+import type {
+  AllocatableResource,
+  ChatMessageContent,
+  ContextualAlias,
+  DerivationIndex,
+  HexString,
+  HostChatActionSubscribeItem,
+  HostDevicePermissionRequest,
+  HostThemeSubscribeItem,
+  ObservableLike,
+  ProductAccountId,
+  RemotePermission,
+  Statement,
+  StatementProof,
+  Subscription,
+  TxPayloadExtension,
+} from '@parity/truapi';
+import { scale } from '@parity/truapi';
 
 const DOTNS_ID = 'test-product.dot';
 const DERIVATION_INDEX = 0;
 
-interface TestResult {
-  ok: boolean;
-  approved?: boolean;
-  signature?: string;
-  signedHex?: string;
-  notificationId?: number;
-  paymentId?: string;
-  error?: string;
-}
+/**
+ * What every `__TEST_PRODUCT__` call resolves to: the payload on success, or
+ * the rendered protocol error. A union rather than one partial shape, so a
+ * spec that reads a field has already asserted the call succeeded.
+ */
+export type Outcome<R extends object = {}> =
+  | ({ ok: true } & R)
+  | { ok: false; error: string };
 
 /**
  * Ring the alias / proof requests are scoped to (RFC-0022 shape: a chain plus
- * the junctions locating the ring on it). The test host ignores it, so a fixed
- * placeholder is enough to exercise the call.
+ * the junctions locating the ring on it). The test host does not look the ring
+ * up, so a fixed placeholder is enough to exercise the call.
  */
 const RING_LOCATION = {
-  chainId: '0x0000000000000000000000000000000000000000000000000000000000000000' as `0x${string}`,
+  chainId: `0x${'00'.repeat(32)}` as HexString,
   junctions: [{ tag: 'PalletInstance' as const, value: 0 }],
 };
 
-/** Extract a readable error string from versioned protocol results. */
-function extractError(err: unknown): string {
-  if (!err || typeof err !== 'object') return String(err);
-  const e = err as any;
-  // Versioned: { tag: 'v1', value: { tag: 'Unknown', value: { reason: '...' } } }
-  const inner = e.value ?? e;
-  if (inner?.value?.reason) return inner.value.reason;
-  if (inner?.reason) return inner.reason;
-  if (typeof inner === 'string') return inner;
-  return JSON.stringify(err);
+const index = (value: number): DerivationIndex => ({ tag: 'Index', value });
+
+const accountId = (dotNsIdentifier: string, derivationIndex: number): ProductAccountId => ({
+  dotNsIdentifier,
+  derivationIndex: index(derivationIndex),
+});
+
+/** Render a protocol error as a string a Playwright assertion can read. */
+function describeError(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (!error || typeof error !== 'object') return String(error);
+  const outer = error as { tag?: string; value?: unknown };
+  // CallErrorValue: Domain carries the versioned, method-specific error.
+  const inner = outer.tag === 'Domain' ? (outer.value as { tag?: string; value?: unknown }) : outer;
+  // Versioned envelope: { tag: 'V1', value: <method error> }.
+  const domain =
+    inner?.tag === 'V1' ? (inner.value as { tag?: string; value?: unknown }) : inner;
+  const reason = (domain?.value as { reason?: string } | undefined)?.reason;
+  if (domain?.tag && reason) return `${domain.tag}: ${reason}`;
+  if (domain?.tag) return domain.tag;
+  return JSON.stringify(error);
 }
+
+/**
+ * Run one client call and flatten its `ResultAsync` into a plain object.
+ *
+ * A thrown error becomes the same `{ ok: false, error }` shape as a protocol
+ * rejection, so a spec never has to distinguish the two.
+ */
+async function call<T, E, R extends object>(
+  run: () => PromiseLike<Result<T, E>>,
+  onOk: (value: T) => R,
+): Promise<Outcome<R>> {
+  try {
+    const result = await run();
+    if (result.isOk()) return { ok: true, ...onOk(result.value) };
+    return { ok: false, error: describeError(result.error) };
+  } catch (error) {
+    return { ok: false, error: describeError(error) };
+  }
+}
+
+/** Collect every item a subscription delivers until the test reads them back. */
+function collect<T, Reason, U>(
+  observable: ObservableLike<T, Reason>,
+  sink: U[],
+  map: (item: T) => U,
+): { unsubscribe(): void } {
+  const subscription: Subscription = observable.subscribe({
+    next: (item) => {
+      sink.push(map(item));
+    },
+    error: () => {},
+  });
+  return { unsubscribe: () => subscription.unsubscribe() };
+}
+
+type SigningResult = Outcome<{ signature: HexString }>;
+type TransactionResult = Outcome<{ signedHex: HexString }>;
 
 declare global {
   interface Window {
     __TEST_PRODUCT__: {
-      rootAddress: string | null;
-      trySignRaw(): Promise<TestResult>;
-      requestChainSubmit(): Promise<TestResult>;
-      requestRemote(url: string): Promise<TestResult>;
-      requestDevicePermission(type: string): Promise<TestResult>;
-      navigateTo(url: string): Promise<TestResult>;
-      pushNotification(text: string, deeplink?: string, scheduledAt?: number): Promise<TestResult>;
-      pushNotificationCancel(id: number): Promise<TestResult>;
-      getAccountAlias(dotnsId: string, index: number): Promise<TestResult & { context?: string; alias?: string }>;
-      chatCreateRoom(room: { roomId: string; name: string; icon: string }): Promise<TestResult & { status?: string }>;
-      chatRegisterBot(bot: { botId: string; name: string; icon: string }): Promise<TestResult & { status?: string }>;
-      chatPostTextMessage(roomId: string, text: string): Promise<TestResult & { messageId?: string }>;
+      /** The status the sandbox last reported for the host channel. */
+      connectionStatus(): ConnectionStatus;
+      /** The product account the page fetched at boot, if that succeeded. */
+      productKey(): HexString | null;
+      getLegacyAccounts(): Promise<Outcome<{ keys: string[] }>>;
+      signRawLegacy(signerHex: string, payloadHex: string): Promise<SigningResult>;
+      signRawProduct(dotnsId: string, index: number, payloadHex: string): Promise<SigningResult>;
+      requestChainSubmit(): Promise<Outcome<{ approved: boolean }>>;
+      requestRemote(domain: string): Promise<Outcome<{ approved: boolean }>>;
+      requestDevicePermission(type: string): Promise<Outcome<{ approved: boolean }>>;
+      navigateTo(url: string): Promise<Outcome>;
+      pushNotification(text: string, deeplink?: string, scheduledAt?: number): Promise<Outcome<{ notificationId: number }>>;
+      pushNotificationCancel(id: number): Promise<Outcome>;
+      getAccountAlias(dotnsId: string, index: number): Promise<Outcome<{ context: HexString; alias: HexString }>>;
+      chatCreateRoom(room: { roomId: string; name: string; icon: string }): Promise<Outcome<{ status: string }>>;
+      chatRegisterBot(bot: { botId: string; name: string; icon: string }): Promise<Outcome<{ status: string }>>;
+      chatPostTextMessage(roomId: string, text: string): Promise<Outcome<{ messageId: string }>>;
       subscribeChatActions(): { unsubscribe(): void };
-      getReceivedChatActions(): Array<unknown>;
-      clearReceivedChatActions(): void;
-      preimageSubmit(value: number[]): Promise<TestResult & { key?: string }>;
-      preimageLookup(key: string): Promise<TestResult & { value?: number[] | null }>;
-      statementSubmit(topicsHex: string[], dataHex: string): Promise<TestResult>;
-      statementCreateProof(dotnsId: string, index: number, dataHex: string): Promise<TestResult & { proof?: unknown }>;
-      statementSubscribe(topicsHex: string[]): { unsubscribe(): void };
-      getReceivedStatements(): Array<unknown>;
-      clearReceivedStatements(): void;
-      // v0.7+ additions
+      getReceivedChatActions(): HostChatActionSubscribeItem[];
+      subscribeChatRooms(): { unsubscribe(): void };
+      getReceivedChatRooms(): string[][];
+      preimageLookup(key: string): Promise<Outcome<{ value: number[] | null }>>;
       subscribeTheme(): { unsubscribe(): void };
-      getReceivedThemes(): unknown[];
-      deriveEntropy(keyHex: string): Promise<TestResult & { entropyHex?: string }>;
-      requestLogin(reason?: string): Promise<TestResult & { loginResult?: string }>;
-      getUserId(): Promise<TestResult & { primaryUsername?: string }>;
-      requestResourceAllocation(resources: Array<{ tag: string; value?: unknown }>): Promise<TestResult & { outcomes?: Array<{ tag: string }> }>;
-      featureSupported(tag: string, value: unknown): Promise<TestResult & { supported?: boolean }>;
-      localStorageWrite(key: string, value: string): Promise<TestResult>;
-      localStorageRead(key: string): Promise<TestResult & { value?: string | null }>;
-      localStorageClear(key: string): Promise<TestResult>;
-      createTransaction(dotnsId: string, index: number): Promise<TestResult>;
-      createTransactionLegacy(publicKeyHex: string): Promise<TestResult>;
-      paymentSmoke(destinationHex: string): Promise<TestResult>;
-      paymentSmokeWithPurse(destinationHex: string, purse: number): Promise<TestResult>;
-      paymentTopUpCoins(amount: string, keysHex: string[]): Promise<TestResult & { credited?: string }>;
-      statementCreateProofAuthorized(dataHex: string): Promise<TestResult>;
-      signRawProduct(dotnsId: string, index: number, payloadHex: string): Promise<TestResult>;
-      subscribeBalance(): { unsubscribe(): void };
-      getReceivedBalances(): string[];
-      subscribePaymentStatus(id: string): { unsubscribe(): void };
-      getReceivedStatuses(): Array<{ type: string; reason?: string }>;
-      accountCreateProof(dotnsId: string, index: number): Promise<TestResult & { proofHex?: string }>;
+      getReceivedThemes(): HostThemeSubscribeItem[];
+      deriveEntropy(contextHex: string): Promise<Outcome<{ entropyHex: HexString }>>;
+      getUserId(): Promise<Outcome<{ primaryUsername: string }>>;
+      requestResourceAllocation(resources: AllocatableResource[]): Promise<Outcome<{ outcomes: string[] }>>;
+      featureSupported(genesisHash: string): Promise<Outcome<{ supported: boolean }>>;
+      localStorageWrite(key: string, value: string): Promise<Outcome>;
+      localStorageRead(key: string): Promise<Outcome<{ value: string | null }>>;
+      localStorageClear(key: string): Promise<Outcome>;
+      createTransaction(dotnsId: string, index: number): Promise<TransactionResult>;
+      createTransactionLegacy(publicKeyHex: string): Promise<TransactionResult>;
+      accountCreateProof(dotnsId: string, index: number): Promise<Outcome<{ proofHex: HexString; alias: HexString }>>;
+      statementCreateProof(dotnsId: string, index: number, dataHex: string): Promise<Outcome<{ proof: StatementProof }>>;
+      statementCreateProofAuthorized(dataHex: string): Promise<Outcome<{ proof: StatementProof }>>;
     };
   }
 }
 
-const receivedChatActions: unknown[] = [];
-const receivedStatements: unknown[] = [];
-const receivedThemes: unknown[] = [];
-const receivedBalances: string[] = []; // bigint serialised as string
-const receivedStatuses: Array<{ type: string; reason?: string }> = [];
+const receivedChatActions: HostChatActionSubscribeItem[] = [];
+const receivedChatRooms: string[][] = [];
+const receivedThemes: HostThemeSubscribeItem[] = [];
 
-async function init() {
-  const el = document.getElementById('status')!;
-  const pkEl = document.getElementById('product-key')!;
-  const rootEl = document.getElementById('root-keys')!;
+let status: ConnectionStatus = 'disconnected';
+subscribeConnectionStatus((next) => {
+  status = next;
+});
 
-  try {
-    const accountsProvider = createAccountsProvider(sandboxTransport);
+function setResult(id: string, value: string): void {
+  const element = document.getElementById(id);
+  if (!element) return;
+  element.textContent = value;
+  element.dataset.ready = 'true';
+}
 
-    // Fetch product account
-    const result = await accountsProvider.getProductAccount(DOTNS_ID, DERIVATION_INDEX);
+async function init(): Promise<void> {
+  const client = getClientSync();
+  if (!client) {
+    setResult('status', 'no-host');
+    return;
+  }
 
-    result.match(
-      (acct: { publicKey: Uint8Array; name: string | undefined }) => {
-        pkEl.textContent = u8aToHex(acct.publicKey);
-        pkEl.dataset.ready = 'true';
-        el.textContent = 'connected';
-      },
-      () => {
-        el.textContent = 'no-account';
-      },
-    );
+  // Bound once so the null check above holds for every closure below.
+  const api = client;
 
-    // Fetch legacy (root) accounts
-    let firstRootAddress: string | null = null;
-    const rootResult = await accountsProvider.getLegacyAccounts();
+  /** The product account key, once the boot fetch has returned one. */
+  let productKey: HexString | null = null;
 
-    rootResult.match(
-      (accounts: Array<{ publicKey: Uint8Array; name: string | undefined }>) => {
-        const keys = accounts.map(a => u8aToHex(a.publicKey));
-        rootEl.textContent = JSON.stringify(keys);
-        rootEl.dataset.ready = 'true';
-        if (keys.length > 0) firstRootAddress = keys[0];
-      },
-      () => {},
-    );
+  window.__TEST_PRODUCT__ = {
+    connectionStatus: () => status,
 
-    // Expose test actions for E2E permission/signing tests
-    window.__TEST_PRODUCT__ = {
-      rootAddress: firstRootAddress,
+    productKey: () => productKey,
 
-      async trySignRaw(): Promise<TestResult> {
-        try {
-          const r = await hostApi.signRawWithLegacyAccount(enumValue('v1', {
-            signer: firstRootAddress ?? '',
-            payload: { tag: 'Bytes' as const, value: new TextEncoder().encode('test-payload') },
-          }));
-          if (r.isOk()) {
-            const val = r.value;
-            return { ok: true, signature: val.value.signature };
-          }
-          return { ok: false, error: extractError(r.error) };
-        } catch (err) {
-          return { ok: false, error: extractError(err) };
-        }
-      },
+    getLegacyAccounts: () =>
+      call(
+        () => api.account.getLegacyAccounts(),
+        (value) => ({ keys: value.accounts.map((entry) => entry.publicKey) }),
+      ),
 
-      async requestChainSubmit(): Promise<TestResult> {
-        try {
-          const r = await hostApi.permission(enumValue('v1',
-            { tag: 'ChainSubmit' as const, value: undefined },
-          ));
-          if (r.isOk()) {
-            return { ok: true, approved: r.value.value };
-          }
-          return { ok: false, error: extractError(r.error) };
-        } catch (err) {
-          return { ok: false, error: extractError(err) };
-        }
-      },
+    // The core never enumerates legacy accounts, so the signer is named by the
+    // caller: it is the session identity, which the test knows from its own
+    // account configuration.
+    signRawLegacy: (signerHex, payloadHex) =>
+      call(
+        () =>
+          api.signing.signRawWithLegacyAccount({
+            signer: scale.toHexString(signerHex),
+            payload: { tag: 'Bytes', value: { bytes: scale.toHexString(payloadHex) } },
+          }),
+        (value) => ({ signature: value.signature }),
+      ),
 
-      async requestRemote(url: string): Promise<TestResult> {
-        try {
-          const r = await hostApi.permission(enumValue('v1',
-            { tag: 'Remote' as const, value: [url] },
-          ));
-          if (r.isOk()) {
-            return { ok: true, approved: r.value.value };
-          }
-          return { ok: false, error: extractError(r.error) };
-        } catch (err) {
-          return { ok: false, error: extractError(err) };
-        }
-      },
+    signRawProduct: (dotnsId, derivationIndex, payloadHex) =>
+      call(
+        () =>
+          api.signing.signRaw({
+            account: accountId(dotnsId, derivationIndex),
+            payload: { tag: 'Bytes', value: { bytes: scale.toHexString(payloadHex) } },
+          }),
+        (value) => ({ signature: value.signature }),
+      ),
 
-      async requestDevicePermission(type: string): Promise<TestResult> {
-        try {
-          const r = await hostApi.devicePermission(
-            enumValue('v1', type as 'Camera' | 'Microphone' | 'Bluetooth' | 'Location' | 'Notifications' | 'NFC' | 'Clipboard' | 'OpenUrl' | 'Biometrics'),
-          );
-          if (r.isOk()) {
-            return { ok: true, approved: r.value.value };
-          }
-          return { ok: false, error: extractError(r.error) };
-        } catch (err) {
-          return { ok: false, error: extractError(err) };
-        }
-      },
+    requestChainSubmit: () => requestRemotePermission({ tag: 'ChainSubmit', value: undefined }),
 
-      async navigateTo(url: string): Promise<TestResult> {
-        try {
-          const r = await hostApi.navigateTo(enumValue('v1', url));
-          if (r.isOk()) {
-            return { ok: true };
-          }
-          return { ok: false, error: extractError(r.error) };
-        } catch (err) {
-          return { ok: false, error: extractError(err) };
-        }
-      },
+    requestRemote: (domain) => requestRemotePermission({ tag: 'Remote', value: { domains: [domain] } }),
 
-      async pushNotification(text: string, deeplink?: string, scheduledAt?: number): Promise<TestResult> {
-        try {
-          const r = await hostApi.pushNotification(
-            enumValue('v1', { text, deeplink, scheduledAt: scheduledAt !== undefined ? BigInt(scheduledAt) : undefined }),
-          );
-          if (r.isOk()) {
-            return { ok: true, notificationId: (r.value as { tag: string; value: number }).value };
-          }
-          return { ok: false, error: extractError(r.error) };
-        } catch (err) {
-          return { ok: false, error: extractError(err) };
-        }
-      },
+    requestDevicePermission: (type) =>
+      call(
+        () => api.permissions.requestDevicePermission(type as HostDevicePermissionRequest),
+        (value) => ({ approved: value.granted }),
+      ),
 
-      async pushNotificationCancel(id: number): Promise<TestResult> {
-        try {
-          const r = await hostApi.pushNotificationCancel(enumValue('v1', id));
-          if (r.isOk()) return { ok: true };
-          return { ok: false, error: extractError(r.error) };
-        } catch (err) {
-          return { ok: false, error: extractError(err) };
-        }
-      },
+    navigateTo: (url) => call(() => api.system.navigateTo({ url }), () => ({})),
 
-      async getAccountAlias(dotnsId: string, index: number): Promise<TestResult & { context?: string; alias?: string }> {
-        try {
-          const r = await hostApi.accountGetAlias(
-            enumValue('v1', [[dotnsId, derivationIndexOf(index)], RING_LOCATION]),
-          );
-          if (r.isOk()) {
-            return {
-              ok: true,
-              context: u8aToHex(r.value.value.context),
-              alias: u8aToHex(r.value.value.alias),
-            };
-          }
-          return { ok: false, error: extractError(r.error) };
-        } catch (err) {
-          return { ok: false, error: extractError(err) };
-        }
-      },
+    pushNotification: (text, deeplink, scheduledAt) =>
+      call(
+        () =>
+          api.notifications.sendPushNotification({
+            text,
+            deeplink,
+            scheduledAt: scheduledAt === undefined ? undefined : BigInt(scheduledAt),
+          }),
+        (value) => ({ notificationId: value.id }),
+      ),
 
-      async chatCreateRoom(room: { roomId: string; name: string; icon: string }): Promise<TestResult & { status?: string }> {
-        try {
-          const r = await hostApi.chatCreateRoom(enumValue('v1', room));
-          if (r.isOk()) {
-            return { ok: true, status: r.value.value.status };
-          }
-          return { ok: false, error: extractError(r.error) };
-        } catch (err) {
-          return { ok: false, error: extractError(err) };
-        }
-      },
+    pushNotificationCancel: (id) =>
+      call(() => api.notifications.cancelPushNotification({ id }), () => ({})),
 
-      async chatRegisterBot(bot: { botId: string; name: string; icon: string }): Promise<TestResult & { status?: string }> {
-        try {
-          const r = await hostApi.chatRegisterBot(enumValue('v1', bot));
-          if (r.isOk()) {
-            return { ok: true, status: r.value.value.status };
-          }
-          return { ok: false, error: extractError(r.error) };
-        } catch (err) {
-          return { ok: false, error: extractError(err) };
-        }
-      },
+    getAccountAlias: (dotnsId, derivationIndex) =>
+      call(
+        () =>
+          api.account.getAccountAlias({
+            keyHandle: accountId(dotnsId, derivationIndex),
+            context: { productId: dotnsId, suffix: index(derivationIndex) },
+            ringLocation: RING_LOCATION,
+          }),
+        (value: ContextualAlias) => ({ context: value.context, alias: value.alias }),
+      ),
 
-      async chatPostTextMessage(roomId: string, text: string): Promise<TestResult & { messageId?: string }> {
-        try {
-          const r = await hostApi.chatPostMessage(enumValue('v1', {
-            roomId,
-            payload: { tag: 'Text' as const, value: text },
-          }));
-          if (r.isOk()) {
-            return { ok: true, messageId: r.value.value.messageId };
-          }
-          return { ok: false, error: extractError(r.error) };
-        } catch (err) {
-          return { ok: false, error: extractError(err) };
-        }
-      },
+    chatCreateRoom: (room) =>
+      call(() => api.chat.createRoom(room), (value) => ({ status: value.status })),
 
-      subscribeChatActions() {
-        const sub = hostApi.chatActionSubscribe(enumValue('v1', undefined), (payload: unknown) => {
-          // Unwrap the versioned envelope { tag: 'v1', value }
-          const p = payload as { tag?: string; value?: unknown };
-          receivedChatActions.push(p?.tag === 'v1' ? p.value : payload);
-        });
-        return {
-          unsubscribe() {
-            sub.unsubscribe();
-          },
+    chatRegisterBot: (bot) =>
+      call(() => api.chat.registerBot(bot), (value) => ({ status: value.status })),
+
+    chatPostTextMessage: (roomId, text) => {
+      const payload: ChatMessageContent = { tag: 'Text', value: { text } };
+      return call(
+        () => api.chat.postMessage({ roomId, payload }),
+        (value) => ({ messageId: value.messageId }),
+      );
+    },
+
+    subscribeChatActions: () =>
+      collect(api.chat.actionSubscribe(), receivedChatActions, (item) => item),
+
+    getReceivedChatActions: () => [...receivedChatActions],
+
+    subscribeChatRooms: () =>
+      collect(api.chat.listSubscribe(), receivedChatRooms, (item) =>
+        item.rooms.map((room) => room.roomId),
+      ),
+
+    getReceivedChatRooms: () => receivedChatRooms.map((rooms) => [...rooms]),
+
+    preimageLookup: (key) =>
+      new Promise((resolve) => {
+        let settled = false;
+        const settle = (result: Outcome<{ value: number[] | null }>) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          subscription.unsubscribe();
+          resolve(result);
         };
-      },
-
-      getReceivedChatActions() {
-        return [...receivedChatActions];
-      },
-
-      clearReceivedChatActions() {
-        receivedChatActions.length = 0;
-      },
-
-      async preimageSubmit(value: number[]): Promise<TestResult & { key?: string }> {
-        try {
-          const r = await hostApi.preimageSubmit(enumValue('v1', new Uint8Array(value)));
-          if (r.isOk()) {
-            return { ok: true, key: r.value.value };
-          }
-          return { ok: false, error: extractError(r.error) };
-        } catch (err) {
-          return { ok: false, error: extractError(err) };
-        }
-      },
-
-      preimageLookup(key: string): Promise<TestResult & { value?: number[] | null }> {
-        return new Promise((resolve) => {
-          let resolved = false;
-          const sub = hostApi.preimageLookupSubscribe(
-            enumValue('v1', key as `0x${string}`),
-            (payload: unknown) => {
-              if (resolved) return;
-              resolved = true;
-              // Unwrap version envelope
-              const p = payload as { tag?: string; value?: unknown };
-              const v = p?.tag === 'v1' ? p.value : payload;
-              sub.unsubscribe();
-              resolve({
+        const subscription = api.preimage
+          .lookupSubscribe({ request: { key: scale.toHexString(key) } })
+          .subscribe({
+            next: (item) =>
+              settle({
                 ok: true,
-                value: v === null ? null : v === undefined ? null : Array.from(v as Uint8Array),
-              });
-            },
-          );
-          // Safety timeout
-          setTimeout(() => {
-            if (!resolved) {
-              resolved = true;
-              sub.unsubscribe();
-              resolve({ ok: false, error: 'timeout' });
-            }
-          }, 5000);
-        });
-      },
+                value: item.value === undefined ? null : Array.from(scale.hexToBytes(item.value)),
+              }),
+            error: (error) => settle({ ok: false, error: describeError(error) }),
+          });
+        const timer = setTimeout(() => settle({ ok: false, error: 'timeout' }), 5_000);
+      }),
 
-      async statementSubmit(topicsHex: string[], dataHex: string): Promise<TestResult> {
-        try {
-          const topics = topicsHex.map(h => hexToU8a(h));
-          const data = hexToU8a(dataHex);
-          const pk = firstRootAddress ? hexToU8a(firstRootAddress) : new Uint8Array(32);
-          // Minimal signed statement; signature is a placeholder 64-byte zero
-          const statement = {
-            proof: {
-              tag: 'Sr25519' as const,
-              value: { signature: new Uint8Array(64), signer: pk },
-            },
-            decryptionKey: undefined,
-            expiry: 0n,
-            channel: undefined,
-            topics,
-            data,
-          };
-          const r = await hostApi.statementStoreSubmit(enumValue('v1', statement));
-          if (r.isOk()) return { ok: true };
-          return { ok: false, error: extractError(r.error) };
-        } catch (err) {
-          return { ok: false, error: extractError(err) };
-        }
-      },
+    subscribeTheme: () => collect(api.theme.subscribe(), receivedThemes, (item) => item),
 
-      statementSubscribe(topicsHex: string[]) {
-        const topics = topicsHex.map(h => hexToU8a(h));
-        // v0.7: TopicFilter enum — use MatchAll for backward compat
-        const filter = { tag: 'MatchAll' as const, value: topics };
-        const sub = hostApi.statementStoreSubscribe(
-          enumValue('v1', filter),
-          (payload: unknown) => {
-            // Unwrap version envelope → SignedStatementsPage { statements, isComplete }
-            const p = payload as { tag?: string; value?: unknown };
-            const unwrapped = p?.tag === 'v1' ? p.value : payload;
-            const page = unwrapped as { statements?: unknown[]; isComplete?: boolean };
-            if (page?.statements && Array.isArray(page.statements)) {
-              for (const s of page.statements) receivedStatements.push(s);
-            } else if (Array.isArray(unwrapped)) {
-              for (const s of unwrapped) receivedStatements.push(s);
-            } else {
-              receivedStatements.push(unwrapped);
-            }
-          },
-        );
-        return { unsubscribe() { sub.unsubscribe(); } };
-      },
+    getReceivedThemes: () => [...receivedThemes],
 
-      getReceivedStatements() {
-        return [...receivedStatements];
-      },
+    deriveEntropy: (contextHex) =>
+      call(
+        () => api.entropy.derive({ context: scale.toHexString(contextHex) }),
+        (value) => ({ entropyHex: value.entropy }),
+      ),
 
-      clearReceivedStatements() {
-        receivedStatements.length = 0;
-      },
+    getUserId: () =>
+      call(() => api.account.getUserId(), (value) => ({ primaryUsername: value.primaryUsername })),
 
-      // ── Statement create proof ────────────────────────────────
-      async statementCreateProof(dotnsId: string, index: number, dataHex: string) {
-        try {
-          const data = hexToU8a(dataHex);
-          const statement = {
-            proof: undefined,
-            decryptionKey: undefined,
-            expiry: undefined,
-            channel: undefined,
-            topics: [],
-            data,
-          };
-          const r = await hostApi.statementStoreCreateProof(
-            enumValue('v1', [[dotnsId, derivationIndexOf(index)], statement]),
-          );
-          if (r.isOk()) return { ok: true, proof: r.value.value };
-          return { ok: false, error: extractError(r.error) };
-        } catch (err) {
-          return { ok: false, error: extractError(err) };
-        }
-      },
+    requestResourceAllocation: (resources) =>
+      call(
+        () => api.resourceAllocation.request({ resources }),
+        (value) => ({ outcomes: [...value.outcomes] }),
+      ),
 
-      // ── Theme ─────────────────────────────────────────────────
-      subscribeTheme() {
-        const sub = hostApi.themeSubscribe(enumValue('v1', undefined), (payload: unknown) => {
-          const p = payload as { tag?: string; value?: unknown };
-          if (p?.tag === 'v1') receivedThemes.push(p.value);
-        });
-        return { unsubscribe() { sub.unsubscribe(); } };
-      },
+    featureSupported: (genesisHash) =>
+      call(
+        () =>
+          api.system.featureSupported({
+            tag: 'Chain',
+            value: { genesisHash: scale.toHexString(genesisHash) },
+          }),
+        (value) => ({ supported: value.supported }),
+      ),
 
-      getReceivedThemes() {
-        return [...receivedThemes];
-      },
+    localStorageWrite: (key, value) =>
+      call(
+        () =>
+          api.localStorage.write({
+            key,
+            value: scale.bytesToHex(new TextEncoder().encode(value)),
+          }),
+        () => ({}),
+      ),
 
-      // ── Entropy ───────────────────────────────────────────────
-      async deriveEntropy(keyHex: string) {
-        try {
-          const key = hexToU8a(keyHex);
-          const r = await hostApi.deriveEntropy(enumValue('v1', key));
-          if (r.isOk()) return { ok: true, entropyHex: u8aToHex(r.value.value) };
-          return { ok: false, error: extractError(r.error) };
-        } catch (err) {
-          return { ok: false, error: extractError(err) };
-        }
-      },
+    localStorageRead: (key) =>
+      call(
+        () => api.localStorage.read({ key }),
+        (response) => ({
+          value:
+            response.value === undefined
+              ? null
+              : new TextDecoder().decode(scale.hexToBytes(response.value)),
+        }),
+      ),
 
-      // ── Login / getUserId ─────────────────────────────────────
-      async requestLogin(reason?: string) {
-        try {
-          const r = await hostApi.requestLogin(enumValue('v1', reason));
-          if (r.isOk()) return { ok: true, loginResult: String(r.value.value) };
-          return { ok: false, error: extractError(r.error) };
-        } catch (err) {
-          return { ok: false, error: extractError(err) };
-        }
-      },
+    localStorageClear: (key) => call(() => api.localStorage.clear({ key }), () => ({})),
 
-      async getUserId() {
-        try {
-          const r = await hostApi.getUserId(enumValue('v1', undefined));
-          if (r.isOk()) return { ok: true, primaryUsername: r.value.value.primaryUsername };
-          return { ok: false, error: extractError(r.error) };
-        } catch (err) {
-          return { ok: false, error: extractError(err) };
-        }
-      },
-
-      // ── Resource allocation ───────────────────────────────────
-      async requestResourceAllocation(resources: Array<{ tag: string; value?: unknown }>) {
-        try {
-          const r = await hostApi.requestResourceAllocation(enumValue('v1', resources));
-          if (r.isOk()) {
-            const outcomes = (r.value.value as Array<{ tag: string }>).map(o => ({ tag: o.tag }));
-            return { ok: true, outcomes };
-          }
-          return { ok: false, error: extractError(r.error) };
-        } catch (err) {
-          return { ok: false, error: extractError(err) };
-        }
-      },
-
-      // ── Feature check ─────────────────────────────────────────
-      async featureSupported(tag: string, value: unknown) {
-        try {
-          const r = await hostApi.featureSupported(enumValue('v1', { tag, value }));
-          if (r.isOk()) return { ok: true, supported: r.value.value };
-          return { ok: false, error: extractError(r.error) };
-        } catch (err) {
-          return { ok: false, error: extractError(err) };
-        }
-      },
-
-      // ── Local storage ─────────────────────────────────────────
-      async localStorageWrite(key: string, value: string) {
-        try {
-          const r = await hostApi.localStorageWrite(enumValue('v1', [key, new TextEncoder().encode(value)]));
-          if (r.isOk()) return { ok: true };
-          return { ok: false, error: extractError(r.error) };
-        } catch (err) {
-          return { ok: false, error: extractError(err) };
-        }
-      },
-
-      async localStorageRead(key: string) {
-        try {
-          const r = await hostApi.localStorageRead(enumValue('v1', key));
-          if (r.isOk()) {
-            const bytes = r.value.value;
-            return { ok: true, value: bytes ? new TextDecoder().decode(bytes) : null };
-          }
-          return { ok: false, error: extractError(r.error) };
-        } catch (err) {
-          return { ok: false, error: extractError(err) };
-        }
-      },
-
-      async localStorageClear(key: string) {
-        try {
-          const r = await hostApi.localStorageClear(enumValue('v1', key));
-          if (r.isOk()) return { ok: true };
-          return { ok: false, error: extractError(r.error) };
-        } catch (err) {
-          return { ok: false, error: extractError(err) };
-        }
-      },
-
-      // ── Create transaction ────────────────────────────────────
-      async createTransaction(dotnsId: string, index: number) {
-        try {
-          const payload = {
-            signer: [dotnsId, derivationIndexOf(index)] as const,
-            genesisHash: new Uint8Array(32),
-            callData: new Uint8Array([0, 0]),
-            extensions: [] as Array<{ id: string; extra: Uint8Array; additionalSigned: Uint8Array }>,
+    createTransaction: (dotnsId, derivationIndex) =>
+      call(
+        () =>
+          api.signing.createTransaction({
+            signer: accountId(dotnsId, derivationIndex),
+            genesisHash: `0x${'00'.repeat(32)}`,
+            callData: '0x0000',
+            extensions: [] as TxPayloadExtension[],
             txExtVersion: 0,
-          };
-          const r = await hostApi.createTransaction(enumValue('v1', payload));
-          if (r.isOk()) {
-            const inner = (r.value as { tag: string; value: Uint8Array }).value;
-            return { ok: true, signedHex: u8aToHex(inner) };
-          }
-          return { ok: false, error: extractError(r.error) };
-        } catch (err) {
-          return { ok: false, error: extractError(err) };
-        }
-      },
+          }),
+        (value) => ({ signedHex: value.transaction }),
+      ),
 
-      // ── Create transaction (legacy account, signer = raw 32B pubkey) ──
-      async createTransactionLegacy(publicKeyHex: string) {
-        try {
-          const payload = {
-            signer: hexToU8a(publicKeyHex),
-            genesisHash: new Uint8Array(32),
-            callData: new Uint8Array([0, 0]),
-            extensions: [] as Array<{ id: string; extra: Uint8Array; additionalSigned: Uint8Array }>,
+    createTransactionLegacy: (publicKeyHex) =>
+      call(
+        () =>
+          api.signing.createTransactionWithLegacyAccount({
+            signer: scale.toHexString(publicKeyHex),
+            genesisHash: `0x${'00'.repeat(32)}`,
+            callData: '0x0000',
+            extensions: [] as TxPayloadExtension[],
             txExtVersion: 0,
-          };
-          const r = await hostApi.createTransactionWithLegacyAccount(enumValue('v1', payload));
-          if (r.isOk()) {
-            const inner = (r.value as { tag: string; value: Uint8Array }).value;
-            return { ok: true, signedHex: u8aToHex(inner) };
-          }
-          return { ok: false, error: extractError(r.error) };
-        } catch (err) {
-          return { ok: false, error: extractError(err) };
-        }
-      },
+          }),
+        (value) => ({ signedHex: value.transaction }),
+      ),
 
-      // ── Payment smoke: topUp + requestPayment via paymentManager ──────
-      async paymentSmoke(destinationHex: string) {
-        try {
-          await paymentManager.topUp(1000n, { type: 'productAccount', derivationIndex: 0 });
-          const req = await paymentManager.requestPayment(500n, hexToU8a(destinationHex));
-          return { ok: true, paymentId: req.id };
-        } catch (err) {
-          return { ok: false, error: extractError(err) };
-        }
-      },
+    accountCreateProof: (dotnsId, derivationIndex) =>
+      call(
+        () =>
+          api.account.createAccountProof({
+            keyHandle: accountId(dotnsId, derivationIndex),
+            context: { productId: dotnsId, suffix: index(derivationIndex) },
+            ringLocation: RING_LOCATION,
+            message: scale.bytesToHex(new TextEncoder().encode('test-proof')),
+          }),
+        (value) => ({ proofHex: value.proof, alias: value.contextualAlias.alias }),
+      ),
 
-      // Same as paymentSmoke but targets an explicit purse on both legs (RFC-0017).
-      async paymentSmokeWithPurse(destinationHex: string, purse: number) {
-        try {
-          await paymentManager.topUp(1000n, { type: 'productAccount', derivationIndex: 0 }, purse);
-          const req = await paymentManager.requestPayment(500n, hexToU8a(destinationHex), purse);
-          return { ok: true, paymentId: req.id };
-        } catch (err) {
-          return { ok: false, error: extractError(err) };
-        }
-      },
+    statementCreateProof: (dotnsId, derivationIndex, dataHex) => {
+      const statement: Statement = { topics: [], data: scale.toHexString(dataHex) };
+      return call(
+        () =>
+          api.statementStore.createProof({
+            productAccountId: accountId(dotnsId, derivationIndex),
+            statement,
+          }),
+        (value) => ({ proof: value.proof }),
+      );
+    },
 
-      // RFC-0021 coins top-up. amount/keysHex stringified for postMessage.
-      // On PartialPayment, returns ok:false and the credited amount so tests can assert it.
-      async paymentTopUpCoins(amount: string, keysHex: string[]) {
-        try {
-          const keys = keysHex.map((k) => hexToU8a(k));
-          await paymentManager.topUp(BigInt(amount), { type: 'coins', keys });
-          return { ok: true };
-        } catch (err) {
-          const payload = (err as { payload?: { credited?: bigint } })?.payload;
-          if (payload && typeof payload.credited === 'bigint') {
-            // Skip extractError: the payload carries a BigInt that JSON.stringify can't serialize.
-            return { ok: false, error: 'PartialPayment', credited: payload.credited.toString() };
-          }
-          return { ok: false, error: extractError(err) };
-        }
-      },
+    statementCreateProofAuthorized: (dataHex) => {
+      const statement: Statement = { topics: [], data: scale.toHexString(dataHex) };
+      return call(
+        () => api.statementStore.createProofAuthorized(statement),
+        (value) => ({ proof: value.proof }),
+      );
+    },
+  };
 
-      // ── Statement store proof (authorized — host allowance slot) ─────
-      async statementCreateProofAuthorized(dataHex: string) {
-        try {
-          const statement = {
-            proof: undefined,
-            decryptionKey: undefined,
-            expiry: undefined,
-            channel: undefined,
-            topics: [],
-            data: hexToU8a(dataHex),
-          };
-          const r = await hostApi.statementStoreCreateProofAuthorized(enumValue('v1', statement));
-          if (r.isOk()) return { ok: true, proof: r.value.value };
-          return { ok: false, error: extractError(r.error) };
-        } catch (err) {
-          return { ok: false, error: extractError(err) };
-        }
-      },
-
-      // ── Sign raw (product-account flow) ───────────────────────────────
-      async signRawProduct(dotnsId: string, index: number, payloadHex: string) {
-        try {
-          const r = await hostApi.signRaw(enumValue('v1', {
-            account: [dotnsId, derivationIndexOf(index)] as const,
-            payload: { tag: 'Bytes' as const, value: hexToU8a(payloadHex) },
-          }));
-          if (r.isOk()) {
-            return { ok: true, signature: (r.value as { tag: string; value: { signature: `0x${string}` } }).value.signature };
-          }
-          return { ok: false, error: extractError(r.error) };
-        } catch (err) {
-          return { ok: false, error: extractError(err) };
-        }
-      },
-
-      // ── Payment subscribe: balance ────────────────────────────────────
-      subscribeBalance() {
-        const sub = paymentManager.subscribeBalance((balance) => {
-          receivedBalances.push(balance.available.toString());
-        });
-        return { unsubscribe() { sub.unsubscribe(); } };
-      },
-      getReceivedBalances() {
-        return [...receivedBalances];
-      },
-
-      // ── Payment subscribe: status ─────────────────────────────────────
-      subscribePaymentStatus(id: string) {
-        const sub = paymentManager.subscribePaymentStatus(id, (status) => {
-          receivedStatuses.push(status as { type: string; reason?: string });
-        });
-        return { unsubscribe() { sub.unsubscribe(); } };
-      },
-      getReceivedStatuses() {
-        return [...receivedStatuses];
-      },
-
-      // ── Account create proof ──────────────────────────────────
-      async accountCreateProof(dotnsId: string, index: number) {
-        try {
-          const message = new TextEncoder().encode('test-proof');
-          const r = await hostApi.accountCreateProof(
-            enumValue('v1', [[dotnsId, derivationIndexOf(index)], RING_LOCATION, message]),
-          );
-          // RFC-0022: the proof is now a struct carrying the contextual alias
-          // and the ring coordinates alongside the signature bytes.
-          if (r.isOk()) return { ok: true, proofHex: u8aToHex(r.value.value.proof) };
-          return { ok: false, error: extractError(r.error) };
-        } catch (err) {
-          return { ok: false, error: extractError(err) };
-        }
-      },
-    };
-  } catch (err) {
-    el.textContent = `error: ${err}`;
+  function requestRemotePermission(permission: RemotePermission) {
+    return call(
+      () => api.permissions.requestRemotePermission({ permission }),
+      (value) => ({ approved: value.granted }),
+    );
   }
+
+  // Published before the account fetch: a host-callback test only needs the
+  // client, and the fetch below is a full SSO round trip through the worker.
+  setResult('status', 'client-created');
+
+  const account = await api.account.getAccount({
+    productAccountId: accountId(DOTNS_ID, DERIVATION_INDEX),
+  });
+  account.match(
+    (response) => {
+      productKey = response.account.publicKey;
+      setResult('product-key', response.account.publicKey);
+      setResult('status', 'connected');
+    },
+    (error) => {
+      setResult('status', `no-account:${describeError(error)}`);
+    },
+  );
 }
 
-init();
+void init().catch((error: unknown) => {
+  setResult('status', `boot-error:${error instanceof Error ? error.message : String(error)}`);
+});

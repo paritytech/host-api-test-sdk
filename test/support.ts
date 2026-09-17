@@ -7,6 +7,8 @@ import { createServer } from 'node:http';
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+// Type-only: the `window.__TEST_HOST__` declaration the fixture publishes.
+import type {} from '../dist/playwright/index.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
