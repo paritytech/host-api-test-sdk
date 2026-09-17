@@ -13,16 +13,16 @@ importers:
         version: 1.58.2
     devDependencies:
       '@noble/ciphers':
-        specifier: ^2.4.0
+        specifier: 2.4.0
         version: 2.4.0
       '@noble/curves':
-        specifier: ^2.4.0
+        specifier: 2.4.0
         version: 2.4.0
       '@noble/hashes':
-        specifier: ^2.4.0
+        specifier: 2.4.0
         version: 2.4.0
       '@parity/truapi':
-        specifier: ^0.17.0
+        specifier: 0.17.0
         version: 0.17.0
       '@parity/truapi-host':
         specifier: 0.17.0
@@ -31,7 +31,7 @@ importers:
         specifier: 0.2.0
         version: 0.2.0
       '@polkadot-labs/hdkd-helpers':
-        specifier: ^0.0.34
+        specifier: 0.0.34
         version: 0.0.34
       '@polkadot/keyring':
         specifier: ^14.0.0
@@ -46,7 +46,7 @@ importers:
         specifier: ^14.0.0
         version: 14.0.1(@polkadot/util@14.0.1)
       '@scure/sr25519':
-        specifier: ^2.4.0
+        specifier: 2.4.0
         version: 2.4.0
       '@types/node':
         specifier: ^20
@@ -58,7 +58,7 @@ importers:
         specifier: ^8.0.0
         version: 8.2.0
       polkadot-api:
-        specifier: ^3.1.0
+        specifier: 3.1.0
         version: 3.1.0(esbuild@0.25.12)(rxjs@7.8.2)
       scale-ts:
         specifier: 1.6.1
@@ -67,7 +67,7 @@ importers:
         specifier: ^5
         version: 5.9.3
       vitest:
-        specifier: ^5.0.1
+        specifier: 5.0.1
         version: 5.0.1(@types/node@20.19.35)(vite@8.3.0(@types/node@20.19.35)(esbuild@0.25.12))
 
 packages:
@@ -764,9 +764,6 @@ packages:
   '@types/deep-eql@4.0.2':
     resolution: {integrity: sha512-c9h9dVVMigMPc4bwTvC5dxqtqJZwQPePsWjPlpSOnojbor6pGqdk541lfA7AqFQr5pB1BRdq0juY9db81BwyFw==}
 
-  '@types/estree@1.0.8':
-    resolution: {integrity: sha512-dWHzHa2WqEXI/O1E9OjrocMTKJl2mSrEolh1Iomrv6U+JuNwaHXsXx9bLu5gG7BUWFIN0skIQJQ/L1rIex4X6w==}
-
   '@types/estree@1.0.9':
     resolution: {integrity: sha512-GhdPgy1el4/ImP05X05Uw4cw2/M93BCUmnEvWZNStlCzEKME4Fkk+YpoA5OiHNQmoS7Cafb8Xa3Pya8m1Qrzeg==}
 
@@ -1091,10 +1088,6 @@ packages:
 
   picocolors@1.1.1:
     resolution: {integrity: sha512-xceH2snhtb5M9liqDsmEw56le376mTZkEX/jEb/RxNFyegNul7eNslCXP9FDj/Lcu0X8KEyMceP2ntpaHrDEVA==}
-
-  picomatch@4.0.3:
-    resolution: {integrity: sha512-5gTmgEY/sqK6gFXLIsQNH19lWb4ebPDLA4SdLP7dsWkIXHWlG66oPuVvXSGFPppYZz8ZDZq0dYYrbHfBCVUb1Q==}
-    engines: {node: '>=12'}
 
   picomatch@4.0.7:
     resolution: {integrity: sha512-qcJu88Q2IWqJsDD529JKMdwGm/dvInW4HvQnRwiH9JtihJvzGOscDtHE3x1pBKeUOTysQ8kVmLnJ2kJu7yhcGA==}
@@ -2019,8 +2012,6 @@ snapshots:
 
   '@types/deep-eql@4.0.2': {}
 
-  '@types/estree@1.0.8': {}
-
   '@types/estree@1.0.9': {}
 
   '@types/node@20.19.35':
@@ -2111,7 +2102,7 @@ snapshots:
 
   estree-walker@3.0.3:
     dependencies:
-      '@types/estree': 1.0.8
+      '@types/estree': 1.0.9
 
   execa@10.0.1:
     dependencies:
@@ -2300,8 +2291,6 @@ snapshots:
   pathe@2.0.3: {}
 
   picocolors@1.1.1: {}
-
-  picomatch@4.0.3: {}
 
   picomatch@4.0.7: {}
 
@@ -2537,7 +2526,7 @@ snapshots:
   unplugin-utils@0.2.5:
     dependencies:
       pathe: 2.0.3
-      picomatch: 4.0.3
+      picomatch: 4.0.7
 
   validate-npm-package-license@3.0.4:
     dependencies:
