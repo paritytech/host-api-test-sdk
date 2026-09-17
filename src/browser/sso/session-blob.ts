@@ -7,7 +7,7 @@
  * turns an upstream layout change into a decode failure rather than silent
  * drift, so it must never be dropped.
  */
-import { Bytes, Option, Struct, str, u8 } from 'scale-ts';
+import { Bytes, Option, Struct, str } from 'scale-ts';
 
 /** `PERSISTED_SESSION_V1`. */
 const PERSISTED_SESSION_V1 = 1;
@@ -44,7 +44,7 @@ export function encodePersistedSession(
 ): Uint8Array {
   const body = SessionInfo.enc(info);
   const blob = new Uint8Array(1 + body.length);
-  blob[0] = u8.enc(PERSISTED_SESSION_V1)[0];
+  blob[0] = PERSISTED_SESSION_V1;
   blob.set(body, 1);
   return blob;
 }
@@ -76,6 +76,32 @@ export interface ExternalSessionOptions {
 export function encodeExternalPairedSession(
   options: ExternalSessionOptions,
 ): Uint8Array {
+  // Guard caller-supplied widths to prevent silent misalignment.
+  if (options.ssSecret.length !== 64) {
+    throw new Error(
+      `ssSecret must be exactly 64 bytes, got ${options.ssSecret.length}`,
+    );
+  }
+  const checks32 = [
+    ['rootPublicKey', options.rootPublicKey],
+    ['identityAccountId', options.identityAccountId],
+    ['encSecret', options.encSecret],
+    ['peerEncPubkey', options.peerEncPubkey],
+    ['ssPublicKey', options.ssPublicKey],
+    ['sessionIdOwn', options.sessionIdOwn],
+    ['sessionIdPeer', options.sessionIdPeer],
+  ] as const;
+  for (const [name, value] of checks32) {
+    if (value.length !== 32) {
+      throw new Error(`${name} must be exactly 32 bytes, got ${value.length}`);
+    }
+  }
+  if (options.rootEntropySource !== undefined && options.rootEntropySource.length !== 32) {
+    throw new Error(
+      `rootEntropySource must be exactly 32 bytes, got ${options.rootEntropySource.length}`,
+    );
+  }
+
   const { rootEntropySource = new Uint8Array(32) } = options;
   return encodePersistedSession({
     public_key: options.rootPublicKey,
