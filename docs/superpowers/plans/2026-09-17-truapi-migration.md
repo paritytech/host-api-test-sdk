@@ -1234,7 +1234,7 @@ This is a port, not a rewrite: the extrinsic layout logic moves across unchanged
 
 ```ts
 // src/browser/signing/extrinsic.spec.ts
-import { sr25519 } from '@scure/sr25519';
+import { verify } from '@scure/sr25519';
 import { describe, expect, it } from 'vitest';
 import { deriveDev } from '../dev-accounts.js';
 import { buildSignedV4Extrinsic, signRawBytes } from './extrinsic.js';
@@ -1267,13 +1267,13 @@ describe('extrinsic signing', () => {
   it('signs raw bytes verifiably', () => {
     const message = new Uint8Array([1, 2, 3]);
     const signature = signRawBytes(alice, { tag: 'Bytes', value: message });
-    expect(sr25519.verify(message, signature, alice.publicKey)).toBe(true);
+    expect(verify(message, signature, alice.publicKey)).toBe(true);
   });
 
   it('signs a text payload as its UTF-8 bytes', () => {
     const signature = signRawBytes(alice, { tag: 'Payload', value: 'hello' });
     expect(
-      sr25519.verify(new TextEncoder().encode('hello'), signature, alice.publicKey),
+      verify(new TextEncoder().encode('hello'), signature, alice.publicKey),
     ).toBe(true);
   });
 });
@@ -1557,8 +1557,13 @@ git commit -m "feat: answer SSO signing requests from an in-page responder"
 ### Task 10: Host callback groups
 
 **Files:**
-- Create: `src/browser/callbacks/storage.ts`, `navigation.ts`, `notifications.ts`, `permissions.ts`, `features.ts`, `passive.ts`, `index.ts`
+- Create: `src/browser/callbacks/state.ts`, `storage.ts`, `navigation.ts`, `notifications.ts`, `permissions.ts`, `features.ts`, `passive.ts`, `chain.ts`, `index.ts`
 - Test: `src/browser/callbacks/index.spec.ts`
+
+`chain.ts` is created here as a minimal router only — loopback for
+`PEOPLE_GENESIS_HASH`, throw otherwise — because this task's test dispatches
+through `createHostCallbacks`, so the module must exist. Task 11 replaces its
+body with the full routing and adds its own tests.
 
 **Interfaces:**
 - Consumes: `PEOPLE_GENESIS_HASH` (`../constants.js`), `LoopbackStore` (`../loopback-chain.js`).
@@ -1686,7 +1691,7 @@ git commit -m "feat: implement the twelve host callback groups"
 ### Task 11: Chain provider
 
 **Files:**
-- Create: `src/browser/callbacks/chain.ts`
+- Rewrite: `src/browser/callbacks/chain.ts` (Task 10 created it as a loopback-only stub)
 - Test: `src/browser/callbacks/chain.spec.ts`
 
 **Interfaces:**
@@ -1945,7 +1950,9 @@ function resolveProductAccount(
 }
 ```
 
-`buildControlApi` is specified in Task 14.
+`buildControlApi` is implemented in this task; its full member list is written
+out in Task 14 Step 1. It closes over `state`, `responder`, `runtime` and
+`iframeHost`, and returns the trimmed `TestHostAPI`.
 
 - [ ] **Step 3: Delete the obsolete channel shim**
 
@@ -2051,17 +2058,21 @@ git commit -m "build: emit an ESM worker bundle and serve the wasm payloads"
 ### Task 14: Control API and Playwright fixture
 
 **Files:**
-- Modify: `src/browser/host-runtime.ts` (the `buildControlApi` referenced in Task 12)
 - Modify: `src/playwright/fixture.ts`
 - Modify: `src/index.ts`
+- Modify: `test-exports-esm.mjs`, `test-exports-cjs.cjs`
 
 **Interfaces:**
-- Consumes: `HostState` (`./callbacks/index.js`), the responder handle (`./sso/responder.js`).
-- Produces: `window.__TEST_HOST__` matching the trimmed `TestHostAPI` from Task 12.
+- Consumes: `window.__TEST_HOST__` as Task 12 built it.
+- Produces: a Playwright fixture and package exports matching the trimmed `TestHostAPI`.
 
-- [ ] **Step 1: Implement the control API**
+`buildControlApi` itself is implemented in Task 12, which needs it to typecheck.
+Its member list is below for reference — Task 12 owns the code; this task only
+consumes it.
 
-`buildControlApi` returns an object reading and mutating `HostState` plus the responder:
+- [ ] **Step 1: Confirm the control API surface**
+
+`buildControlApi` (Task 12) returns an object reading and mutating `HostState` plus the responder:
 
 - `getSigningLog` / `clearSigningLog` → the responder
 - `setPermissionBehavior`, `grantPermission`, `revokePermission`, `getGrantedPermissions`, `getPermissionLog`, `clearPermissionLog` → `state`
@@ -2096,8 +2107,8 @@ Update `test-exports-esm.mjs` and `test-exports-cjs.cjs` to stop asserting the r
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/browser/host-runtime.ts src/playwright/fixture.ts src/index.ts test-exports-esm.mjs test-exports-cjs.cjs
-git commit -m "feat: rebuild the control API on the new host seams"
+git add src/playwright/fixture.ts src/index.ts test-exports-esm.mjs test-exports-cjs.cjs
+git commit -m "feat: expose the migrated fixture and package exports"
 ```
 
 ---
