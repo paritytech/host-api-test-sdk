@@ -1,7 +1,7 @@
 import type { Page, FrameLocator } from '@playwright/test';
 import { createTestHostServer } from '../server.js';
 import { DEFAULT_CHAIN } from '../networks.js';
-import type { ChatBot, ChatMessageLogEntry, ChatRoom, CreateTestHostOptions, DevAccountName, HexString, NavigationLogEntry, NotificationLogEntry, PermissionBehavior, PermissionLogEntry, PreimageEntry, SigningLogEntry, TestHostAPI, Theme, ThemeInput } from '../types.js';
+import type { ChatActionInput, ChatBot, ChatMessageLogEntry, ChatRoom, CreateTestHostOptions, DevAccountName, HexString, NavigationLogEntry, NotificationLogEntry, PermissionBehavior, PermissionLogEntry, PreimageEntry, SigningLogEntry, TestHostAPI, Theme, ThemeInput } from '../types.js';
 
 export interface TestHost {
   /** The host page (contains the iframe) */
@@ -10,10 +10,19 @@ export interface TestHost {
   /** FrameLocator for the embedded product iframe */
   productFrame(): FrameLocator;
 
-  /** Dispose container and recreate with a single account (iframe reloads) */
+  /**
+   * Re-mint the host session under a single account.
+   *
+   * The product iframe is NOT reloaded: its `MessagePort` is transferred once
+   * at load and cannot be handed over again, so the session is re-installed
+   * and the product's core connection replaced underneath it. The product
+   * keeps running and is not told; reload the page yourself if a test needs
+   * the product to re-initialise. `getConnectionStatus()` returns to
+   * `'disconnected'` until the product's next frame arrives.
+   */
   switchAccount(name: DevAccountName): Promise<void>;
 
-  /** Dispose container and recreate with multiple accounts (iframe reloads) */
+  /** Re-mint the host session under several accounts. See `switchAccount`. */
   setAccounts(names: DevAccountName[]): Promise<void>;
 
   /** All auto-signed payloads since last clear */
@@ -67,8 +76,14 @@ export interface TestHost {
   /** Clear all chat state (rooms, bots, messages, subscribers) */
   clearChatState(): Promise<void>;
 
-  /** Inject an incoming chat action (peer message) into the product */
-  injectChatAction(action: { roomId: string; peer: string; payload: unknown }): Promise<void>;
+  /**
+   * Inject an incoming chat action (peer message) into the product.
+   *
+   * Rejects if the action could not be delivered. Note that the action is
+   * structured-cloned into the page, so a payload carrying a `bigint` (e.g.
+   * `ChatFile.sizeBytes`) cannot cross this boundary.
+   */
+  injectChatAction(action: ChatActionInput): Promise<void>;
 
   /** List preimages known to the test host (submitted + seeded) */
   getPreimages(): Promise<PreimageEntry[]>;
@@ -93,7 +108,11 @@ export interface TestHost {
    */
   setTheme(theme: ThemeInput): Promise<void>;
 
-  /** Wait until the product-sdk has connected to the host container */
+  /**
+   * Wait until the embedded product has actually talked to the host — the
+   * first wire frame off its `MessagePort`. This is the readiness gate; the
+   * presence of `window.__TEST_HOST__` says nothing about the product.
+   */
   waitForConnection(timeout?: number): Promise<void>;
 }
 
@@ -209,7 +228,9 @@ export function createTestHostFixture(defaults: TestHostFixtureOptions) {
           await page.evaluate(() => window.__TEST_HOST__.clearChatState());
         },
 
-        async injectChatAction(action: { roomId: string; peer: string; payload: unknown }) {
+        async injectChatAction(action: ChatActionInput) {
+          // The arrow returns the host's promise, so Playwright awaits it and
+          // a delivery failure surfaces here rather than in the page console.
           await page.evaluate((a) => window.__TEST_HOST__.injectChatAction(a), action);
         },
 

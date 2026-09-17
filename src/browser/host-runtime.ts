@@ -33,6 +33,7 @@ import type { DevKeypair } from './dev-accounts.js';
 import { deriveDev, deriveFromUri } from './dev-accounts.js';
 import { createHostWorker } from './host-worker.js';
 import { createLoopbackStore } from './loopback-chain.js';
+import { resolveProductAccount } from './product-accounts.js';
 import type { ResponderSession, SigningLogEntry, SsoResponder } from './sso/responder.js';
 import { createSsoResponder } from './sso/responder.js';
 import type { ResolveAccount } from './sso/ring-vrf.js';
@@ -69,70 +70,6 @@ const PRODUCT_SANDBOX = 'allow-scripts allow-same-origin allow-forms allow-popup
 const DEFAULT_PRODUCT_ID = 'test-product.dot';
 
 const encoder = new TextEncoder();
-
-/**
- * Canonical string form of one account selector.
- *
- * `Index(n)` renders as the plain number, so `productAccounts` keys and the
- * derivation URIs this host builds stay byte-identical to the pre-migration
- * ones and configured addresses do not move. `Raw(bytes)` renders as its hex.
- * `undefined` has no selector at all: it is a `ProductSubtreeRequest`, which
- * names a product's subtree root rather than an account under it.
- *
- * The parameter is `unknown` because that is what `ResolveAccount` passes —
- * an already-decoded `DerivationIndex` or nothing — so it is narrowed here
- * rather than assumed. An unrecognised shape throws, and the responder turns
- * a handler throw into a failure reply, so it surfaces to the product instead
- * of hanging it.
- */
-function selectorOf(derivationIndex: unknown): string | undefined {
-  if (derivationIndex === undefined || derivationIndex === null) return undefined;
-  if (typeof derivationIndex === 'object' && 'tag' in derivationIndex && 'value' in derivationIndex) {
-    const { tag, value } = derivationIndex as { tag: unknown; value: unknown };
-    if (tag === 'Index' && (typeof value === 'number' || typeof value === 'bigint')) {
-      return String(value);
-    }
-    if (tag === 'Raw') {
-      if (typeof value === 'string') return value.toLowerCase();
-      if (value instanceof Uint8Array) {
-        return `0x${Array.from(value, (byte) => byte.toString(16).padStart(2, '0')).join('')}`;
-      }
-    }
-  }
-  throw new Error(`unsupported derivation index: ${describe(derivationIndex)}`);
-}
-
-/** Readable rendering of an unexpected value for an error message. */
-function describe(value: unknown): string {
-  if (typeof value === 'object' && value !== null && 'tag' in value) {
-    return `{ tag: ${String((value as { tag: unknown }).tag)} }`;
-  }
-  return typeof value === 'object' ? JSON.stringify(value) : String(value);
-}
-
-/**
- * Resolve one product account to the keypair that signs for it.
- *
- * A `productAccounts` entry wins; otherwise derive under the selected
- * account, keeping the pre-migration `//Selected//dotnsId/index` path so
- * configured addresses do not move. A request with no selector — a product's
- * subtree root — derives at `//Selected//dotnsId`, the parent label of every
- * account under it, so it is stable and cannot collide with an indexed one.
- */
-function resolveProductAccount(
-  config: HostConfig,
-  accounts: AccountConfig[],
-  dotNsIdentifier: string,
-  derivationIndex: unknown,
-): DevKeypair {
-  const selector = selectorOf(derivationIndex);
-  const key = selector === undefined ? dotNsIdentifier : `${dotNsIdentifier}/${selector}`;
-  const override = config.productAccounts?.[key];
-  if (override) return deriveFromUri(override.uri);
-  const selected = accounts[0];
-  if (!selected) throw new Error('no account is selected in this host');
-  return deriveFromUri(`${selected.uri}//${key}`);
-}
 
 /**
  * Mint both halves of an SSO session for one signer.
@@ -182,10 +119,19 @@ function devAccount(name: string): AccountConfig {
  * The product's `MessagePort` and the core's product provider are both
  * `WireProvider`s carrying the same SCALE wire frames, so relaying one into
  * the other is the whole bridge — no translation, no framing, no filtering.
+ * `onFrameFromLeft` is how the product's connection status is observed: the
+ * first frame off the port is the product actually talking.
  * Returns the disposer that stops both directions.
  */
-function bridgeProviders(left: WireProvider, right: WireProvider): () => void {
-  const stopLeft = left.subscribe((frame) => right.postMessage(frame));
+function bridgeProviders(
+  left: WireProvider,
+  right: WireProvider,
+  onFrameFromLeft?: () => void,
+): () => void {
+  const stopLeft = left.subscribe((frame) => {
+    onFrameFromLeft?.();
+    right.postMessage(frame);
+  });
   const stopRight = right.subscribe((frame) => left.postMessage(frame));
   return () => {
     stopLeft();
@@ -198,9 +144,15 @@ function bridgeProviders(left: WireProvider, right: WireProvider): () => void {
  * answered.
  *
  * The callback groups know nothing about the iframe, but a granted `Camera`
- * has to reach the `allow` attribute for the product to actually get the
- * device — that is what the pre-migration `handleDevicePermission` did, and
- * what dot.li does.
+ * belongs in the `allow` attribute, as the pre-migration
+ * `handleDevicePermission` put it there. Note what that buys and what it does
+ * not: a Permissions Policy only takes effect at navigation, so — exactly as
+ * pre-migration noted — this applies on the NEXT navigation or iframe
+ * recreation, not to the document already loaded. Pre-migration at least
+ * re-navigated the iframe on an account switch; this host deliberately does
+ * not (see `setAccounts`), so today nothing re-navigates it and the attribute
+ * is written for a future load. It is kept because it is correct and because
+ * it is what makes a rebuilt iframe inherit the right policy.
  */
 function withIframePermissionsPolicy(
   callbacks: RequiredHostCallbacks,
@@ -234,17 +186,17 @@ function productIframeUrl(productUrl: string): string {
 }
 
 /**
- * Take over the page's placeholder iframe slot.
+ * The page's placeholder iframe slot.
  *
- * `createIframeHost` builds its own iframe, so the page's placeholder is
- * removed and the new iframe inherits its id — `#product-frame` is what the
- * Playwright fixture locates the product by.
+ * `createIframeHost` builds its own iframe, so the placeholder is handed over
+ * rather than reused: its parent becomes the container, and the new iframe
+ * takes its `#product-frame` id — that is what the Playwright fixture locates
+ * the product by. The placeholder is returned rather than removed here, so a
+ * `createIframeHost` that throws leaves the page intact.
  */
-function mountPoint(): HTMLElement {
+function placeholderSlot(): { container: HTMLElement; placeholder: Element | null } {
   const placeholder = document.getElementById('product-frame');
-  const container = placeholder?.parentElement ?? document.body;
-  placeholder?.remove();
-  return container;
+  return { container: placeholder?.parentElement ?? document.body, placeholder };
 }
 
 async function init(): Promise<void> {
@@ -266,7 +218,11 @@ async function init(): Promise<void> {
     return;
   }
   const resolveAccount: ResolveAccount = (dotNsIdentifier, derivationIndex) =>
-    resolveProductAccount(config, accounts, dotNsIdentifier, derivationIndex);
+    resolveProductAccount(
+      { accounts, productAccounts: config.productAccounts },
+      dotNsIdentifier,
+      derivationIndex,
+    );
 
   let session = mintSession(deriveFromUri(accounts[0].uri));
   let responder = createSsoResponder({ store, session, resolveAccount });
@@ -292,100 +248,152 @@ async function init(): Promise<void> {
     },
   });
 
-  let connectionStatus = 'connecting';
-  await runtime.activateExternalSession(encodeExternalPairedSession(session));
-  connectionStatus = 'connected';
-
-  const productId = config.productId ?? DEFAULT_PRODUCT_ID;
-  let provider = await runtime.createProvider({ productId });
-
-  // `createIframeHost` hands the port over synchronously, before the iframe
-  // loads; the provider takes the promise and buffers until it arrives.
-  let handOverPort!: (port: MessagePort) => void;
-  const portProvider = createMessagePortProvider(
-    new Promise<MessagePort>((resolve) => {
-      handOverPort = resolve;
-    }),
-  );
-
-  const host = createIframeHost({
-    iframeUrl: productIframeUrl(config.productUrl),
-    container: mountPoint(),
-    onPort: handOverPort,
-    allow: buildAllowAttribute(state.grantedPermissions),
-    sandbox: PRODUCT_SANDBOX,
-  });
-  host.iframe.id = 'product-frame';
-  iframeHost = host;
-
-  let unbridge = bridgeProviders(portProvider, provider);
-
-  /**
-   * Re-mint the session for `names` and resume routing.
-   *
-   * The iframe is deliberately left alone: its `MessagePort` was transferred
-   * once, at load, and reloading it would strand the channel. So the session
-   * is dropped and re-installed under the new signer and the product provider
-   * is replaced over the same port.
-   */
-  async function setAccounts(names: string[]): Promise<void> {
-    if (names.length === 0) throw new Error('setAccounts requires at least one account');
-    accounts = names.map(devAccount);
-
-    connectionStatus = 'connecting';
-    retiredSigningLog.push(...responder.getSigningLog());
-    responder.dispose();
-    session = mintSession(deriveFromUri(accounts[0].uri));
-    responder = createSsoResponder({ store, session, resolveAccount });
-
-    await runtime.resetSessionState();
-    await runtime.activateExternalSession(encodeExternalPairedSession(session));
-    connectionStatus = 'connected';
-
-    unbridge();
-    provider.dispose();
-    provider = await runtime.createProvider({ productId });
-    unbridge = bridgeProviders(portProvider, provider);
-  }
-
-  /**
-   * A stable responder handle over a responder that account switching
-   * replaces, so the signing log survives a switch as it did pre-migration.
-   */
-  const responderFacade: SsoResponder = {
-    getSigningLog: () => [...retiredSigningLog, ...responder.getSigningLog()],
-    clearSigningLog: () => {
-      retiredSigningLog.length = 0;
-      responder.clearSigningLog();
-    },
-    dispose: () => responder.dispose(),
+  // Two independent readouts, deliberately: `productStatus` is the PRODUCT
+  // connection (what the pre-migration `subscribeProductConnectionStatus`
+  // reported, and what the fixture's `waitForConnection` gates on), and
+  // `sessionStatus` is this host's own session activation. Publishing
+  // `__TEST_HOST__` says nothing about either.
+  let productStatus = 'disconnected';
+  let sessionStatus = 'connecting';
+  const productIsTalking = () => {
+    productStatus = 'connected';
   };
 
-  window.__TEST_HOST__ = buildControlApi({
-    state,
-    responder: responderFacade,
-    runtime,
-    iframeHost: host,
-    provider: (): TrUApiProductProvider => provider,
-    setAccounts,
-    connectionStatus: () => connectionStatus,
-    disposeBridge: () => {
-      unbridge();
-      portProvider.dispose();
-    },
-  });
+  try {
+    await runtime.activateExternalSession(encodeExternalPairedSession(session));
+    sessionStatus = 'connected';
 
-  console.log(
-    '[test-host] Initialized:',
-    '\n  product:',
-    productId,
-    '\n  networks:',
-    config.networks
-      .map((network) => `${network.name} (${network.genesisHash.slice(0, 18)}...) ${network.rpcUrl}`)
-      .join('\n            '),
-    '\n  accounts:',
-    accounts.map((account) => account.name).join(', '),
-  );
+    const productId = config.productId ?? DEFAULT_PRODUCT_ID;
+    let provider = await runtime.createProvider({ productId });
+
+    // `createIframeHost` hands the port over synchronously, before the iframe
+    // loads; the provider takes the promise and buffers until it arrives.
+    let handOverPort!: (port: MessagePort) => void;
+    const portProvider = createMessagePortProvider(
+      new Promise<MessagePort>((resolve) => {
+        handOverPort = resolve;
+      }),
+    );
+
+    const { container, placeholder } = placeholderSlot();
+    let host: IframeHost;
+    try {
+      host = createIframeHost({
+        iframeUrl: productIframeUrl(config.productUrl),
+        container,
+        onPort: handOverPort,
+        allow: buildAllowAttribute(state.grantedPermissions),
+        sandbox: PRODUCT_SANDBOX,
+      });
+    } catch (cause) {
+      // `createIframeHost` rejects a non-http(s) product URL synchronously.
+      // The placeholder is still in the page, so a test locating the frame
+      // gets an empty product rather than a missing element, and this error
+      // names the real cause.
+      throw new Error(`could not embed the product at ${config.productUrl}`, { cause });
+    }
+    // Only now is the placeholder redundant — and it holds the id until it is
+    // gone, so the page never carries two `#product-frame` elements.
+    placeholder?.remove();
+    host.iframe.id = 'product-frame';
+    iframeHost = host;
+
+    let unbridge = bridgeProviders(portProvider, provider, productIsTalking);
+
+    /**
+     * Re-mint the session for `names` and resume routing.
+     *
+     * The iframe is deliberately left alone: its `MessagePort` was transferred
+     * once, at load, and reloading it would strand the channel. So the session
+     * is dropped and re-installed under the new signer and the product
+     * provider is replaced over the same port.
+     */
+    async function setAccounts(names: string[]): Promise<void> {
+      if (names.length === 0) throw new Error('setAccounts requires at least one account');
+      accounts = names.map(devAccount);
+
+      productStatus = 'disconnected';
+      sessionStatus = 'connecting';
+      retiredSigningLog.push(...responder.getSigningLog());
+      responder.dispose();
+      session = mintSession(deriveFromUri(accounts[0].uri));
+      responder = createSsoResponder({ store, session, resolveAccount });
+
+      try {
+        await runtime.resetSessionState();
+        await runtime.activateExternalSession(encodeExternalPairedSession(session));
+
+        // The port provider does not buffer: a frame delivered while nothing
+        // is subscribed is dropped on the floor. The product keeps talking
+        // across the swap, so park its frames for the duration rather than
+        // lose them.
+        const parked: Uint8Array[] = [];
+        const stopParking = portProvider.subscribe((frame) => {
+          productIsTalking();
+          parked.push(frame);
+        });
+        unbridge();
+
+        provider.dispose();
+        provider = await runtime.createProvider({ productId });
+
+        stopParking();
+        for (const frame of parked) provider.postMessage(frame);
+        unbridge = bridgeProviders(portProvider, provider, productIsTalking);
+        sessionStatus = 'connected';
+      } catch (error) {
+        // Never leave a failed switch claiming to be connected.
+        sessionStatus = 'disconnected';
+        throw error;
+      }
+    }
+
+    /**
+     * A stable responder handle over a responder that account switching
+     * replaces, so the signing log survives a switch as it did pre-migration.
+     */
+    const responderFacade: SsoResponder = {
+      getSigningLog: () => [...retiredSigningLog, ...responder.getSigningLog()],
+      clearSigningLog: () => {
+        retiredSigningLog.length = 0;
+        responder.clearSigningLog();
+      },
+      dispose: () => responder.dispose(),
+    };
+
+    window.__TEST_HOST__ = buildControlApi({
+      state,
+      responder: responderFacade,
+      runtime,
+      iframeHost: host,
+      provider: (): TrUApiProductProvider => provider,
+      setAccounts,
+      connectionStatus: () => productStatus,
+      chainStatus: () => sessionStatus,
+      disposeBridge: () => {
+        unbridge();
+        portProvider.dispose();
+      },
+    });
+
+    console.log(
+      '[test-host] Initialized:',
+      '\n  product:',
+      productId,
+      '\n  networks:',
+      config.networks
+        .map((network) => `${network.name} (${network.genesisHash.slice(0, 18)}...) ${network.rpcUrl}`)
+        .join('\n            '),
+      '\n  accounts:',
+      accounts.map((account) => account.name).join(', '),
+    );
+  } catch (error) {
+    // A half-booted host must not leave the WASM worker running: the page
+    // stays up after a failed boot, and Playwright would otherwise report a
+    // missing `__TEST_HOST__` against a still-spinning core.
+    runtime.dispose();
+    throw error;
+  }
 }
 
 void init().catch((error) => {

@@ -5,6 +5,8 @@ export type { TestHost, TestHostFixtureOptions } from './fixture.js';
 // don't need to import from two separate paths.
 export type {
   Account,
+  ChatActionInput,
+  ChatActionPayload,
   NetworkConfig,
   DevAccountInfo,
   DevAccountName,

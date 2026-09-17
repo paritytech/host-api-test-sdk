@@ -1,6 +1,13 @@
-// Type-only, and referenced solely by the non-exported drift guard below,
-// so it never reaches the emitted declarations.
-import type { ChainIdentifier as CoreChainIdentifier } from '@parity/truapi';
+// `CoreChainIdentifier` is referenced solely by the non-exported drift guard
+// below, so it never reaches the emitted declarations. `ChatActionPayload`
+// and `HostChatActionSubscribeItem` DO: an injected chat action is a protocol
+// value, and a hand-mirrored copy of that ~120-line generated union would be
+// a lie waiting to drift. See the note on `ChatActionInput`.
+import type {
+  ChainIdentifier as CoreChainIdentifier,
+  ChatActionPayload,
+  HostChatActionSubscribeItem,
+} from '@parity/truapi';
 
 /**
  * A `0x`-prefixed hex string. Declared here rather than re-exported from a
@@ -38,6 +45,21 @@ export interface NetworkConfig {
    */
   chain?: ChainIdentifier;
 }
+
+/**
+ * One inbound chat action, as `injectChatAction` delivers it to the product.
+ *
+ * An alias of the protocol's own `HostChatActionSubscribeItem` rather than a
+ * copy, so the two cannot drift: the host forwards the value straight into
+ * the core, which decodes it against this exact schema. Building one needs
+ * `ChatActionPayload`, re-exported below.
+ *
+ * NOTE: this makes the published types reference `@parity/truapi`. It must be
+ * a real `dependency` of this package, not a devDependency.
+ */
+export type ChatActionInput = HostChatActionSubscribeItem;
+
+export type { ChatActionPayload };
 
 export type DevAccountName = 'alice' | 'bob' | 'charlie' | 'dave' | 'eve' | 'ferdie';
 
@@ -190,7 +212,20 @@ export interface TestHostAPI {
   setAccounts(names: string[]): Promise<void>;
   getSigningLog(): SigningLogEntry[];
   clearSigningLog(): void;
+  /**
+   * The PRODUCT connection: `'disconnected'` until a frame has actually
+   * arrived from the embedded product, `'connected'` from then on. An account
+   * switch returns it to `'disconnected'` until the product speaks again.
+   * This is the readiness gate to wait on before driving a product.
+   */
   getConnectionStatus(): string;
+  /**
+   * This HOST's session: `'connecting'` until `activateExternalSession` has
+   * resolved, then `'connected'`; `'disconnected'` if an account switch
+   * failed to re-establish it. Named for the chain because the only chain
+   * this host serves unconditionally — the in-page loopback People store
+   * that carries signing — is up exactly when the session is.
+   */
   getChainStatus(): string;
   /** Set how the host responds to remote permission requests. */
   setPermissionBehavior(behavior: PermissionBehavior): void;
@@ -237,9 +272,11 @@ export interface TestHostAPI {
    * Inject an incoming chat action (e.g. a peer message) into the product.
    *
    * Published through the product's own runtime connection, which buffers it
-   * until the product subscribes to its chat action stream.
+   * until the product subscribes to its chat action stream. The promise
+   * rejects if the action cannot be delivered — a payload the protocol codec
+   * refuses, or a connection that cannot reach Chat — so await it.
    */
-  injectChatAction(action: { roomId: string; peer: string; payload: unknown }): void;
+  injectChatAction(action: ChatActionInput): Promise<void>;
   /** List all preimages known to the test host (submitted by product + seeded by test). */
   getPreimages(): PreimageEntry[];
   /**

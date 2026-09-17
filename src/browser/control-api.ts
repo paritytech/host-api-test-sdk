@@ -14,12 +14,18 @@
  * produced.
  */
 import { blake2b } from '@noble/hashes/blake2.js';
-import type { HostChatActionSubscribeItem } from '@parity/truapi';
 import type { TrUApiProductProvider } from '@parity/truapi-host';
 import type { IframeHost, WorkerPairingHostRuntime } from '@parity/truapi-host/web';
 import type { HostState } from './callbacks/index.js';
 import type { SsoResponder } from './sso/responder.js';
-import type { HexString, PermissionBehavior, TestHostAPI, Theme, ThemeInput } from '../types.js';
+import type {
+  ChatActionInput,
+  HexString,
+  PermissionBehavior,
+  TestHostAPI,
+  Theme,
+  ThemeInput,
+} from '../types.js';
 
 /**
  * Host permission names mapped to the Permissions Policy directives that
@@ -79,8 +85,13 @@ export interface ControlApiOptions {
    * re-create the product provider. Resolves once routing has resumed.
    */
   setAccounts(names: string[]): Promise<void>;
-  /** `'connected'` once `activateExternalSession` has resolved. */
+  /**
+   * The PRODUCT connection: `'disconnected'` until a frame has actually
+   * arrived from the product over the bridge.
+   */
   connectionStatus(): string;
+  /** This host's session: `'connected'` once `activateExternalSession` has resolved. */
+  chainStatus(): string;
   /** Tear down the MessagePort ↔ provider bridge. */
   disposeBridge(): void;
 }
@@ -111,13 +122,17 @@ export function buildControlApi(options: ControlApiOptions): TestHostAPI {
     },
 
     getConnectionStatus() {
+      // The product's own connection, as pre-migration's
+      // `subscribeProductConnectionStatus` reported it — this is the gate
+      // `waitForConnection()` waits on, so it must not be true before the
+      // product has spoken.
       return options.connectionStatus();
     },
 
     getChainStatus() {
-      // The only chain this host serves unconditionally is the in-page
-      // loopback People store, which is up as soon as the session is.
-      return options.connectionStatus();
+      // This host's session. The only chain it serves unconditionally is the
+      // in-page loopback People store, which is up as soon as the session is.
+      return options.chainStatus();
     },
 
     setPermissionBehavior(behavior: PermissionBehavior) {
@@ -191,14 +206,17 @@ export function buildControlApi(options: ControlApiOptions): TestHostAPI {
       for (const notify of state.chatRoomSubscribers) notify([]);
     },
 
-    injectChatAction(action: HostChatActionSubscribeItem) {
+    injectChatAction(action: ChatActionInput): Promise<void> {
       // Not a callback-group read: an inbound chat action goes out through
       // the product's own runtime connection, which buffers it until the
-      // product subscribes. Optional on the provider, hence the guard.
-      const published = provider().publishChatAction?.(action);
-      published?.catch((error: unknown) => {
-        console.error('[test-host] injectChatAction failed:', error);
-      });
+      // product subscribes. The promise is returned rather than swallowed, so
+      // a payload the codec rejects fails the caller's `await` instead of
+      // resolving with nothing delivered.
+      const live = provider();
+      if (!live.publishChatAction) {
+        return Promise.reject(new Error('this product connection cannot publish chat actions'));
+      }
+      return live.publishChatAction(action);
     },
 
     getPreimages() {

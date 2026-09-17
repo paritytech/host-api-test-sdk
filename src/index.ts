@@ -14,6 +14,8 @@ export type {
   CreateTestHostOptions,
   DevAccountInfo,
   DevAccountName,
+  ChatActionInput,
+  ChatActionPayload,
   ChatBot,
   ChatMessageLogEntry,
   ChatRoom,
