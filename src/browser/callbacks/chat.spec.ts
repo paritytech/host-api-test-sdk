@@ -1,3 +1,4 @@
+import type { ChatMessageContent } from '@parity/truapi';
 import { describe, expect, it } from 'vitest';
 import { createChatCallbacks } from './chat.js';
 import { createHostState } from './state.js';
@@ -39,7 +40,7 @@ describe('chat callbacks', () => {
     const { createChatRoom, postChatMessage } = createChatCallbacks(state);
     await createChatRoom(product, { roomId: 'room-1', name: 'Room', icon: 'icon.png' });
 
-    const payload = { tag: 'Text', value: { text: 'hi' } } as never;
+    const payload: ChatMessageContent = { tag: 'Text', value: { text: 'hi' } };
     const response = await postChatMessage(product, { roomId: 'room-1', payload });
 
     expect(response.messageId).toBe('msg-1');
@@ -51,7 +52,7 @@ describe('chat callbacks', () => {
   it('refuses to post to a room that does not exist', async () => {
     const state = createHostState();
     const { postChatMessage } = createChatCallbacks(state);
-    const payload = { tag: 'Text', value: { text: 'hi' } } as never;
+    const payload: ChatMessageContent = { tag: 'Text', value: { text: 'hi' } };
 
     await expect(postChatMessage(product, { roomId: 'missing', payload })).rejects.toThrow();
   });
