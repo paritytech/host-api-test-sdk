@@ -33,18 +33,12 @@ importers:
       '@polkadot-labs/hdkd-helpers':
         specifier: 0.0.34
         version: 0.0.34
-      '@polkadot/keyring':
-        specifier: ^14.0.0
-        version: 14.0.1(@polkadot/util-crypto@14.0.1(@polkadot/util@14.0.1))(@polkadot/util@14.0.1)
       '@polkadot/types':
         specifier: ^16.0.0
         version: 16.5.4
       '@polkadot/util':
         specifier: ^14.0.0
         version: 14.0.1
-      '@polkadot/util-crypto':
-        specifier: ^14.0.0
-        version: 14.0.1(@polkadot/util@14.0.1)
       '@scure/sr25519':
         specifier: 2.4.0
         version: 2.4.0
