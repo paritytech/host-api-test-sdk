@@ -3,9 +3,10 @@
  *
  * The People genesis is served in-page by the loopback statement store —
  * that is what keeps signing local. Product chains are matched by genesis
- * against the configured networks and opened over WebSocket.
+ * against the configured networks and opened through
+ * `@parity/truapi-provider`, which owns the transport (remote JSON-RPC nodes
+ * registered with `addRpcChain`) and hands back a raw string pipe.
  */
-import { getWsRawProvider } from 'polkadot-api/ws';
 import type { ChainIdentifier } from '@parity/truapi';
 import type { ChainProvider, JsonRpcConnection } from '@parity/truapi-host';
 import { PEOPLE_GENESIS_HASH } from '../constants.js';
@@ -26,6 +27,37 @@ export interface ChainRuntimeConfig {
   chain?: ChainIdentifier;
 }
 
+/**
+ * The slice of `@parity/truapi-provider`'s `Connection` this route uses.
+ *
+ * Declared structurally rather than imported so the unit tests can stand in
+ * a fake without instantiating a 5.2 MB wasm; the real class is checked
+ * against it where `openRpcProvider` below builds one.
+ */
+export interface RpcConnection {
+  /** Queue a JSON-RPC request string. */
+  send(request: string): void;
+  /** The next frame, or `undefined` once the connection is closed or dead. */
+  nextResponse(): Promise<string | undefined>;
+  close(): void;
+}
+
+/** The slice of `@parity/truapi-provider`'s `ChainProviderHandle` this route uses. */
+export interface RpcProviderHandle {
+  /** Open a connection to a chain by `0x`-prefixed genesis hash. */
+  connect(genesisHash: string): Promise<RpcConnection>;
+}
+
+/** The slice of `@parity/truapi-provider`'s `ChainProviderBuilder` this route uses. */
+export interface RpcChainRegistrar {
+  addRpcChain(genesisHash: string, url: string): void;
+}
+
+/** Builds the provider that serves every non-People genesis this host routes. */
+export type RpcProviderLoader = (
+  networks: readonly ChainRuntimeConfig[],
+) => Promise<RpcProviderHandle>;
+
 /** Hex-normalise a genesis hash so string configs and raw bytes compare equal. */
 const normalize = (value: Uint8Array | string): string => {
   if (typeof value === 'string') {
@@ -34,12 +66,99 @@ const normalize = (value: Uint8Array | string): string => {
   return Array.from(value, (b) => b.toString(16).padStart(2, '0')).join('');
 };
 
+/**
+ * Register every configured network as a remote JSON-RPC chain.
+ *
+ * The provider keys chains by `0x`-prefixed hex, so the normalised hash is
+ * prefixed back here rather than trusting whatever spelling the config used.
+ */
+export function registerRpcChains(
+  registrar: RpcChainRegistrar,
+  networks: readonly ChainRuntimeConfig[],
+): void {
+  for (const network of networks) {
+    registrar.addRpcChain(`0x${normalize(network.genesisHash)}`, network.rpcUrl);
+  }
+}
+
+/**
+ * Run `load` at most once, and hand every later caller the same promise — but
+ * forget a rejected one, so a failed wasm fetch is retried on the next connect
+ * instead of becoming the page's permanent answer.
+ */
+function once<T>(load: () => Promise<T>): () => Promise<T> {
+  let pending: Promise<T> | undefined;
+  return () => {
+    if (!pending) {
+      const started = load();
+      started.catch(() => {
+        if (pending === started) pending = undefined;
+      });
+      pending = started;
+    }
+    return pending;
+  };
+}
+
+/**
+ * The provider wasm, instantiated at most once per page.
+ *
+ * The module's `default` export is wasm-pack's `__wbg_init`, which resolves
+ * its payload with `new URL('truapi_provider_bg.wasm', import.meta.url)` —
+ * hence the build-time assertion in `build.mjs` that the glue lands in the
+ * directory the `.wasm` is copied into. The import itself is dynamic and the
+ * result is memoised, so a page that only ever talks to the People loopback
+ * never downloads either the glue or the payload, and two concurrent connects
+ * share one instantiation instead of racing the glue's own `wasm !== undefined`
+ * guard.
+ */
+const loadProviderModule = once(async () => {
+  const module = await import('@parity/truapi-provider');
+  await module.default();
+  return module;
+});
+
+/** Default `RpcProviderLoader`: the real wasm provider, built from the config. */
+const openRpcProvider: RpcProviderLoader = async (networks) => {
+  const { ChainProviderBuilder } = await loadProviderModule();
+  const builder = new ChainProviderBuilder();
+  registerRpcChains(builder, networks);
+  // `build()` consumes the builder, so it must not be freed afterwards.
+  return builder.build();
+};
+
+/**
+ * Pull loop over a provider connection.
+ *
+ * Draining is not optional: the provider queues frames until they are taken,
+ * and once the backlog hits the connection's budget further `send` calls come
+ * back as JSON-RPC errors. `undefined` means closed or dead, which ends the
+ * iteration the core is running.
+ */
+async function* drainResponses(connection: RpcConnection): AsyncGenerator<string> {
+  for (;;) {
+    const frame = await connection.nextResponse();
+    if (frame === undefined) return;
+    yield frame;
+  }
+}
+
 export function createChainCallbacks(options: {
   store: LoopbackStore;
   networks: ChainRuntimeConfig[];
+  /**
+   * Override for the provider behind the configured-network route. Exists so
+   * the unit tests can exercise that route without a wasm instantiation or a
+   * socket; production leaves it unset.
+   */
+  openRpcProvider?: RpcProviderLoader;
 }): ChainProvider {
   const { store, networks } = options;
   const peopleGenesis = normalize(PEOPLE_GENESIS_HASH);
+  const load = options.openRpcProvider ?? openRpcProvider;
+
+  // One provider per host page, built on the first connect that needs it.
+  const provider = once(() => load(networks));
 
   return {
     async connect(genesisHash: Uint8Array): Promise<JsonRpcConnection> {
@@ -73,57 +192,23 @@ export function createChainCallbacks(options: {
         throw new Error(`no chain configured for genesis 0x${target}`);
       }
 
-      // Same bridge as the loopback route: the raw WS provider pushes
-      // messages, the core pulls them via `responses()`.
-      const channel = createPushChannel<string>();
-      // `getWsRawProvider` exchanges parsed JSON-RPC objects, not strings
-      // (confirmed against the installed `@polkadot-api/ws-provider`
-      // implementation, which does `JSON.parse`/`JSON.stringify` at the
-      // socket boundary) — the core's `JsonRpcConnection` contract is
-      // string-based, so the (de)serialisation happens right here.
-      const socket = getWsRawProvider(network.rpcUrl, {
-        // The provider reconnects forever on its own and never surfaces a
-        // failure to its caller, so an unreachable `rpcUrl` would otherwise
-        // present as a silently pending `responses()`. Surfacing status keeps
-        // a misconfigured network diagnosable from the test host's console.
-        onStatusChanged: (status) => {
-          if (status.type === 'ERROR' || status.type === 'CLOSE') {
-            console.warn(`[test-host] ${network.name} websocket ${status.type}`, status.event);
-          }
-        },
-      })((message) => channel.push(JSON.stringify(message)));
+      // No bridge on this route: the provider's `Connection` is already the
+      // raw string pipe the core's `JsonRpcConnection` asks for, so neither a
+      // push channel nor a JSON (de)serialisation step is needed.
+      const connection = await (await provider()).connect(`0x${target}`);
+      // One drain per connection, not one per `responses()` call: two loops
+      // over the same pipe would race each other for frames.
+      const responses = drainResponses(connection);
 
       return {
         send(request: string): void {
-          // Mirror the loopback route: a request the core cannot have meant is
-          // answered with a JSON-RPC error rather than thrown back at it, so a
-          // malformed frame never escapes as a synchronous exception.
-          let message: Parameters<typeof socket.send>[0];
-          try {
-            message = JSON.parse(request);
-          } catch (error) {
-            channel.push(
-              JSON.stringify({
-                jsonrpc: '2.0',
-                id: 'unknown',
-                error: {
-                  code: -32700,
-                  message: error instanceof Error ? error.message : String(error),
-                },
-              }),
-            );
-            return;
-          }
-          socket.send(message);
+          connection.send(request);
         },
         responses(): AsyncIterable<string> {
-          return channel.iterable;
+          return responses;
         },
         close(): void {
-          // Same ordering as the loopback route: stop the socket from
-          // feeding the channel before ending it.
-          socket.disconnect();
-          channel.close();
+          connection.close();
         },
       };
     },

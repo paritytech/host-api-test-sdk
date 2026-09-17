@@ -53,35 +53,44 @@ console.log(`Browser bundles built into ${HOST_ASSET_DIR}/`);
 /**
  * Copy the wasm payloads next to the chunk that asks for them.
  *
- * wasm-pack's glue resolves its payload with
- * `new URL('truapi_server_bg.wasm', import.meta.url)`, and esbuild passes that
- * through verbatim — the `.wasm` is never emitted, and the URL is resolved at
- * runtime against the URL of whichever chunk the glue ended up in. `splitting`
- * puts shared and dynamically imported chunks in the outdir root, so that is
+ * Both wasm-pack glues resolve their payload with
+ * `new URL('<name>_bg.wasm', import.meta.url)`, and esbuild passes that through
+ * verbatim — the `.wasm` is never emitted, and the URL is resolved at runtime
+ * against the URL of whichever chunk the glue ended up in. `splitting` puts
+ * shared and dynamically imported chunks in the outdir root, so that is
  * `dist/host/`; the assertion below fails the build if a future esbuild (or a
- * `chunkNames` setting) ever moves it somewhere else.
+ * `chunkNames` setting) ever moves one of them somewhere else, instead of
+ * shipping a green build whose page 404s on its wasm at runtime.
+ *
+ * `glue` is the input path suffix identifying the glue module, and `pkgEntry`
+ * resolves the directory the payload sits in (the `.wasm` is not always in the
+ * package's own `exports` map, so resolve the glue and take the sibling).
  */
-const glueChunks = Object.entries(browserResult.metafile.outputs)
-  .filter(([, out]) => Object.keys(out.inputs).some((i) => i.endsWith('/wasm/web/truapi_server.js')))
-  .map(([file]) => file);
-
-if (glueChunks.length !== 1 || dirname(glueChunks[0]) !== HOST_ASSET_DIR) {
-  throw new Error(
-    `expected exactly one wasm-glue chunk directly in ${HOST_ASSET_DIR}/, got: ${glueChunks.join(', ') || '(none)'}`,
-  );
-}
-
-for (const [pkgEntry, wasmName] of [
-  ['@parity/truapi-host/wasm/web', 'truapi_server_bg.wasm'],
-  // Not imported yet: the chain route moves onto @parity/truapi-provider next,
-  // and its glue resolves the payload the same way, from beside itself.
-  ['@parity/truapi-provider', 'truapi_provider_bg.wasm'],
+for (const { pkgEntry, glue, wasmName } of [
+  {
+    pkgEntry: '@parity/truapi-host/wasm/web',
+    glue: '/wasm/web/truapi_server.js',
+    wasmName: 'truapi_server_bg.wasm',
+  },
+  {
+    pkgEntry: '@parity/truapi-provider',
+    glue: '/@parity/truapi-provider/dist/truapi_provider.js',
+    wasmName: 'truapi_provider_bg.wasm',
+  },
 ]) {
-  // The wasm itself is not always in the package's `exports` map, so resolve the
-  // glue module it sits beside and take the sibling.
+  const glueChunks = Object.entries(browserResult.metafile.outputs)
+    .filter(([, out]) => Object.keys(out.inputs).some((i) => i.endsWith(glue)))
+    .map(([file]) => file);
+
+  if (glueChunks.length !== 1 || dirname(glueChunks[0]) !== HOST_ASSET_DIR) {
+    throw new Error(
+      `expected exactly one ${wasmName} glue chunk directly in ${HOST_ASSET_DIR}/, got: ${glueChunks.join(', ') || '(none)'}`,
+    );
+  }
+
   const from = join(dirname(resolveExport(pkgEntry)), wasmName);
   copyFileSync(from, join(HOST_ASSET_DIR, wasmName));
-  console.log(`WASM payload copied: ${HOST_ASSET_DIR}/${wasmName}`);
+  console.log(`WASM payload copied: ${HOST_ASSET_DIR}/${wasmName} (glue: ${glueChunks[0]})`);
 }
 
 // CJS bundles for CommonJS compatibility (e.g. Playwright's default CJS loader).
