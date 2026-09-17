@@ -8,6 +8,11 @@ import type {
   ChatActionPayload,
   HostChatActionSubscribeItem,
 } from '@parity/truapi';
+// Same deal: referenced only by the drift guard under `ProductExecutionKind`,
+// so it is erased at emit. It has to be, because `@parity/truapi-host` is a
+// devDependency of this package — a published declaration that named it would
+// not resolve for a consumer.
+import type { ProductExecutionKind as CoreProductExecutionKind } from '@parity/truapi-host';
 
 /**
  * A `0x`-prefixed hex string. Declared here rather than re-exported from a
@@ -30,6 +35,27 @@ type Equal<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
 type Expect<T extends true> = T;
 /** Compile-time guard, erased at emit: this mirror must equal the core's enum. */
 type _ChainIdentifierMirrorsCore = Expect<Equal<ChainIdentifier, CoreChainIdentifier>>;
+
+/**
+ * Trusted kind of executable the host declares the product to be.
+ *
+ * `App` (the default) is a visible full-page entrypoint — what an iframe-
+ * embedded product genuinely is. `Widget` is a visible embedded surface and
+ * carries the same capabilities as `App`. `Worker` is a headless executable,
+ * and it is the ONLY kind the core lets serve the Chat modality: every Chat
+ * entry point is denied for `App` and `Widget`. So a test that drives chat
+ * must ask for `executionKind: 'Worker'`.
+ *
+ * Mirrored here rather than re-exported for the same reason as
+ * `ChainIdentifier` above — `_ProductExecutionKindMirrorsCore` fails the build
+ * if the two drift.
+ */
+export type ProductExecutionKind = 'App' | 'Widget' | 'Worker';
+
+/** Compile-time guard, erased at emit: this mirror must equal the core's enum. */
+type _ProductExecutionKindMirrorsCore = Expect<
+  Equal<ProductExecutionKind, CoreProductExecutionKind>
+>;
 
 export interface NetworkConfig {
   id: string;
@@ -99,6 +125,16 @@ export interface CreateTestHostOptions {
   networks?: NetworkConfig[];
   /** Port to listen on (default: 0 = random available port) */
   port?: number;
+  /**
+   * Trusted executable kind the host declares for the embedded product
+   * (default: `'App'`).
+   *
+   * An iframe-embedded product really is an `App`, so that is the default and
+   * it is what a host should report. Set `'Worker'` only to exercise the Chat
+   * modality: the core denies every Chat entry point unless the connection's
+   * execution kind is `Worker`.
+   */
+  executionKind?: ProductExecutionKind;
   /**
    * Map product account requests to specific accounts.
    *

@@ -50,19 +50,45 @@ export function createLoopbackStore(): LoopbackStore {
   const submitListeners = new Set<(statement: Statement) => void>();
   let nextSubscriptionId = 1;
 
-  /** Accepts `{ MatchAll: [...] }` / `{ MatchAny: [...] }` and the bare array form. */
+  /**
+   * Accepts the filter object the core sends, and the bare array form.
+   *
+   * The core spells the keys lower-camel — `json!({ "matchAll": topics })` /
+   * `json!({ "matchAny": topics })` in `statement_store_rpc.rs` — so those are
+   * the spellings that matter. The capitalised variant names are accepted too:
+   * they are unambiguous aliases, and a serde rename upstream would otherwise
+   * turn every filter into an unmatched key, i.e. silently back into a
+   * firehose. `matchAny` is probed first so an object carrying both keys is
+   * never narrowed to `MatchAll`, which would drop statements a `matchAny`
+   * subscriber asked for.
+   */
+  const FILTER_KEYS: ReadonlyArray<readonly [key: string, kind: TopicFilterKind]> = [
+    ['matchAny', 'MatchAny'],
+    ['MatchAny', 'MatchAny'],
+    ['matchAll', 'MatchAll'],
+    ['MatchAll', 'MatchAll'],
+  ];
+
   function parseFilter(raw: unknown): { kind: TopicFilterKind; topics: Uint8Array[] } {
+    const toTopics = (values: unknown[]) => values.map((t) => fromHex(String(t)));
+
     if (Array.isArray(raw)) {
-      return { kind: 'MatchAll', topics: raw.map((t) => fromHex(String(t))) };
+      return { kind: 'MatchAll', topics: toTopics(raw) };
     }
     // Guard against non-object primitives (strings, numbers, etc.) which would throw on `in` operator.
     if (typeof raw !== 'object' || raw === null) {
       return { kind: 'MatchAll', topics: [] };
     }
     const filter = raw as Record<string, unknown>;
-    const kind: TopicFilterKind = 'MatchAny' in filter ? 'MatchAny' : 'MatchAll';
-    const topics = (filter[kind] as unknown[] | undefined) ?? [];
-    return { kind, topics: topics.map((t) => fromHex(String(t))) };
+    for (const [key, kind] of FILTER_KEYS) {
+      if (!(key in filter)) continue;
+      const topics = filter[key];
+      return { kind, topics: Array.isArray(topics) ? toTopics(topics) : [] };
+    }
+    // No recognised key: subscribe to everything rather than to nothing, so a
+    // filter this store cannot read is loud (extra deliveries) instead of a
+    // silent black hole.
+    return { kind: 'MatchAll', topics: [] };
   }
 
   return {
@@ -83,8 +109,12 @@ export function createLoopbackStore(): LoopbackStore {
             switch (method) {
               case 'statement_submit': {
                 const statement = decodeStatement(fromHex(String(params[0])));
-                // The host owns the store, so nothing can be rejected here.
-                reply('new');
+                // The core reads `.status` off the result object and treats
+                // only `new`/`known` as accepted (`statement_store_rpc.rs`,
+                // `fn submit`); a bare `"new"` string has no `status` field
+                // and is rejected as `statement_submit not accepted`. The host
+                // owns the store, so nothing is ever rejected here.
+                reply({ status: 'new' });
                 // Isolate each listener so one throwing doesn't starve the rest or contradict the success reply.
                 for (const listener of submitListeners) {
                   try {
@@ -157,7 +187,18 @@ export function createLoopbackStore(): LoopbackStore {
     },
 
     publish(statement) {
-      const result = toHex(encodeStatement(statement));
+      // The core decodes every subscription item with
+      // `parse_new_statements_result` (`host_logic/statement_store/rpc.rs`):
+      // it demands `result.event === 'newStatements'` and reads the SCALE
+      // statements out of `result.data.statements`. A bare hex string there is
+      // rejected as `malformed statement-store frame`. `remaining` is the
+      // server-side backlog, and this store never has one. The notification
+      // method name is the one Substrate uses for this subscription; the core
+      // ignores it and keys only on `params.subscription`.
+      const result = {
+        event: 'newStatements',
+        data: { statements: [toHex(encodeStatement(statement))], remaining: 0 },
+      };
       for (const subscription of subscriptions) {
         if (!matchesTopics(statement, subscription.kind, subscription.topics)) continue;
         // Isolate each subscriber's errors so one throwing callback doesn't starve the rest.
@@ -165,7 +206,7 @@ export function createLoopbackStore(): LoopbackStore {
           subscription.notify(
             JSON.stringify({
               jsonrpc: '2.0',
-              method: 'statement_subscribeStatement',
+              method: 'statement_statement',
               params: { subscription: subscription.id, result },
             }),
           );

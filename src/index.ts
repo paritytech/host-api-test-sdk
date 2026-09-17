@@ -23,6 +23,7 @@ export type {
   NavigationLogEntry,
   NotificationLogEntry,
   PreimageEntry,
+  ProductExecutionKind,
   PermissionBehavior,
   PermissionLogEntry,
   SigningLogEntry,

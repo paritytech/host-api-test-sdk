@@ -775,3 +775,52 @@ One thing worth calling out: before this release the pins were wrong but *consis
 - Upgrade to `0.12.1`. If you use the built-in network configs, that is the whole change — the correct hashes come with the upgrade.
 - If you hard-coded any of the three old hashes in your own `NetworkConfig` or in test assertions, update them. Better still, read them off the exported config (`PASEO_ASSET_HUB.genesisHash`) so the next reset costs you nothing.
 - These chains reset periodically. Treat a genesis literal in your own repo as something that will go stale, not as a constant.
+
+# host-api-test-sdk 0.13.0
+
+## Chat needs `executionKind: 'Worker'`
+
+The core decides what a connection may reach from the *kind* of executable the host says it is running, and Chat is the strictest one: `chat_platform_for` denies every Chat entry point unless the kind is `Worker`. An iframe-embedded product is an `App`, which is what this host declares by default — so until now every chat call came back `Denied`.
+
+There is now an option for it, on both entry points:
+
+```ts
+// Playwright fixture
+const { testHost } = createTestHostFixture({
+  productUrl: "http://localhost:3000",
+  executionKind: "Worker", // only for tests that drive chat
+});
+
+// or directly
+const host = await createTestHostServer({
+  productUrl: "http://localhost:3000",
+  executionKind: "Worker",
+});
+```
+
+It takes `'App'` (the default), `'Widget'` or `'Worker'`, and the type is exported as `ProductExecutionKind`. Leave it alone unless you are testing chat: `App` is what an iframe-embedded product actually is, and declaring every product headless just to unlock one modality would misreport what the host is running.
+
+With it set, the whole chat surface works — `chatCreateRoom`, `chatRegisterBot`, `chatPostMessage`, the room subscription, and `injectChatAction` from the host side:
+
+```ts
+await product.evaluate(() =>
+  client.chat.createRoom({ roomId: "r1", name: "Room 1", icon: "" }),
+);
+expect(await testHost.getChatRooms()).toHaveLength(1);
+```
+
+One thing to know while you are there: a chat `icon` is validated by the core, not passed through. It must be empty, an `https` URL, or an inline `data:` image of an allowed type — anything else (a placeholder like `"icon-data"`, say) is refused with *"icon carries a scheme that cannot be rendered"*.
+
+## Signing works again
+
+Three bugs in the in-page statement store meant this host could not complete a single signature; all three are fixed, and nothing in your tests changes.
+
+The store speaks the statement-store JSON-RPC surface to the core, and it was getting three details wrong. It answered `statement_submit` with the bare string `"new"` where the core reads a `status` *field* off an object, so every SSO request died with `statement_submit not accepted: "new"` before a signing request ever reached the wallet side. It pushed subscription items as a bare hex statement where the core expects a `newStatements` envelope. And it matched topic-filter keys as `MatchAll` / `MatchAny` where the core sends `matchAll` / `matchAny`, so filters silently matched everything and a `matchAny` subscription was narrowed to `matchAll`.
+
+Separately, `requestResourceAllocation(['AutoSigning'])` was refused with *"AutoSigning capability contains an invalid subtree secret"*. schnorrkel has two 64-byte secret encodings and the core accepts only the canonical one on that path; this host was handing over the ed25519-shifted one. Every raw secret it gives the core is now converted. Both encodings name the same scalar, so no address and no signature moves.
+
+## Known issue: indexed product accounts
+
+`productAccounts: { "myapp.dot/0": "bob" }` no longer changes what `getAccount("myapp.dot", 0)` reports. The core stopped asking the host for indexed accounts — it asks once for the product's hard subtree and then soft-derives each account itself. Only a subtree-level key (`productAccounts: { "myapp.dot": "bob" }`) still moves the address.
+
+Worse, this host still hard-derives `//Selected//myapp.dot/0` when it *signs* for that handle, so a product's own signature does not verify against the address it was given. The fix moves every product-account address and narrows `productAccounts` to subtree granularity, so it is being held for its own release. Until then, the four `Product account derivation` tests are marked `fixme` and the mismatch is documented where it bites.

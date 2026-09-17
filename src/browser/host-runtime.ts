@@ -21,7 +21,11 @@ import { blake2b } from '@noble/hashes/blake2.js';
 import { x25519 } from '@noble/curves/ed25519.js';
 import { createMessagePortProvider } from '@parity/truapi';
 import type { WireProvider } from '@parity/truapi';
-import type { RequiredHostCallbacks, TrUApiProductProvider } from '@parity/truapi-host';
+import type {
+  ProductExecutionKind,
+  RequiredHostCallbacks,
+  TrUApiProductProvider,
+} from '@parity/truapi-host';
 import type { IframeHost } from '@parity/truapi-host/web';
 import { createIframeHost, createWebWorkerPairingHostRuntime } from '@parity/truapi-host/web';
 
@@ -49,6 +53,11 @@ interface HostConfig {
   productUrl: string;
   /** dotNS identifier the product runs as. */
   productId?: string;
+  /**
+   * Trusted executable kind declared for the product. Absent means
+   * `DEFAULT_EXECUTION_KIND`.
+   */
+  executionKind?: ProductExecutionKind;
   accounts: AccountConfig[];
   /** Networks the host can route, matched by genesis. First is the default. */
   networks: ChainRuntimeConfig[];
@@ -68,6 +77,18 @@ const PRODUCT_SANDBOX = 'allow-scripts allow-same-origin allow-forms allow-popup
 
 /** dotNS identifier used when the page config names no product. */
 const DEFAULT_PRODUCT_ID = 'test-product.dot';
+
+/**
+ * Executable kind declared when the page config names none.
+ *
+ * `App` is the truth for an iframe-embedded product — a visible full-page
+ * entrypoint — and it is also the core's own default. It is NOT `Worker`
+ * even though `Worker` is the only kind the core lets reach Chat
+ * (`runtime/chat.rs`): declaring every product headless to unlock one
+ * modality would misreport what this host is running. A test that drives
+ * chat asks for `'Worker'` explicitly through `CreateTestHostOptions`.
+ */
+const DEFAULT_EXECUTION_KIND: ProductExecutionKind = 'App';
 
 const encoder = new TextEncoder();
 
@@ -272,7 +293,8 @@ async function init(): Promise<void> {
     sessionStatus = 'connected';
 
     const productId = config.productId ?? DEFAULT_PRODUCT_ID;
-    let provider = await runtime.createProvider({ productId });
+    const executionKind = config.executionKind ?? DEFAULT_EXECUTION_KIND;
+    let provider = await runtime.createProvider({ productId, executionKind });
 
     // `createIframeHost` hands the port over synchronously, before the iframe
     // loads; the provider takes the promise and buffers until it arrives.
@@ -344,7 +366,7 @@ async function init(): Promise<void> {
 
         try {
           provider.dispose();
-          provider = await runtime.createProvider({ productId });
+          provider = await runtime.createProvider({ productId, executionKind });
         } finally {
           // Unsubscribe even when the swap fails. A parking subscriber left
           // attached would grow `parked` unboundedly and keep reporting the
@@ -394,6 +416,7 @@ async function init(): Promise<void> {
       '[test-host] Initialized:',
       '\n  product:',
       productId,
+      `(${executionKind})`,
       '\n  networks:',
       config.networks
         .map((network) => `${network.name} (${network.genesisHash.slice(0, 18)}...) ${network.rpcUrl}`)

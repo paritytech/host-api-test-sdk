@@ -1,11 +1,13 @@
 import { DEV_ACCOUNTS } from './accounts.js';
-import type { Account, NetworkConfig } from './types.js';
+import type { Account, NetworkConfig, ProductExecutionKind } from './types.js';
 
 interface HostPageConfig {
   productUrl: string;
   accounts: Account[];
   networks: NetworkConfig[];
   productAccounts?: Record<string, Account>;
+  /** Omitted means the browser runtime's own default, `'App'`. */
+  executionKind?: ProductExecutionKind;
 }
 
 function resolveAccount(entry: Account): { name: string; uri: string } {
@@ -42,6 +44,9 @@ export function generateHostPage(config: HostPageConfig): string {
       ...(n.chain && { chain: n.chain }),
     })),
     ...(productAccountConfigs && { productAccounts: productAccountConfigs }),
+    // Omitted rather than defaulted here: the browser runtime owns the
+    // default, so there is exactly one place that says what it is.
+    ...(config.executionKind && { executionKind: config.executionKind }),
   });
 
   // Escape closing script tags to prevent breaking out of inline script

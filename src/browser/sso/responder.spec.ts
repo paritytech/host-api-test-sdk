@@ -4,7 +4,7 @@ import { x25519 } from '@noble/curves/ed25519.js';
 import { verify } from '@scure/sr25519';
 import { scale } from '@parity/truapi';
 import { describe, expect, it, vi } from 'vitest';
-import { deriveDev } from '../dev-accounts.js';
+import { canonicalSecretKey, deriveDev } from '../dev-accounts.js';
 import { createLoopbackStore } from '../loopback-chain.js';
 import { open, seal, sessionAeadKey } from './crypto.js';
 import {
@@ -108,20 +108,27 @@ interface CapturedFrame {
 function listen(h: Harness): CapturedFrame[] {
   const frames: CapturedFrame[] = [];
   const connection = h.store.connect((json) => {
-    const message = JSON.parse(json) as { method?: string; params?: { result: string } };
-    if (message.method !== 'statement_subscribeStatement' || !message.params) return;
-    const statement = decodeStatement(fromHex(message.params.result));
-    frames.push({
-      signer: statement.proof?.signer,
-      data: StatementData.dec(open(h.key, statement.data as Uint8Array)),
-    });
+    // The store delivers subscription items in the statement-store's own
+    // `newStatements` envelope, which is what the core decodes.
+    const message = JSON.parse(json) as {
+      params?: { result?: { event?: string; data?: { statements?: string[] } } };
+    };
+    const result = message.params?.result;
+    if (result?.event !== 'newStatements') return;
+    for (const encoded of result.data?.statements ?? []) {
+      const statement = decodeStatement(fromHex(encoded));
+      frames.push({
+        signer: statement.proof?.signer,
+        data: StatementData.dec(open(h.key, statement.data as Uint8Array)),
+      });
+    }
   });
   connection.send(
     JSON.stringify({
       jsonrpc: '2.0',
       id: 2,
       method: 'statement_subscribeStatement',
-      params: [{ MatchAll: [toHex(h.session.sessionIdPeer)] }],
+      params: [{ matchAll: [toHex(h.session.sessionIdPeer)] }],
     }),
   );
   return frames;
@@ -373,10 +380,12 @@ describe('sso responder', () => {
     expect(statementStore.value.slotAccountKey).toHaveLength(64);
     expect(bulletin.value.slotAccountKey).toHaveLength(64);
     expect(bulletin.value.slotAccountKey).not.toEqual(statementStore.value.slotAccountKey);
-    // AutoSigning hands over the very subtree secret ProductSubtreeRequest reports.
-    expect(autoSigning.value.productRootPrivateKey).toEqual(
-      h.resolveAccount(PRODUCT, undefined).secretKey,
-    );
+    // AutoSigning hands over the very subtree secret ProductSubtreeRequest
+    // reports — in the canonical encoding, which is the only one the core's
+    // `validate_auto_signing_key` accepts.
+    const subtreeSecret = h.resolveAccount(PRODUCT, undefined).secretKey;
+    expect(autoSigning.value.productRootPrivateKey).toEqual(canonicalSecretKey(subtreeSecret));
+    expect(autoSigning.value.productRootPrivateKey).not.toEqual(subtreeSecret);
     expect(autoSigning.value.ringVrfDomainEntropy).toHaveLength(32);
     expect(h.responder.getSigningLog()).toEqual([]);
   });

@@ -19,10 +19,51 @@ export const DEV_ACCOUNT_URIS: Record<DevAccountName, string> = {
 };
 
 export interface DevKeypair {
-  /** 64-byte expanded sr25519 secret — what `SecretKey::from_bytes` expects. */
+  /**
+   * 64-byte sr25519 secret in `@scure/sr25519`'s representation: the scalar
+   * shifted ed25519-style (multiplied by the cofactor), then the nonce. This
+   * is what every `@scure/sr25519` call here takes — and it is NOT the form
+   * the core reads a raw secret in; see `canonicalSecretKey`.
+   */
   secretKey: Uint8Array;
   publicKey: Uint8Array;
   address: string;
+}
+
+/**
+ * The same secret in schnorrkel's canonical `SecretKey::to_bytes()` form.
+ *
+ * schnorrkel has two 64-byte secret encodings: `to_bytes`/`from_bytes` carry
+ * the scalar reduced mod l, while `to_ed25519_bytes`/`from_ed25519_bytes`
+ * carry it multiplied by the cofactor. `@scure/sr25519` uses the latter;
+ * `SecretKey::from_bytes` rejects it, because the shifted scalar is ~8x l and
+ * fails the canonicity check.
+ *
+ * That matters wherever this host hands the core a raw secret. The core is not
+ * uniform about it: `Sr25519Signer::from_secret_bytes`
+ * (`host_logic/extrinsic.rs`) tries `from_bytes` and falls back to
+ * `from_ed25519_bytes`, but `validate_auto_signing_key`
+ * (`runtime/pairing_host.rs`) and `derive_product_keypair_from_subtree_secret`
+ * (`host_logic/product_account.rs`) accept ONLY the canonical form — an
+ * ed25519-shifted secret comes back as "AutoSigning capability contains an
+ * invalid subtree secret". The canonical form is accepted everywhere, and
+ * both forms name the same scalar, so the keys and signatures are identical.
+ *
+ * This is the inverse of schnorrkel's `divide_scalar_bytes_by_cofactor`: a
+ * little-endian shift right by 3, leaving the nonce untouched.
+ */
+export function canonicalSecretKey(secretKey: Uint8Array): Uint8Array {
+  if (secretKey.length !== 64) {
+    throw new Error(`sr25519 secret must be 64 bytes, got ${secretKey.length}`);
+  }
+  const out = new Uint8Array(secretKey);
+  let low = 0;
+  for (let i = 31; i >= 0; i--) {
+    const remainder = out[i] & 0b0000_0111;
+    out[i] = (out[i] >>> 3) + low;
+    low = (remainder << 5) & 0xff;
+  }
+  return out;
 }
 
 function toBytes(value: Uint8Array | string): Uint8Array {

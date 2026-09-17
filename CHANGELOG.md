@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.13.0
+
+### Added
+
+- **`executionKind` option on `createTestHostServer` and the Playwright fixture** (`'App' | 'Widget' | 'Worker'`, default `'App'`). The core gates every Chat entry point on the connection's execution kind — `chat_platform_for` denies anything but `Worker` (`truapi-server/src/runtime/chat.rs`) — so a test that drives `chatCreateRoom`, `chatRegisterBot`, `chatPostMessage`, the room subscription or `injectChatAction` must declare `executionKind: 'Worker'`. The default stays `'App'` because that is what an iframe-embedded product genuinely is; declaring every product headless to unlock one modality would misreport what the host runs. `ProductExecutionKind` is exported from the package root.
+
+### Fixed
+
+- **`statement_submit` was rejected by the core, which blocked ALL signing.** The in-page loopback statement store replied with the bare JSON string `"new"`. The core reads a *field*: `result.get("status")` must be `"new"` or `"known"` (`truapi-server/src/runtime/statement_store_rpc.rs`), and `.get()` on a JSON string is `None`, so every SSO request died with `statement_submit not accepted: "new"` and no signing request ever reached the responder. The store now replies `{ "status": "new" }`.
+- **Statement subscription items were delivered in the wrong envelope.** The store pushed the SCALE statement as a bare hex `result`; the core decodes every item with `parse_new_statements_result`, which requires `{ "event": "newStatements", "data": { "statements": [...], "remaining": n } }` and otherwise fails with `malformed statement-store frame: result is not a newStatements event`. The store now sends that envelope, under the notification method name Substrate uses for this subscription.
+- **Topic filters were parsed under the wrong key spelling.** `parseFilter` matched `MatchAll` / `MatchAny`, but the core emits lower-camel `matchAll` / `matchAny`. A real filter therefore parsed as `MatchAll` with an *empty* topic list — which matches every statement — and a `matchAny` filter was silently narrowed to `matchAll`. Both spellings are now honoured, `matchAny` is probed first so it can never be narrowed, and an unreadable filter still subscribes to everything rather than to nothing.
+- **The AutoSigning capability was refused as an invalid subtree secret.** schnorrkel has two 64-byte secret encodings, and `@scure/sr25519` hands out the cofactor-multiplied (ed25519-shifted) one, which `SecretKey::from_bytes` rejects on its canonicity check. `validate_auto_signing_key` (`truapi-server/src/runtime/pairing_host.rs`) and `derive_product_keypair_from_subtree_secret` accept only the canonical form — unlike `Sr25519Signer::from_secret_bytes`, which falls back. Every raw secret this host hands the core (the AutoSigning `productRootPrivateKey` and both allowance `slotAccountKey`s) is now converted with the new `canonicalSecretKey`. Both encodings name the same scalar, so no key and no signature moves.
+
+### Known issue
+
+- **An indexed product account is reported and signed for under two different keys.** The core no longer asks the host for an indexed product account: it asks once for the product's hard subtree and then derives each account itself as one soft junction, `derive_product_public_key(subtree, index_bytes(n))`. This host still hard-derives `//Selected//dotnsId/index` for the same handle, which is also what it signs with, so a product's own signature does not verify against the address the core reported to it — and `productAccounts['dotnsId/index']` can no longer steer `getAccount` (only a subtree-level `productAccounts['dotnsId']` still moves the address). The four `Product account derivation` integration tests are marked `fixme` against this. Fixing it moves every product-account address and narrows `productAccounts` to subtree granularity, so it is a breaking change held for its own release.
+
 ## 0.12.1
 
 ### Fixed

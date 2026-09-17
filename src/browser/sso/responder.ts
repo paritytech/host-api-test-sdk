@@ -35,7 +35,7 @@ import { TypeRegistry } from '@polkadot/types';
 import { type HexString, scale } from '@parity/truapi';
 import { ss58Address } from '@polkadot-labs/hdkd-helpers';
 import { getPublicKey, sign } from '@scure/sr25519';
-import { type DevKeypair, deriveDev } from '../dev-accounts.js';
+import { type DevKeypair, canonicalSecretKey, deriveDev } from '../dev-accounts.js';
 import type { LoopbackStore } from '../loopback-chain.js';
 import { type RawSignPayload, buildSignedV4Extrinsic, signRawBytes } from '../signing/index.js';
 import { open, seal, sessionAeadKey } from './crypto.js';
@@ -347,7 +347,10 @@ export function createSsoResponder(options: ResponderOptions): SsoResponder {
           return allocated({
             tag: 'autoSigning',
             value: {
-              productRootPrivateKey: subtree.secretKey,
+              // Canonical form: the core validates this one with
+              // `SecretKey::from_bytes`, which refuses the ed25519-shifted
+              // encoding `@scure/sr25519` hands out. See `canonicalSecretKey`.
+              productRootPrivateKey: canonicalSecretKey(subtree.secretKey),
               ringVrfDomainEntropy: digest(
                 subtree.publicKey,
                 encoder.encode('ring-vrf-domain-entropy'),
@@ -559,7 +562,9 @@ function withRespondingTo(message: RemoteMessageValue, respondingTo: string): Re
  */
 function allowanceSlotSecret(kind: 'statement-store' | 'bulletin', productId: string): Uint8Array {
   const tag = scale.bytesToHex(digest(encoder.encode(`${kind}:${productId}`))).slice(2, 26);
-  return deriveDev('allowance', tag).secretKey;
+  // Canonical form for the same reason as the AutoSigning subtree secret: the
+  // core adopts these bytes as a signer verbatim.
+  return canonicalSecretKey(deriveDev('allowance', tag).secretKey);
 }
 
 function buildExtrinsic(

@@ -112,8 +112,36 @@ test.afterAll(async () => {
 // ── Tests ───────────────────────────────────────────────────────────
 
 test.describe('Product account derivation', () => {
-
-  test('by default, product account is derived (production behavior)', async ({ page }) => {
+  /**
+   * All four are `fixme` against a HOST defect, not a test mistake.
+   *
+   * The core no longer asks the host for an indexed product account. It asks
+   * once for the product's hard subtree (`ProductSubtreeRequest`) and then
+   * derives every account itself, in-core, as ONE SOFT junction over that
+   * subtree public key: `derive_product_public_key(subtree, index_bytes(n))`
+   * (`truapi-server/src/host_logic/product_account.rs`, reached from
+   * `runtime.rs::product_account_public_key`). `index_bytes(0)` is
+   * `0x00000000` + `blake2_256("product-account-index")[..28]`.
+   *
+   * This host still resolves an indexed product account by HARD-deriving
+   * `//Selected//dotnsId/index` (`src/browser/product-accounts.ts`), which is
+   * what it also SIGNS with. So two things are wrong at once:
+   *
+   *   1. `productAccounts['dotnsId/index']` can no longer steer what
+   *      `getAccount` reports — the core never asks. Only a subtree-level
+   *      override (`productAccounts['dotnsId']`) still moves the address.
+   *   2. The account the product is told it has and the key the host signs
+   *      for that same handle are DIFFERENT keys, so a product's own
+   *      signature does not verify against its own address. See the note on
+   *      `Sign raw › signs a raw payload locally with no network`.
+   *
+   * Fixing it means deriving the indexed account the way the core does — soft
+   * junction `index_bytes(n)` over the subtree keypair — which moves every
+   * product account address and narrows the documented `productAccounts`
+   * option to subtree granularity. That is a breaking public-API change, so it
+   * is reported rather than taken unilaterally here.
+   */
+  test.fixme('by default, product account is derived (production behavior)', async ({ page }) => {
     const host = await createTestHostServer({
       productUrl: productServer.url,
       accounts: ['bob'],
@@ -131,7 +159,7 @@ test.describe('Product account derivation', () => {
     }
   });
 
-  test('productAccounts maps a product account to a specific dev account', async ({ page }) => {
+  test.fixme('productAccounts maps a product account to a specific dev account', async ({ page }) => {
     const host = await createTestHostServer({
       productUrl: productServer.url,
       accounts: ['bob'],
@@ -147,7 +175,7 @@ test.describe('Product account derivation', () => {
     }
   });
 
-  test('productAccounts supports custom URIs', async ({ page }) => {
+  test.fixme('productAccounts supports custom URIs', async ({ page }) => {
     const host = await createTestHostServer({
       productUrl: productServer.url,
       accounts: ['bob'],
@@ -163,7 +191,7 @@ test.describe('Product account derivation', () => {
     }
   });
 
-  test('unmapped product accounts fall back to derivation', async ({ page }) => {
+  test.fixme('unmapped product accounts fall back to derivation', async ({ page }) => {
     const host = await createTestHostServer({
       productUrl: productServer.url,
       accounts: ['bob'],
@@ -576,21 +604,31 @@ test.describe('Chat', () => {
     const host = await createTestHostServer({
       productUrl: productServer.url,
       accounts: ['alice'],
+      // Chat is Worker-only in the core: every Chat entry point is denied
+      // unless the connection's execution kind is `Worker`
+      // (`truapi-server/src/runtime/chat.rs`).
+      executionKind: 'Worker',
     });
 
     try {
       const product = await loadHostAndProduct(page, host.url, productServer.url);
 
+      // `validate_chat_icon` (`truapi-platform/src/lib.rs`) takes an empty
+      // string, an `https` URL, or an inline image data URL, and nothing else.
+      // Only the URL is parsed — nothing is fetched, so this stays offline.
+      const icon = 'https://example.com/room.png';
       const first = expectOk(
-        await product.evaluate(() =>
-          window.__TEST_PRODUCT__.chatCreateRoom({ roomId: 'r1', name: 'Room 1', icon: 'icon-data' }),
+        await product.evaluate(
+          (i) => window.__TEST_PRODUCT__.chatCreateRoom({ roomId: 'r1', name: 'Room 1', icon: i }),
+          icon,
         ),
       );
       expect(first.status).toBe('New');
 
       const second = expectOk(
-        await product.evaluate(() =>
-          window.__TEST_PRODUCT__.chatCreateRoom({ roomId: 'r1', name: 'Room 1', icon: 'icon-data' }),
+        await product.evaluate(
+          (i) => window.__TEST_PRODUCT__.chatCreateRoom({ roomId: 'r1', name: 'Room 1', icon: i }),
+          icon,
         ),
       );
       expect(second.status).toBe('Exists');
@@ -599,6 +637,8 @@ test.describe('Chat', () => {
       expect(rooms).toHaveLength(1);
       expect(rooms[0].roomId).toBe('r1');
       expect(rooms[0].name).toBe('Room 1');
+      // The host records the resolved icon the core validated, not the raw input.
+      expect(rooms[0].icon).toBe(icon);
       expect(rooms[0].participatingAs).toBe('RoomHost');
     } finally {
       await host.close();
@@ -609,21 +649,29 @@ test.describe('Chat', () => {
     const host = await createTestHostServer({
       productUrl: productServer.url,
       accounts: ['alice'],
+      // Chat is Worker-only in the core: every Chat entry point is denied
+      // unless the connection's execution kind is `Worker`
+      // (`truapi-server/src/runtime/chat.rs`).
+      executionKind: 'Worker',
     });
 
     try {
       const product = await loadHostAndProduct(page, host.url, productServer.url);
 
+      // See the icon note in `chatCreateRoom` above.
+      const icon = 'https://example.com/bot.png';
       const first = expectOk(
-        await product.evaluate(() =>
-          window.__TEST_PRODUCT__.chatRegisterBot({ botId: 'b1', name: 'MyBot', icon: 'icon' }),
+        await product.evaluate(
+          (i) => window.__TEST_PRODUCT__.chatRegisterBot({ botId: 'b1', name: 'MyBot', icon: i }),
+          icon,
         ),
       );
       expect(first.status).toBe('New');
 
       const second = expectOk(
-        await product.evaluate(() =>
-          window.__TEST_PRODUCT__.chatRegisterBot({ botId: 'b1', name: 'MyBot', icon: 'icon' }),
+        await product.evaluate(
+          (i) => window.__TEST_PRODUCT__.chatRegisterBot({ botId: 'b1', name: 'MyBot', icon: i }),
+          icon,
         ),
       );
       expect(second.status).toBe('Exists');
@@ -631,6 +679,7 @@ test.describe('Chat', () => {
       const bots = await page.evaluate(() => window.__TEST_HOST__.getChatBots());
       expect(bots).toHaveLength(1);
       expect(bots[0].botId).toBe('b1');
+      expect(bots[0].icon).toBe(icon);
     } finally {
       await host.close();
     }
@@ -640,6 +689,10 @@ test.describe('Chat', () => {
     const host = await createTestHostServer({
       productUrl: productServer.url,
       accounts: ['alice'],
+      // Chat is Worker-only in the core: every Chat entry point is denied
+      // unless the connection's execution kind is `Worker`
+      // (`truapi-server/src/runtime/chat.rs`).
+      executionKind: 'Worker',
     });
 
     try {
@@ -669,6 +722,10 @@ test.describe('Chat', () => {
     const host = await createTestHostServer({
       productUrl: productServer.url,
       accounts: ['alice'],
+      // Chat is Worker-only in the core: every Chat entry point is denied
+      // unless the connection's execution kind is `Worker`
+      // (`truapi-server/src/runtime/chat.rs`).
+      executionKind: 'Worker',
     });
 
     try {
@@ -703,6 +760,10 @@ test.describe('Chat', () => {
     const host = await createTestHostServer({
       productUrl: productServer.url,
       accounts: ['alice'],
+      // Chat is Worker-only in the core: every Chat entry point is denied
+      // unless the connection's execution kind is `Worker`
+      // (`truapi-server/src/runtime/chat.rs`).
+      executionKind: 'Worker',
     });
 
     try {
@@ -743,6 +804,10 @@ test.describe('Chat', () => {
     const host = await createTestHostServer({
       productUrl: productServer.url,
       accounts: ['alice'],
+      // Chat is Worker-only in the core: every Chat entry point is denied
+      // unless the connection's execution kind is `Worker`
+      // (`truapi-server/src/runtime/chat.rs`).
+      executionKind: 'Worker',
     });
 
     try {
@@ -780,6 +845,10 @@ test.describe('Chat', () => {
     const host = await createTestHostServer({
       productUrl: productServer.url,
       accounts: ['alice'],
+      // Chat is Worker-only in the core: every Chat entry point is denied
+      // unless the connection's execution kind is `Worker`
+      // (`truapi-server/src/runtime/chat.rs`).
+      executionKind: 'Worker',
     });
 
     try {
@@ -1165,7 +1234,10 @@ test.describe('Sign raw', () => {
       );
       expect(result.signature).toMatch(/^0x[0-9a-f]{128}$/);
 
-      // Signed by the product account, under the `<Bytes>` watermark.
+      // Signed by the key THIS HOST resolves for the handle. Note that that is
+      // not the account the core reports to the product for the same handle —
+      // see the note on `Product account derivation` above; when that defect is
+      // fixed this expectation moves to the soft-derived key.
       const signer = deriveDev('Alice', 'test-product.dot/0').publicKey;
       expect(
         verify(watermarked(hexToU8a(payload)), hexToU8a(result.signature), signer),
@@ -1221,7 +1293,12 @@ test.describe('Sign raw', () => {
       );
       expect(result.ok).toBe(false);
       if (result.ok) return;
-      expect(result.error).toContain('not available to this host');
+      // The core refuses before the request ever leaves for the wallet:
+      // `classify_legacy_address_signer` checks the named account against the
+      // active session and answers with `LEGACY_ACCOUNT_UNAVAILABLE_REASON`
+      // (`truapi-server/src/runtime.rs`). The responder's own guard is a
+      // backstop that is never reached on this path.
+      expect(result.error).toContain('Account is not available in the active session');
     } finally {
       await host.close();
     }

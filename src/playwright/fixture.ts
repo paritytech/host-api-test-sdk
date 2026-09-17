@@ -139,6 +139,13 @@ export interface TestHostFixtureOptions {
   networks?: CreateTestHostOptions['networks'];
   /** Map product account requests to specific accounts (see CreateTestHostOptions.productAccounts) */
   productAccounts?: CreateTestHostOptions['productAccounts'];
+  /**
+   * Trusted executable kind declared for the product (default: `'App'`).
+   *
+   * Set `'Worker'` to exercise chat — the core denies every Chat entry point
+   * for any other kind. See `CreateTestHostOptions.executionKind`.
+   */
+  executionKind?: CreateTestHostOptions['executionKind'];
 }
 
 export function createTestHostFixture(defaults: TestHostFixtureOptions) {
@@ -149,6 +156,7 @@ export function createTestHostFixture(defaults: TestHostFixtureOptions) {
         accounts: defaults.accounts ?? ['alice'],
         networks: defaults.networks ?? [DEFAULT_CHAIN],
         productAccounts: defaults.productAccounts,
+        executionKind: defaults.executionKind,
       });
 
       await page.goto(server.url);

@@ -237,6 +237,8 @@ The browser bundle (~780KB minified) includes `@novasamatech/host-container`, `@
 | `testHost.clearPermissionLog()` | Reset the permission log |
 | `testHost.waitForConnection(timeout?)` | Wait for host-api-wrapper to connect |
 
+Fixture options: `productUrl`, `accounts`, `networks`, `productAccounts`, `executionKind` (see [Execution kind](#execution-kind)).
+
 ### Dev accounts
 
 | Name | URI | SS58 (generic) |
@@ -280,6 +282,23 @@ createTestHostFixture({
 > Unmapped identities fall back to production-style derivation (`//Bob//dotnsId/index`). If `accounts: []` (unsigned host), unmapped `getProductAccount` calls return `err(RequestCredentialsErr.NotConnected)` and `getProductAccountAlias` returns `err(GetAliasErr.Unknown)`, matching `polkadot-desktop`. Pre-mapped entries in `productAccounts` are still served.
 >
 > **Selector keys**: since RFC-0022 a product addresses its accounts with `Index(n)` or `Raw(32 bytes)` rather than a bare number. `productAccounts` keys are unchanged for plain indices — `"myapp.dot/0"` still means `Index(0)`, and the derived address is the same as before. A raw selector is keyed by its hex, e.g. `"myapp.dot/0x1234…"`.
+>
+> **Known issue (0.13.0)**: an *indexed* key no longer steers what `getAccount` reports. The core asks the host only for the product's hard subtree and then soft-derives each account itself, so only a subtree-level key — `productAccounts: { "myapp.dot": "bob" }` — still moves the address. The host also still hard-derives `//Selected//myapp.dot/0` when it signs for that handle, so a product's own signature does not verify against the address it was given. See the CHANGELOG for the full diagnosis; the fix is a breaking change held for its own release.
+
+### Execution kind
+
+The core decides what a connection may reach from the trusted *kind* of executable the host declares, and Chat is the one gated surface: every Chat entry point is denied unless the kind is `Worker`. This host declares `'App'` by default, because that is what an iframe-embedded product is. A test that drives chat must ask for `'Worker'`:
+
+```ts
+createTestHostFixture({
+  productUrl: 'http://localhost:3000',
+  executionKind: 'Worker', // 'App' (default) | 'Widget' | 'Worker'
+});
+```
+
+The same option is accepted by `createTestHostServer`, and the type is exported as `ProductExecutionKind`. Leave it at the default unless you are testing chat.
+
+A chat `icon` is validated by the core, not passed through: it must be empty, an `https` URL, or an inline `data:` image of an allowed media type. Anything else is refused with *"icon carries a scheme that cannot be rendered"*.
 
 ### Payment control
 
