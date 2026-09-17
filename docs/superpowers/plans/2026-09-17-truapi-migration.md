@@ -1248,22 +1248,26 @@ describe('extrinsic signing', () => {
     { extra: new Uint8Array([0xaa]), additionalSigned: new Uint8Array([0xbb]) },
   ];
 
+  // Inner length here is 1 + 1 + 32 + 1 + 64 + 1 (extras) + 3 (callData) = 103.
+  // 103 >= 64, so the SCALE compact prefix is TWO bytes, not one — every field
+  // sits one byte later than a single-byte prefix would put it.
   it('emits a signed v4 extrinsic with the expected header', () => {
     const extrinsic = buildSignedV4Extrinsic(alice, callData, extensions);
-    // [compact len][0x84 version+signed][0x00 MultiAddress::Id][32B account]
-    expect(extrinsic[1]).toBe(0x84);
-    expect(extrinsic[2]).toBe(0x00);
-    expect(extrinsic.slice(3, 35)).toEqual(alice.publicKey);
+    // [compact len ×2][0x84 version+signed][0x00 MultiAddress::Id][32B account]
+    expect(extrinsic[2]).toBe(0x84);
+    expect(extrinsic[3]).toBe(0x00);
+    expect(extrinsic.slice(4, 36)).toEqual(alice.publicKey);
   });
 
   it('marks the signature as MultiSignature::Sr25519', () => {
     const extrinsic = buildSignedV4Extrinsic(alice, callData, extensions);
-    expect(extrinsic[35]).toBe(0x01);
+    expect(extrinsic[36]).toBe(0x01);
   });
 
   it('declares a length matching the bytes that follow', () => {
     const extrinsic = buildSignedV4Extrinsic(alice, callData, extensions);
-    expect(extrinsic[0] >> 2).toBe(extrinsic.length - 1);
+    const declared = ((extrinsic[0] | (extrinsic[1] << 8)) >> 2);
+    expect(declared).toBe(extrinsic.length - 2);
   });
 
   it('signs raw bytes verifiably', () => {
