@@ -7,17 +7,6 @@
 import { HDKD, getPublicKey, secretFromSeed } from '@scure/sr25519';
 import { DEV_MINI_SECRET, ss58Address } from '@polkadot-labs/hdkd-helpers';
 
-export type DevAccountName = 'alice' | 'bob' | 'charlie' | 'dave' | 'eve' | 'ferdie';
-
-export const DEV_ACCOUNT_URIS: Record<DevAccountName, string> = {
-  alice: '//Alice',
-  bob: '//Bob',
-  charlie: '//Charlie',
-  dave: '//Dave',
-  eve: '//Eve',
-  ferdie: '//Ferdie',
-};
-
 export interface DevKeypair {
   /**
    * 64-byte sr25519 secret in `@scure/sr25519`'s representation: the scalar

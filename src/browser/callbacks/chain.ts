@@ -167,21 +167,31 @@ export function createChainCallbacks(options: {
       if (target === peopleGenesis) {
         // Push-to-async-iterator bridge (see passive.ts): the loopback store's
         // `onResponse` push becomes the `responses()` the core pulls.
-        const channel = createPushChannel<string>();
+        // `onClose` is what ties the store subscription to the stream's life:
+        // a consumer that `break`s out of `responses()` calls the iterator's
+        // `return()`, which closes the channel — and must take the
+        // subscription with it rather than leave it feeding a dead channel.
+        const channel = createPushChannel<string>(() => loopback.close());
         const loopback = store.connect((json) => channel.push(json));
+        // One iterator per connection, not one per `responses()` call: the
+        // channel's `[Symbol.asyncIterator]` mints a fresh iterator over shared
+        // buffers, so two loops would race each other for frames. The RPC route
+        // below gets this from its generator; this route pins it explicitly.
+        const iterator = channel.iterable[Symbol.asyncIterator]();
+        const responses: AsyncIterable<string> = { [Symbol.asyncIterator]: () => iterator };
 
         return {
           send(request: string): void {
             loopback.send(request);
           },
           responses(): AsyncIterable<string> {
-            return channel.iterable;
+            return responses;
           },
           close(): void {
-            // Unsubscribe from the store first so no further response can
-            // reach the channel, then end the channel itself so any pending
-            // `responses()` pull resolves `done` instead of hanging.
-            loopback.close();
+            // Closing the channel stops any further response reaching it,
+            // resolves a pending `responses()` pull as `done` instead of
+            // hanging it, and runs `onClose` — which unsubscribes from the
+            // store. Closing twice is a no-op on both sides.
             channel.close();
           },
         };

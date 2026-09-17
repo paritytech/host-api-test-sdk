@@ -119,8 +119,12 @@ export function createLoopbackStore(): LoopbackStore {
                 for (const listener of submitListeners) {
                   try {
                     listener(statement);
-                  } catch {
-                    // Listener threw; swallow and continue.
+                  } catch (error) {
+                    // Swallowed so one listener cannot starve the rest or
+                    // contradict the success reply — but never silently: the
+                    // SSO responder is a listener, and a throw here is a reply
+                    // the core will wait for forever.
+                    console.error('[loopback-chain] statement_submit listener threw:', error);
                   }
                 }
                 return;
@@ -210,8 +214,10 @@ export function createLoopbackStore(): LoopbackStore {
               params: { subscription: subscription.id, result },
             }),
           );
-        } catch {
-          // Subscriber threw; swallow and continue to avoid cascading failures.
+        } catch (error) {
+          // Swallowed to avoid cascading failures, but logged: a subscriber
+          // that throws is a statement nobody received.
+          console.error('[loopback-chain] statement subscriber threw:', error);
         }
       }
     },

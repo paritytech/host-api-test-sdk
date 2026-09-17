@@ -99,10 +99,16 @@ export interface DevAccountInfo {
    *  - `'//Alice'` — dev account
    *  - `'//Alice//myapp'` — a further hard junction
    *
-   * A mnemonic or a hex seed is NOT accepted and throws, and a `/` inside a
-   * segment (`'//Alice//myapp/0'`) is part of that junction's label rather
-   * than a polkadot-js soft junction, so it does not name the address
-   * polkadot-js would give it.
+   * The exact rule: the string is split on `//` and every segment becomes one
+   * hard-junction LABEL, verbatim. Nothing else is interpreted. So a `/`
+   * inside a segment (`'//Alice//myapp/0'`) is part of that label rather than
+   * a polkadot-js soft junction, and does not name the address polkadot-js
+   * would give it.
+   *
+   * A mnemonic or a hex seed is therefore not a seed here either — it is read
+   * as a junction label. A label is capped at 31 bytes, so a real mnemonic or
+   * a `0x`-prefixed 32-byte seed throws on that limit; a SHORT hex string
+   * silently derives a real but unintended account instead. Pass neither.
    */
   uri: string;
 }
@@ -120,7 +126,20 @@ export type Account = DevAccountName | DevAccountInfo;
 export interface CreateTestHostOptions {
   /** URL of the product to embed (e.g. http://localhost:3001) */
   productUrl: string;
-  /** Accounts to provide (used for getLegacyAccounts and signing) */
+  /**
+   * The account roster (default: `['alice']`).
+   *
+   * The FIRST entry is the active identity: the SSO session is minted for it,
+   * and it is the only account that signs. The rest are switch targets —
+   * `switchAccount` / `setAccounts` resolve a name against this roster
+   * case-insensitively, which is how a custom `{ name, uri }` entry keeps its
+   * own URI when a test switches to it.
+   *
+   * This is NOT a legacy-account list. `getLegacyAccounts()` answers with an
+   * empty vector whatever the host holds — the core never enumerates them —
+   * and a legacy request naming any account but the active identity is
+   * refused, because the SSO session carries exactly one.
+   */
   accounts?: Account[];
   /**
    * Networks the host can route, matched by genesis hash.

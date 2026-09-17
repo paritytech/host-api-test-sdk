@@ -472,7 +472,7 @@ export function createSsoResponder(options: ResponderOptions): SsoResponder {
     // `response` is a transport acknowledgement, never a request.
     if (frame.tag !== 'request') return;
 
-    const replies: Array<Parameters<typeof RemoteMessageEnvelope.enc>[0]> = [];
+    const replies: Uint8Array[] = [];
     for (const encoded of frame.value.data) {
       let envelope: ReturnType<typeof RemoteMessageEnvelope.dec>;
       try {
@@ -497,25 +497,62 @@ export function createSsoResponder(options: ResponderOptions): SsoResponder {
         answered = failureReply(message.tag, reason);
       }
       if (!answered) continue;
-      replies.push({
-        messageId: `sso-responder-${++nextMessageId}`,
-        // Correlation: the core drops any reply not addressed to its request.
-        data: { tag: 'V1', value: withRespondingTo(answered, envelope.messageId) },
-      });
+      const wire = encodeReply(answered, envelope.messageId, message.tag);
+      if (wire) replies.push(wire);
     }
 
     // The ack first: the core holds a decoded reply back until it has seen one.
     const requestId = frame.value.requestId;
     publish({ tag: 'response', value: { requestId, responseCode: RESPONSE_ACCEPTED } });
     if (replies.length > 0) {
-      publish({
-        tag: 'request',
-        value: { requestId, data: replies.map((reply) => RemoteMessageEnvelope.enc(reply)) },
-      });
+      publish({ tag: 'request', value: { requestId, data: replies } });
     }
   });
 
   // ---- transport ------------------------------------------------------------
+
+  /**
+   * SCALE-encode one reply, degrading to a failure reply if it will not encode.
+   *
+   * Encoding used to happen after the ack had already been published, outside
+   * every `try`: a mis-shaped success payload threw there, the throw was
+   * swallowed by the store's submit-listener isolation, and the core waited
+   * forever for a reply that was never sent — with nothing on the console to
+   * say why. That is precisely the failure this module's error isolation exists
+   * to prevent, so encoding is part of building a reply now. A failure reply is
+   * a fixed shape (a tag and a string or a small struct), so the fallback
+   * encodes when the original did not; if even that fails there is nothing
+   * honest left to send, and the log is the only remaining signal.
+   */
+  function encodeReply(
+    answered: RemoteMessageValue,
+    respondingTo: string,
+    requestTag: RemoteMessageValue['tag'],
+  ): Uint8Array | undefined {
+    const envelope = (value: RemoteMessageValue): Parameters<typeof RemoteMessageEnvelope.enc>[0] => ({
+      messageId: `sso-responder-${++nextMessageId}`,
+      // Correlation: the core drops any reply not addressed to its request.
+      data: { tag: 'V1', value: withRespondingTo(value, respondingTo) },
+    });
+
+    try {
+      return RemoteMessageEnvelope.enc(envelope(answered));
+    } catch (error) {
+      console.error(`[sso-responder] could not encode the ${requestTag} reply:`, error);
+      const reason = error instanceof Error ? error.message : String(error);
+      const failure = failureReply(requestTag, `reply could not be encoded: ${reason}`);
+      if (!failure) return undefined;
+      try {
+        return RemoteMessageEnvelope.enc(envelope(failure));
+      } catch (fallbackError) {
+        console.error(
+          `[sso-responder] could not encode the ${requestTag} failure reply either:`,
+          fallbackError,
+        );
+        return undefined;
+      }
+    }
+  }
 
   function publish(data: Parameters<typeof StatementData.enc>[0]): void {
     const statement: Statement = {

@@ -79,7 +79,7 @@ const toHex = (bytes: Uint8Array): string =>
 /**
  * Host theme source. Ported from `host-runtime.ts`'s `handleThemeSubscribe` /
  * `themeSubscribers`: every subscription is sent the current theme
- * immediately, then future `setTheme` calls (Task 14 pushes onto
+ * immediately, then future `setTheme` calls (the control API pushes onto
  * `state.themeSubscribers` directly, matching the pre-migration pattern).
  */
 export function createThemeCallbacks(state: HostState): {

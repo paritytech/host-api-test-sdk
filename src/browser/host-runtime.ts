@@ -61,7 +61,7 @@ interface HostConfig {
   accounts: AccountConfig[];
   /** Networks the host can route, matched by genesis. First is the default. */
   networks: ChainRuntimeConfig[];
-  /** Maps "dotnsId/index" → { name, uri } for product account overrides. */
+  /** Maps a bare dotNS product id → { name, uri } for subtree overrides. */
   productAccounts?: Record<string, AccountConfig>;
 }
 
@@ -128,8 +128,25 @@ function concat(left: Uint8Array, right: Uint8Array): Uint8Array {
   return out;
 }
 
-/** `'alice'` → `{ name: 'Alice', uri: '//Alice' }`, as pre-migration did. */
-function devAccount(name: string): AccountConfig {
+/**
+ * Resolve one `setAccounts` name against the roster the page was configured
+ * with.
+ *
+ * The configured roster wins, matched case-insensitively on `name`. That is
+ * what makes a custom `{ name, uri }` entry switchable at all: deriving
+ * `//Custom` from its display name would sign with a key the caller never
+ * asked for, silently. A name the roster does not carry falls back to the bare
+ * dev derivation — `'alice'` → `{ name: 'Alice', uri: '//Alice' }`, as
+ * pre-migration did — so `switchAccount('bob')` works whether or not Bob was
+ * listed at boot.
+ *
+ * The roster is always the BOOT config, never the accounts currently in force,
+ * so a switch away from a custom account can be switched back.
+ */
+function resolveAccountName(roster: readonly AccountConfig[], name: string): AccountConfig {
+  const wanted = name.toLowerCase();
+  const configured = roster.find((account) => account.name.toLowerCase() === wanted);
+  if (configured) return configured;
   const capitalized = name.charAt(0).toUpperCase() + name.slice(1).toLowerCase();
   return { name: capitalized, uri: `//${capitalized}` };
 }
@@ -333,6 +350,11 @@ async function init(): Promise<void> {
     /**
      * Re-mint the session for `names` and resume routing.
      *
+     * `names` is a roster of switch targets, resolved against the configured
+     * accounts (see `resolveAccountName`); the FIRST is the active identity.
+     * The SSO session has exactly one identity, so only that one signs — a
+     * request naming any other account is refused by the core.
+     *
      * The iframe is deliberately left alone: its `MessagePort` was transferred
      * once, at load, and reloading it would strand the channel. So the session
      * is dropped and re-installed under the new signer and the product
@@ -340,7 +362,7 @@ async function init(): Promise<void> {
      */
     async function setAccounts(names: string[]): Promise<void> {
       if (names.length === 0) throw new Error('setAccounts requires at least one account');
-      accounts = names.map(devAccount);
+      accounts = names.map((name) => resolveAccountName(config.accounts, name));
 
       productStatus = 'disconnected';
       sessionStatus = 'connecting';

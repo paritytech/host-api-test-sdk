@@ -3,18 +3,23 @@
  * optional `chat` group, from the small, single-responsibility modules in
  * this directory.
  *
- * `chat` is included (unlike `permissionStatus`/`pocket`) because Task 14's
- * control API (`getChatRooms`, `getChatBots`, `getChatMessageLog`,
- * `clearChatState`, `injectChatAction`) reads chat state that only this
- * group's handlers populate.
+ * `chat` is included (unlike `permissionStatus`/`pocket`) because the control
+ * API in `control-api.ts` (`getChatRooms`, `getChatBots`,
+ * `getChatMessageLog`, `clearChatState`, `injectChatAction`) reads chat state
+ * that only this group's handlers populate.
  *
- * `auth` and `userConfirmation` have no pre-migration analogue substantial
- * enough to warrant their own file (RFC-0009 login and per-action review
- * land in later tasks), so they are wired directly here: `auth` is a no-op
- * (satisfies `Required<AuthPresenter>` without inventing session UI), and
- * `userConfirmation` approves unconditionally, matching this file's
- * default-approve stance elsewhere until a later task adds a behavior
- * switch for it.
+ * `auth` and `userConfirmation` are wired inline rather than given files of
+ * their own, because neither has any behaviour to put in one:
+ *
+ *  - `auth.authStateChanged` is a permanent no-op. This host has no login —
+ *    it mints its own SSO session at boot — so there is no auth state to
+ *    report. It exists to satisfy `Required<AuthPresenter>` rather than to
+ *    invent session UI a test could not drive.
+ *  - `userConfirmation.confirmUserAction` always approves. Per-action review
+ *    is a human prompt, and a host whose whole purpose is unattended
+ *    auto-signing has nobody to ask; approving is the same default-approve
+ *    stance the permission group takes, and there is deliberately no control
+ *    to flip it.
  */
 import type { RequiredHostCallbacks } from '@parity/truapi-host';
 import type { LoopbackStore } from '../loopback-chain.js';

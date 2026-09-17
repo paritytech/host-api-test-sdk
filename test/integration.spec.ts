@@ -27,6 +27,9 @@ import { deriveDev, deriveFromUri, deriveSoft } from '../src/browser/dev-account
 // `index_bytes(n)` — the soft chain code the CORE derives a product account
 // at. Imported rather than restated so the two cannot drift apart.
 import { indexBytes } from '../src/browser/product-accounts.js';
+// The synthetic genesis of the in-page People loopback — the one chain this
+// host always serves. Imported rather than restated so it cannot drift.
+import { PEOPLE_GENESIS_HASH } from '../src/browser/constants.js';
 import { loadHost, serveProduct } from './support.js';
 
 // ── Helpers ─────────────────────────────────────────────────────────
@@ -1191,6 +1194,31 @@ test.describe('Feature check', () => {
       await host.close();
     }
   });
+
+  test('chain feature returns true for the People chain the host advertises', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice'],
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+
+      // The People loopback is served in-page and is never in `networks`, so
+      // the host used to advertise it through `supportedChains()` and then
+      // deny it here — about the one chain it genuinely serves, and the one
+      // every signature travels over.
+      const result = expectOk(
+        await product.evaluate(
+          (genesis) => window.__TEST_PRODUCT__.featureSupported(genesis),
+          u8aToHex(PEOPLE_GENESIS_HASH),
+        ),
+      );
+      expect(result.supported).toBe(true);
+    } finally {
+      await host.close();
+    }
+  });
 });
 
 // ── Local storage ──────────────────────────────────────────────────
@@ -1558,6 +1586,55 @@ test.describe('Session and connection state', () => {
       // The signing log survives the switch: both signatures are on it.
       const log = await page.evaluate(() => window.__TEST_HOST__.getSigningLog());
       expect(log.map((entry) => entry.type)).toEqual(['raw', 'raw']);
+    } finally {
+      await host.close();
+    }
+  });
+
+  test('switching to a custom account signs with its configured URI', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      // The roster: Alice is the active identity, `Derived` is a switch target
+      // whose URI is not derivable from its name.
+      accounts: ['alice', { name: 'Derived', uri: '//Alice//custom' }],
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+
+      await page.evaluate(() => window.__TEST_HOST__.switchAccount('Derived'));
+      await page.waitForFunction(() => window.__TEST_HOST__.getChainStatus() === 'connected', {
+        timeout: 30_000,
+      });
+
+      const payload = `0x${'44'.repeat(8)}`;
+      const signed = expectOk(
+        await product.evaluate(
+          (p) => window.__TEST_PRODUCT__.signRawProduct('test-product.dot', 0, p),
+          payload,
+        ),
+      );
+
+      // The name is resolved against the configured roster, so the signer is
+      // the subtree under `//Alice//custom` — NOT the `//Derived` the display
+      // name alone would have produced.
+      expect(
+        verify(
+          watermarked(hexToU8a(payload)),
+          hexToU8a(signed.signature),
+          deriveSoft(
+            deriveFromUri('//Alice//custom//test-product.dot'),
+            indexBytes(0),
+          ).publicKey,
+        ),
+      ).toBe(true);
+      expect(
+        verify(
+          watermarked(hexToU8a(payload)),
+          hexToU8a(signed.signature),
+          deriveSoft(deriveFromUri('//Derived//test-product.dot'), indexBytes(0)).publicKey,
+        ),
+      ).toBe(false);
     } finally {
       await host.close();
     }

@@ -14,10 +14,10 @@
  *
  * Pre-migration's `handleChatActionSubscribe` / `injectChatAction` (a peer
  * message or button press delivered *to* the product) has no equivalent on
- * `ChatPlatform`: the new architecture delivers that through the *runtime's*
- * `publishChatAction`, not through a `HostCallbacks` subscription. There is
- * nothing to implement here for it — Task 14's `injectChatAction` control
- * method calls the runtime directly once that is wired up.
+ * `ChatPlatform`: the new architecture delivers that down the product's own
+ * connection, not through a `HostCallbacks` subscription. There is nothing to
+ * implement here for it — the control API's `injectChatAction` calls the
+ * product provider's `publishChatAction` instead (`control-api.ts`).
  */
 import { ok } from 'neverthrow';
 import type {

@@ -1,8 +1,22 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { PEOPLE_GENESIS_HASH } from '../constants.js';
+import type { LoopbackStore } from '../loopback-chain.js';
 import { createLoopbackStore } from '../loopback-chain.js';
 import type { ChainRuntimeConfig, RpcConnection } from './chain.js';
 import { createChainCallbacks, registerRpcChains } from './chain.js';
+
+/** A store that records how often the connection it handed out was closed. */
+function storeSpy(): { store: LoopbackStore; closes: () => number } {
+  const close = vi.fn();
+  return {
+    store: {
+      connect: () => ({ send() {}, close }),
+      publish() {},
+      onSubmit: () => () => {},
+    },
+    closes: () => close.mock.calls.length,
+  };
+}
 
 describe('chain routing', () => {
   it('routes the People genesis to the loopback store', async () => {
@@ -26,6 +40,42 @@ describe('chain routing', () => {
     const responses = connection.responses()[Symbol.asyncIterator]();
     connection.close();
     expect((await responses.next()).done).toBe(true);
+  });
+
+  it('serves one response iterator per connection, not one per call', async () => {
+    const provider = createChainCallbacks({ store: createLoopbackStore(), networks: [] });
+    const connection = await provider.connect(PEOPLE_GENESIS_HASH);
+
+    // Two iterators over the same push channel would race each other for
+    // frames — each response would reach exactly one of them. The configured-
+    // network route gets this from its generator; this one must match it.
+    const first = connection.responses()[Symbol.asyncIterator]();
+    const second = connection.responses()[Symbol.asyncIterator]();
+    expect(second).toBe(first);
+    connection.close();
+  });
+
+  it('unsubscribes from the store when the consumer stops pulling', async () => {
+    const { store, closes } = storeSpy();
+    const provider = createChainCallbacks({ store, networks: [] });
+    const connection = await provider.connect(PEOPLE_GENESIS_HASH);
+
+    // `for await ... break` ends with the iterator's `return()`. Without an
+    // `onClose` the channel would close and the store subscription would stay
+    // behind, feeding nothing.
+    await connection.responses()[Symbol.asyncIterator]().return?.();
+    expect(closes()).toBe(1);
+  });
+
+  it('unsubscribes from the store on close', async () => {
+    const { store, closes } = storeSpy();
+    const provider = createChainCallbacks({ store, networks: [] });
+    const connection = await provider.connect(PEOPLE_GENESIS_HASH);
+
+    connection.close();
+    // Closing twice is a no-op rather than a second unsubscribe.
+    connection.close();
+    expect(closes()).toBe(1);
   });
 
   it('rejects a genesis hash no network declares', async () => {

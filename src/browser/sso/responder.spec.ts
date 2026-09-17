@@ -24,7 +24,9 @@ const PRODUCT = 'test-product.dot';
 const INDEX_0 = { tag: 'Index', value: 0 } as const;
 const ACCOUNT = { dotNsIdentifier: PRODUCT, derivationIndex: INDEX_0 };
 
-function harness(failWith?: string) {
+type ResolveAccountFn = (dotNsIdentifier: string, derivationIndex: unknown) => ReturnType<typeof deriveDev>;
+
+function harness(failWith?: string, overrideResolve?: ResolveAccountFn) {
   const alice = deriveDev('Alice');
   const hostEncSecret = x25519.utils.randomSecretKey();
   const peerEncSecret = x25519.utils.randomSecretKey();
@@ -52,7 +54,11 @@ function harness(failWith?: string) {
     }
     return keypair;
   };
-  const responder = createSsoResponder({ store, session, resolveAccount });
+  const responder = createSsoResponder({
+    store,
+    session,
+    resolveAccount: overrideResolve ?? resolveAccount,
+  });
   const key = sessionAeadKey(hostEncSecret, session.peerEncPubkey);
   return { alice, store, session, responder, key, resolveAccount };
 }
@@ -752,6 +758,37 @@ describe('sso responder', () => {
       success: false,
       value: 'no such account',
     });
+  });
+
+  it('answers with a failure when a reply will not encode, instead of dropping it', () => {
+    // Fault injection: a subtree answer with no public key. `Bytes(32)` throws
+    // on it, which is the class of defect that used to escape the reply loop —
+    // the ack was published, the encode threw outside every `try`, the store
+    // swallowed it, and the core waited forever with nothing in the console.
+    const withoutPublicKey: ResolveAccountFn = () => ({
+      ...deriveDev('Alice'),
+      publicKey: undefined as unknown as Uint8Array,
+    });
+    const h = harness(undefined, withoutPublicKey);
+    const frames = listen(h);
+    const reported = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    submitRequest(h, 'req-unencodable', [
+      envelope('m-subtree', 'ProductSubtreeRequest', { productId: PRODUCT }),
+    ]);
+
+    const logged = reported.mock.calls.map((call) => String(call[0]));
+    reported.mockRestore();
+
+    // The ack still goes out first, and the reply is a refusal rather than
+    // silence — so the core fails the call instead of hanging on it.
+    expect(frames[0].data.tag).toBe('response');
+    const [reply] = replyValues(frames);
+    expect(reply.tag).toBe('ProductSubtreeResponse');
+    const payload = (reply.value as { payload: { success: boolean; value: string } }).payload;
+    expect(payload.success).toBe(false);
+    expect(payload.value).toMatch(/reply could not be encoded/);
+    expect(logged.some((line) => line.includes('could not encode'))).toBe(true);
   });
 
   it('rejects a session whose identity secret does not match its account id', () => {

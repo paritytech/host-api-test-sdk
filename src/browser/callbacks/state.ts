@@ -1,8 +1,9 @@
 /**
  * Mutable state backing the host callback groups.
  *
- * A plain object rather than a class: Task 14's control API (the
- * `window.__TEST_HOST__` surface) reads and mutates these fields directly —
+ * A plain object rather than a class: the control API in `control-api.ts`
+ * (the `window.__TEST_HOST__` surface) reads and mutates these fields
+ * directly —
  * pushing log entries, swapping `permissionBehavior`, replacing `theme` and
  * notifying `themeSubscribers` — the same way the pre-migration
  * `src/browser/host-runtime.ts` mutated its module-level `let`/`const`

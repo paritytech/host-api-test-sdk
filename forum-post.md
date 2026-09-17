@@ -784,7 +784,7 @@ This is the big one. The test host no longer speaks the old `@novasamatech/host-
 
 ## What still works unchanged
 
-- `createTestHostFixture` / `createTestHostServer` and their options
+- `createTestHostFixture` / `createTestHostServer` and the shape of their options — two of them changed meaning, and both have their own section below: `productAccounts` keys, and what `accounts` beyond the first one does
 - Dev accounts and their addresses — `//Alice` is still `5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY`
 - The signing log, the permission log, navigation, notifications, preimages, theme, chat state
 - Auto-signing with no prompts, which is the whole point of the package
@@ -881,6 +881,27 @@ One thing to know while you are there: a chat `icon` is validated by the core, n
 
 `injectChatAction` is also asynchronous now, and takes the protocol's own action type (`ChatActionInput`, exported from the package root). `await` it — it rejects if the action could not be delivered.
 
+## `accounts` is a roster, and only the first one signs
+
+This one is a clarification and a bug fix in the same place.
+
+The SSO session carries exactly **one** identity, so the first entry in `accounts` is the account that signs; the rest are targets you can switch to later. That was already the behaviour — it just was not what the docs implied, and `getLegacyAccounts()` returning `[]` no matter what you configured made it look like the roster was ignored entirely. It is not ignored, but nothing beyond the first entry is active until you switch to it, and a legacy-account request naming any *other* account is refused by the core.
+
+The bug: `switchAccount(name)` used to synthesise `//Name` from the name you passed, ignoring the roster. So a custom account could never actually be switched to —
+
+```ts
+createTestHostFixture({
+  productUrl: "http://localhost:3000",
+  accounts: ["alice", { name: "Derived", uri: "//Alice//custom" }],
+});
+
+// Before: signed as //Derived, silently — the configured URI was ignored.
+// Now: signs as //Alice//custom, the URI you configured.
+await testHost.switchAccount("Derived");
+```
+
+Names are matched against the roster case-insensitively. A dev name the roster does not carry still falls back to the bare derivation, so `switchAccount("charlie")` gives you `//Charlie` whether or not Charlie was listed at boot.
+
 ## Controls that are gone
 
 The host used to simulate several things the core now owns, or that the new stack has no equivalent for. Grep your tests for these; each one is a compile error or a `TypeError`, not a silent change in behaviour:
@@ -897,6 +918,7 @@ Removed types: `LoginBehavior`, `PaymentLogEntry`, `PaymentTopUpBehavior`, `Stat
 - **`getChainStatus()`** joins `getConnectionStatus()`: the first is the *host's* session, the second is the *product's* connection. Signing rides on the session, so if a switch leaves it `'disconnected'`, no signature is coming.
 - **`NetworkConfig.chain`** declares a network's protocol role (`'Relay' | 'AssetHub' | 'People' | 'Bulletin'`) for `supportedChains()`. Omit it and the network is simply left out of that report instead of being labelled by guesswork — it is still routable by genesis hash.
 - **`accounts[].uri` is hard junctions only.** Keys are derived in the page with `@scure/sr25519`; there is no keyring any more. `'//Alice//custom'` is fine; a mnemonic or hex seed now throws.
+- **`featureSupported` now agrees with `supportedChains()` about the People chain.** The host always advertises its in-page People loopback, but the feature probe only ever matched the configured `networks` — which never contain the People genesis, because that chain is served in the page. Asking whether the one chain every signature travels over was supported got you `false`.
 - **Three bugs in the loopback store** that between them blocked every signature are fixed: the `statement_submit` reply shape, the `newStatements` subscription envelope, and the topic-filter key spelling (which had been quietly turning every filter into a firehose). Also the AutoSigning grant, which was refused as an "invalid subtree secret" because schnorrkel has two 64-byte secret encodings and this host was handing over the wrong one.
 
 ## If you maintain a host-playground

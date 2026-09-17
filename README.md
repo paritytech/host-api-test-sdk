@@ -86,6 +86,8 @@ The core server works with any test framework or manual browser testing:
 import { createTestHostServer } from "@parity/host-api-test-sdk";
 
 const server = await createTestHostServer({
+  // Alice is the active signing identity; Bob is a switch target.
+  // See "Dev accounts" for what the rest of the roster does.
   productUrl: "http://localhost:3000",
   accounts: ["alice", "bob"],
 });
@@ -200,8 +202,9 @@ product → submit signed bytes                   → the core's broadcast gate 
 ```
 Playwright test
   → createTestHostServer() starts a Node HTTP server
-  → it serves an HTML shell plus dist/host/: host-runtime.js, worker-runtime.js
-    and the two .wasm payloads
+  → it serves an HTML shell plus dist/host/: the two entry chunks
+    (host-runtime.js, worker-runtime.js), the shared chunks esbuild splits out,
+    the two wasm-glue chunks and the two .wasm payloads — eight files in all
   → the page starts the TrUAPI core in a Web Worker (Rust → WebAssembly)
   → the page mints an SSO session for the selected dev account and activates it
   → the page creates an <iframe src="productUrl"> and answers the product's
@@ -216,7 +219,7 @@ Product (in iframe, @parity/truapi/sandbox)
     key → the signature comes back the same way
 ```
 
-The People chain is a **loopback statement store inside the page**: no node, no network, no Docker. That is what makes auto-signing possible without a wallet, and it is also why the four assets above are all a consumer needs — they are pre-built and shipped, so there are zero build-time dependencies for you.
+The People chain is a **loopback statement store inside the page**: no node, no network, no Docker. That is what makes auto-signing possible without a wallet, and it is also why the assets above are all a consumer needs — they are pre-built and shipped, so there are zero build-time dependencies for you. A boot fetches six of the eight; the JSON-RPC provider's glue and `.wasm` are loaded only when a test actually opens one of the configured networks, so a signing-only run never downloads them.
 
 ## API reference
 
@@ -229,8 +232,8 @@ The People chain is a **loopback statement store inside the page**: no node, no 
 | `testHost.waitForConnection(timeout?)` | Wait until the product's first wire frame reaches the host |
 | `testHost.getConnectionStatus()` | Product connection: `'disconnected'` until that first frame, then `'connected'` |
 | `testHost.getChainStatus()` | The host's own session: `'connecting'`, `'connected'`, or `'disconnected'` |
-| `testHost.switchAccount(name)` | Re-mint the session under one account (the iframe is **not** reloaded) |
-| `testHost.setAccounts(names)` | Re-mint the session under several accounts |
+| `testHost.switchAccount(name)` | Re-mint the session under one account from the roster (the iframe is **not** reloaded) |
+| `testHost.setAccounts(names)` | Replace the roster; the first name becomes the active identity |
 | `testHost.getSigningLog()` | All auto-signed requests since last clear |
 | `testHost.clearSigningLog()` | Reset the signing log |
 | `testHost.setPermissionBehavior(behavior)` | `'approve-all'`, `'reject-all'`, or `(tag, value) => boolean` |
@@ -272,8 +275,16 @@ createTestHostFixture({
 });
 ```
 
+`accounts` is a **roster**, not a set of simultaneously active identities:
+
+- The **first** entry is the active identity. The SSO session is minted for it, and it is the only account that signs.
+- The rest are **switch targets**. `switchAccount('Derived')` matches a name against the roster case-insensitively and re-mints the session under that entry's own `uri` — which is the only way a custom `{ name, uri }` account can ever sign. A dev name that is not in the roster still works and falls back to the bare derivation, so `switchAccount('charlie')` gives you `//Charlie`.
+- `setAccounts([...])` replaces the roster wholesale, first entry active, same resolution rules.
+
+Because the session carries exactly one identity, a legacy-account request naming any *other* account is refused by the core, and `getLegacyAccounts()` answers with an empty list whatever the roster holds.
+
 > [!IMPORTANT]
-> **`uri` is a path of hard junctions, not a full polkadot-js SURI.** The host derives keys in-page with `@scure/sr25519` and accepts only `//`-separated hard junctions: `'//Alice'`, `'//Alice//custom'`. Mnemonics and hex seeds are **not** supported and throw, and a `/` inside a segment (`'//Alice//custom/0'`) is part of that junction's *label* — it is not a polkadot-js soft junction and will not produce the address polkadot-js would.
+> **`uri` is a path of hard junctions, not a full polkadot-js SURI.** The host derives keys in-page with `@scure/sr25519`: the string is split on `//` and every segment becomes one hard-junction **label**, verbatim. Nothing else is interpreted. So `'//Alice'` and `'//Alice//custom'` work; a `/` inside a segment (`'//Alice//custom/0'`) is part of that junction's label and will not produce the address polkadot-js would; and a mnemonic or hex seed is not read as a seed at all — it becomes a junction label, and since a label is capped at 31 bytes, a real mnemonic or a `0x`-prefixed 32-byte seed throws on that limit. A *short* hex string does not throw: it silently derives a real but unintended account. Pass neither.
 
 ### Product accounts
 

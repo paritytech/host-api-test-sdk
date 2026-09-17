@@ -11,7 +11,12 @@ export interface TestHost {
   productFrame(): FrameLocator;
 
   /**
-   * Re-mint the host session under a single account.
+   * Re-mint the host session under one account.
+   *
+   * `name` is matched case-insensitively against the `accounts` the fixture
+   * was configured with, so a custom `{ name, uri }` entry is switched to by
+   * its name and signs with its own URI. A dev name that is not in that
+   * roster falls back to the bare derivation (`'bob'` → `//Bob`).
    *
    * The product iframe is NOT reloaded: its `MessagePort` is transferred once
    * at load and cannot be handed over again, so the session is re-installed
@@ -20,10 +25,15 @@ export interface TestHost {
    * the product to re-initialise. `getConnectionStatus()` returns to
    * `'disconnected'` until the product's next frame arrives.
    */
-  switchAccount(name: DevAccountName): Promise<void>;
+  switchAccount(name: DevAccountName | (string & {})): Promise<void>;
 
-  /** Re-mint the host session under several accounts. See `switchAccount`. */
-  setAccounts(names: DevAccountName[]): Promise<void>;
+  /**
+   * Replace the whole roster. The FIRST name becomes the active identity and
+   * is the only account that signs — the SSO session holds exactly one. The
+   * rest are switch targets for a later `switchAccount`. Names resolve the
+   * same way as in `switchAccount`.
+   */
+  setAccounts(names: Array<DevAccountName | (string & {})>): Promise<void>;
 
   /** All auto-signed payloads since last clear */
   getSigningLog(): Promise<SigningLogEntry[]>;
@@ -130,7 +140,11 @@ export interface TestHost {
 export interface TestHostFixtureOptions {
   /** URL of the product to test */
   productUrl: string;
-  /** Initial accounts — dev names or custom { name, uri } (default: ['alice']) */
+  /**
+   * The account roster — dev names or custom `{ name, uri }` (default:
+   * `['alice']`). The FIRST entry is the active identity and the only account
+   * that signs; the rest are targets `switchAccount` can name later.
+   */
   accounts?: CreateTestHostOptions['accounts'];
   /** Networks the host can route (default: [PASEO_ASSET_HUB]) */
   networks?: CreateTestHostOptions['networks'];
@@ -159,7 +173,10 @@ export function createTestHostFixture(defaults: TestHostFixtureOptions) {
 
       await page.goto(server.url);
 
-      // Wait for browser runtime to finish async init (cryptoWaitReady + container setup)
+      // The host page boots the WASM core in a worker, mints and activates its
+      // SSO session and embeds the product before it publishes its control
+      // plane, so this is the gate on the HOST being up. It says nothing about
+      // the product — `waitForConnection()` is that gate.
       await page.waitForFunction(() => !!window.__TEST_HOST__, { timeout: 30_000 });
 
       const testHost: TestHost = {
@@ -169,15 +186,17 @@ export function createTestHostFixture(defaults: TestHostFixtureOptions) {
           return page.frameLocator('#product-frame');
         },
 
-        async switchAccount(name: DevAccountName) {
+        // Both of these return the host's own promise, which `page.evaluate`
+        // awaits: it resolves only once the new session is active and the
+        // product provider has been replaced over the same port. There is
+        // nothing further to wait on — the iframe is deliberately never
+        // reloaded, so waiting on it would gate on nothing.
+        async switchAccount(name: DevAccountName | (string & {})) {
           await page.evaluate((n) => window.__TEST_HOST__.switchAccount(n), name);
-          // Wait for iframe to reload
-          await page.frameLocator('#product-frame').locator('body').waitFor({ state: 'attached' });
         },
 
-        async setAccounts(names: DevAccountName[]) {
+        async setAccounts(names: Array<DevAccountName | (string & {})>) {
           await page.evaluate((n) => window.__TEST_HOST__.setAccounts(n), names);
-          await page.frameLocator('#product-frame').locator('body').waitFor({ state: 'attached' });
         },
 
         async getSigningLog() {
