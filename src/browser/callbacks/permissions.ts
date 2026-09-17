@@ -9,7 +9,6 @@
 import type {
   HostDevicePermissionRequest,
   HostDevicePermissionResponse,
-  RemotePermission,
   RemotePermissionRequest,
   RemotePermissionResponse,
 } from '@parity/truapi';
@@ -29,16 +28,6 @@ function record(state: HostState, tag: string, value: unknown, approved: boolean
   console.log(`[test-host] Permission ${approved ? 'granted' : 'denied'}:`, tag);
 }
 
-/**
- * `RemotePermissionRequest.permission` is the real wrapped shape; some
- * callers (including this task's own unit test) pass a bare `RemotePermission`
- * directly. Accept either rather than throwing on the unwrapped form.
- */
-function unwrapRemotePermission(request: RemotePermissionRequest): RemotePermission {
-  const maybeWrapped = request as unknown as { permission?: RemotePermission };
-  return maybeWrapped.permission ?? (request as unknown as RemotePermission);
-}
-
 export function createPermissionCallbacks(state: HostState): {
   devicePermission(request: HostDevicePermissionRequest): Promise<HostDevicePermissionResponse>;
   remotePermission(request: RemotePermissionRequest): Promise<RemotePermissionResponse>;
@@ -51,9 +40,9 @@ export function createPermissionCallbacks(state: HostState): {
     },
 
     async remotePermission(request: RemotePermissionRequest): Promise<RemotePermissionResponse> {
-      const permission = unwrapRemotePermission(request);
-      const approved = decide(state, permission.tag, (permission as { value?: unknown }).value);
-      record(state, permission.tag, (permission as { value?: unknown }).value, approved);
+      const { tag, value } = request.permission;
+      const approved = decide(state, tag, value);
+      record(state, tag, value, approved);
       return { granted: approved };
     },
   };

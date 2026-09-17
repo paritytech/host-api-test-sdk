@@ -3,12 +3,18 @@
  *
  * `featureSupported` ports `host-runtime.ts`'s `handleFeatureSupported`
  * genesis-hash comparison (case/`0x`-insensitive). `supportedChains` (RFC
- * 0026) has no pre-migration analogue — pre-migration only ever answered the
- * single feature-support check. `network` and each entry's `identifier` are
- * best-effort until Task 11 gives `ChainRuntimeConfig` a real chain role.
+ * 0026) has no pre-migration analogue. It reports exactly what `chain.ts`
+ * can actually serve: the synthetic `PEOPLE_GENESIS_HASH` loopback chain,
+ * tagged `People` (the same hash `chain.connect` answers), plus any
+ * configured network that declares its own `chain` role explicitly.
+ * `ChainIdentifier` is a fixed enum (`Relay | AssetHub | People | Bulletin`)
+ * with real routing consequences, so a network with no declared role is
+ * omitted rather than guessed from its display name — a silently wrong
+ * label is worse than an absent one.
  */
-import type { ChainIdentifier, HostFeatureSupportedRequest, HostFeatureSupportedResponse } from '@parity/truapi';
-import type { HostChainSet } from '@parity/truapi-host';
+import type { HostFeatureSupportedRequest, HostFeatureSupportedResponse } from '@parity/truapi';
+import type { HostChainEntry, HostChainSet } from '@parity/truapi-host';
+import { PEOPLE_GENESIS_HASH } from '../constants.js';
 import type { ChainRuntimeConfig } from './chain.js';
 
 function normalizeHash(value: string): `0x${string}` {
@@ -16,13 +22,8 @@ function normalizeHash(value: string): `0x${string}` {
   return (str.startsWith('0x') ? str : `0x${str}`) as `0x${string}`;
 }
 
-function identifierFor(network: ChainRuntimeConfig): ChainIdentifier {
-  const name = network.name.toLowerCase();
-  if (name.includes('people')) return 'People';
-  if (name.includes('asset hub') || name.includes('assethub')) return 'AssetHub';
-  if (name.includes('bulletin')) return 'Bulletin';
-  return 'Relay';
-}
+const toHex = (bytes: Uint8Array): `0x${string}` =>
+  `0x${Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')}` as `0x${string}`;
 
 export function createFeatureCallbacks(networks: ChainRuntimeConfig[]): {
   featureSupported(request: HostFeatureSupportedRequest): Promise<HostFeatureSupportedResponse>;
@@ -39,13 +40,12 @@ export function createFeatureCallbacks(networks: ChainRuntimeConfig[]): {
     },
 
     async supportedChains(): Promise<HostChainSet> {
-      return {
-        network: 'polkadot',
-        chains: networks.map((network) => ({
-          identifier: identifierFor(network),
-          genesisHash: normalizeHash(network.genesisHash),
-        })),
-      };
+      const chains: HostChainEntry[] = [{ identifier: 'People', genesisHash: toHex(PEOPLE_GENESIS_HASH) }];
+      for (const network of networks) {
+        if (!network.chain) continue;
+        chains.push({ identifier: network.chain, genesisHash: normalizeHash(network.genesisHash) });
+      }
+      return { network: 'polkadot', chains };
     },
   };
 }

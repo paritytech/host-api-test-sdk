@@ -1,6 +1,12 @@
 /**
- * Composes the twelve required TrUAPI host callback groups from the small,
- * single-responsibility modules in this directory.
+ * Composes the twelve required TrUAPI host callback groups, plus the
+ * optional `chat` group, from the small, single-responsibility modules in
+ * this directory.
+ *
+ * `chat` is included (unlike `permissionStatus`/`pocket`) because Task 14's
+ * control API (`getChatRooms`, `getChatBots`, `getChatMessageLog`,
+ * `clearChatState`, `injectChatAction`) reads chat state that only this
+ * group's handlers populate.
  *
  * `auth` and `userConfirmation` have no pre-migration analogue substantial
  * enough to warrant their own file (RFC-0009 login and per-action review
@@ -13,6 +19,7 @@
 import type { RequiredHostCallbacks } from '@parity/truapi-host';
 import type { LoopbackStore } from '../loopback-chain.js';
 import { type ChainRuntimeConfig, createChainCallbacks } from './chain.js';
+import { createChatCallbacks } from './chat.js';
 import { createFeatureCallbacks } from './features.js';
 import { createNavigationCallbacks } from './navigation.js';
 import { createNotificationCallbacks } from './notifications.js';
@@ -50,5 +57,6 @@ export function createHostCallbacks(options: CreateHostCallbacksOptions): Requir
     theme: createThemeCallbacks(state),
     locale: createLocaleCallbacks(state),
     preimage: createPreimageCallbacks(state),
+    chat: createChatCallbacks(state),
   };
 }

@@ -53,6 +53,32 @@ export interface PreimageEntry {
   timestamp: number;
 }
 
+/**
+ * A chat room this host tracks. Carries `name`/`icon` for the control API's
+ * `getChatRooms()`, even though the generated `ChatRoom` the core pulls via
+ * `subscribeChatRooms` only carries `roomId`/`participatingAs`.
+ */
+export interface ChatRoom {
+  roomId: string;
+  name: string;
+  icon: string;
+  participatingAs: 'RoomHost' | 'Bot';
+}
+
+export interface ChatBot {
+  botId: string;
+  name: string;
+  icon: string;
+}
+
+export interface ChatMessageLogEntry {
+  roomId: string;
+  messageId: string;
+  /** Unmodified payload as received from the product. */
+  payload: unknown;
+  timestamp: number;
+}
+
 export interface HostState {
   permissionBehavior: PermissionBehavior;
   grantedPermissions: Set<string>;
@@ -73,6 +99,19 @@ export interface HostState {
   preimages: Map<string, PreimageEntry>;
   /** Listeners waiting on one preimage key, keyed by lowercased `0x`-hex. */
   preimageSubscribers: Map<string, Set<(value: Uint8Array | undefined) => void>>;
+
+  /**
+   * Chat rooms and bots the product has created/registered this session, and
+   * the log of messages posted to them. One flat namespace, not scoped by
+   * product — matching pre-migration, which never partitioned chat state.
+   */
+  chatRooms: Map<string, ChatRoom>;
+  chatBots: Map<string, ChatBot>;
+  chatMessageLog: ChatMessageLogEntry[];
+  /** Next `msg-<n>` suffix; reset to 1 by `clearChatState()`. */
+  nextChatMessageId: number;
+  /** Active `chat.subscribeChatRooms()` listeners; notified on every room-list change. */
+  chatRoomSubscribers: Set<(rooms: Array<{ roomId: string; participatingAs: 'RoomHost' | 'Bot' }>) => void>;
 }
 
 export function createHostState(): HostState {
@@ -91,5 +130,11 @@ export function createHostState(): HostState {
 
     preimages: new Map(),
     preimageSubscribers: new Map(),
+
+    chatRooms: new Map(),
+    chatBots: new Map(),
+    chatMessageLog: [],
+    nextChatMessageId: 1,
+    chatRoomSubscribers: new Set(),
   };
 }

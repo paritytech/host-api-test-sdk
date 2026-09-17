@@ -7,6 +7,7 @@
  * WebSocket routing over `networks` and adds its own tests — do not extend
  * this file beyond the loopback route plus the throw.
  */
+import type { ChainIdentifier } from '@parity/truapi';
 import type { ChainProvider, JsonRpcConnection } from '@parity/truapi-host';
 import { PEOPLE_GENESIS_HASH } from '../constants.js';
 import type { LoopbackStore } from '../loopback-chain.js';
@@ -17,6 +18,13 @@ export interface ChainRuntimeConfig {
   genesisHash: string;
   rpcUrl: string;
   name: string;
+  /**
+   * This network's protocol role, if known — consumed by
+   * `features.supportedChains()`. `ChainIdentifier` is a fixed enum with
+   * real routing consequences, so leave this `undefined` rather than guess:
+   * an omitted network is left out of that report, not mislabeled.
+   */
+  chain?: ChainIdentifier;
 }
 
 function sameHash(a: Uint8Array, b: Uint8Array): boolean {

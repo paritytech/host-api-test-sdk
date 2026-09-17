@@ -35,7 +35,7 @@ describe('host callbacks', () => {
     const callbacks = createHostCallbacks({
       state, store: createLoopbackStore(), networks: [],
     });
-    const response = await callbacks.permissions.remotePermission({ tag: 'ChainSubmit' } as never);
+    const response = await callbacks.permissions.remotePermission({ permission: { tag: 'ChainSubmit' } });
     expect(response).toBeTruthy();
     expect(state.permissionLog[0].approved).toBe(true);
   });
@@ -46,7 +46,7 @@ describe('host callbacks', () => {
     const callbacks = createHostCallbacks({
       state, store: createLoopbackStore(), networks: [],
     });
-    await callbacks.permissions.remotePermission({ tag: 'ChainSubmit' } as never);
+    await callbacks.permissions.remotePermission({ permission: { tag: 'ChainSubmit' } });
     expect(state.permissionLog[0].approved).toBe(false);
   });
 
