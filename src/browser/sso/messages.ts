@@ -286,3 +286,28 @@ export const RemoteMessage = Enum(
 );
 
 export const VersionedRemoteMessage = Enum({ V1: RemoteMessage });
+
+/**
+ * The outer `RemoteMessage { message_id: String, data: RemoteMessageData }`.
+ *
+ * This — not `VersionedRemoteMessage` alone — is what each entry of
+ * `StatementData.request.data` actually carries. `messageId` is the
+ * correlation id the core generates per request; every response variant
+ * echoes it back as `respondingTo`, and `reply_matcher` in
+ * `../host-rust-core/rust/crates/truapi-server/src/runtime/sso_remote.rs`
+ * drops any message whose `respondingTo` does not match. Dropping the
+ * envelope would therefore produce replies the core silently ignores.
+ */
+export const RemoteMessageEnvelope = Struct({
+  messageId: str,
+  data: VersionedRemoteMessage,
+});
+
+/** Decoded value of one `v1::RemoteMessage`, as a discriminated union. */
+export type RemoteMessageValue = Parameters<typeof RemoteMessage.enc>[0];
+
+/** The payload type carried by one named `v1::RemoteMessage` variant. */
+export type RemoteMessagePayload<T extends RemoteMessageValue['tag']> = Extract<
+  RemoteMessageValue,
+  { tag: T }
+>['value'];
