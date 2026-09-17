@@ -47,7 +47,7 @@ export function createHostCallbacks(options: CreateHostCallbacksOptions): Requir
     features: createFeatureCallbacks(networks),
     productStorage: createProductStorageCallbacks(),
     coreStorage: createCoreStorageCallbacks(),
-    chain: createChainCallbacks({ store }),
+    chain: createChainCallbacks({ store, networks }),
     auth: {
       authStateChanged: () => {},
     },

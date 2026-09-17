@@ -1,12 +1,11 @@
 /**
- * Chain provider — minimal router for Task 10.
+ * Chain routing.
  *
- * The core opens its SSO/statement-store channel by connecting to the People
- * chain; the in-page loopback store (`../loopback-chain.js`) answers that.
- * Everything else throws. Task 11 replaces this body with full multi-chain
- * WebSocket routing over `networks` and adds its own tests — do not extend
- * this file beyond the loopback route plus the throw.
+ * The People genesis is served in-page by the loopback statement store —
+ * that is what keeps signing local. Product chains are matched by genesis
+ * against the configured networks and opened over WebSocket.
  */
+import { getWsRawProvider } from 'polkadot-api/ws';
 import type { ChainIdentifier } from '@parity/truapi';
 import type { ChainProvider, JsonRpcConnection } from '@parity/truapi-host';
 import { PEOPLE_GENESIS_HASH } from '../constants.js';
@@ -27,38 +26,76 @@ export interface ChainRuntimeConfig {
   chain?: ChainIdentifier;
 }
 
-function sameHash(a: Uint8Array, b: Uint8Array): boolean {
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) {
-    if (a[i] !== b[i]) return false;
+/** Hex-normalise a genesis hash so string configs and raw bytes compare equal. */
+const normalize = (value: Uint8Array | string): string => {
+  if (typeof value === 'string') {
+    return (value.startsWith('0x') ? value.slice(2) : value).toLowerCase();
   }
-  return true;
-}
+  return Array.from(value, (b) => b.toString(16).padStart(2, '0')).join('');
+};
 
-export function createChainCallbacks(options: { store: LoopbackStore }): ChainProvider {
+export function createChainCallbacks(options: {
+  store: LoopbackStore;
+  networks: ChainRuntimeConfig[];
+}): ChainProvider {
+  const { store, networks } = options;
+  const peopleGenesis = normalize(PEOPLE_GENESIS_HASH);
+
   return {
     async connect(genesisHash: Uint8Array): Promise<JsonRpcConnection> {
-      if (!sameHash(genesisHash, PEOPLE_GENESIS_HASH)) {
-        throw new Error('Unsupported chain: no route for this genesis hash');
+      const target = normalize(genesisHash);
+
+      if (target === peopleGenesis) {
+        // Push-to-async-iterator bridge (see passive.ts): the loopback store's
+        // `onResponse` push becomes the `responses()` the core pulls.
+        const channel = createPushChannel<string>();
+        const loopback = store.connect((json) => channel.push(json));
+
+        return {
+          send(request: string): void {
+            loopback.send(request);
+          },
+          responses(): AsyncIterable<string> {
+            return channel.iterable;
+          },
+          close(): void {
+            // Unsubscribe from the store first so no further response can
+            // reach the channel, then end the channel itself so any pending
+            // `responses()` pull resolves `done` instead of hanging.
+            loopback.close();
+            channel.close();
+          },
+        };
       }
 
-      // Push-to-async-iterator bridge (see passive.ts): the loopback store's
-      // `onResponse` push becomes the `responses()` the core pulls.
+      const network = networks.find((candidate) => normalize(candidate.genesisHash) === target);
+      if (!network) {
+        throw new Error(`no chain configured for genesis 0x${target}`);
+      }
+
+      // Same bridge as the loopback route: the raw WS provider pushes
+      // messages, the core pulls them via `responses()`.
       const channel = createPushChannel<string>();
-      const loopback = options.store.connect((json) => channel.push(json));
+      // `getWsRawProvider` exchanges parsed JSON-RPC objects, not strings
+      // (confirmed against the installed `@polkadot-api/ws-provider`
+      // implementation, which does `JSON.parse`/`JSON.stringify` at the
+      // socket boundary) — the core's `JsonRpcConnection` contract is
+      // string-based, so the (de)serialisation happens right here.
+      const socket = getWsRawProvider(network.rpcUrl)((message) =>
+        channel.push(JSON.stringify(message)),
+      );
 
       return {
         send(request: string): void {
-          loopback.send(request);
+          socket.send(JSON.parse(request));
         },
         responses(): AsyncIterable<string> {
           return channel.iterable;
         },
         close(): void {
-          // Unsubscribe from the store first so no further response can
-          // reach the channel, then end the channel itself so any pending
-          // `responses()` pull resolves `done` instead of hanging.
-          loopback.close();
+          // Same ordering as the loopback route: stop the socket from
+          // feeding the channel before ending it.
+          socket.disconnect();
           channel.close();
         },
       };
