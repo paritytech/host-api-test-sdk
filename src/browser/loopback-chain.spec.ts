@@ -183,4 +183,34 @@ describe('loopback statement store', () => {
     expect(onResponse1).not.toHaveBeenCalled();
     expect(onResponse2).toHaveBeenCalledOnce();
   });
+
+  it('continues notifying listeners after one throws', () => {
+    const store = createLoopbackStore();
+    const listener1 = vi.fn(() => {
+      throw new Error('listener 1 error');
+    });
+    const listener2 = vi.fn();
+    store.onSubmit(listener1);
+    store.onSubmit(listener2);
+    const onResponse = vi.fn();
+    const connection = store.connect(onResponse);
+
+    connection.send(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: 10,
+        method: 'statement_submit',
+        params: [toHex(encodeStatement({ topics: [topic(7)], data: new Uint8Array([1]) }))],
+      }),
+    );
+
+    // Both listeners should have been called.
+    expect(listener1).toHaveBeenCalledOnce();
+    expect(listener2).toHaveBeenCalledOnce();
+
+    // Exactly one response should be sent for this request id, and it should be success.
+    expect(onResponse).toHaveBeenCalledOnce();
+    const response = JSON.parse(onResponse.mock.calls[0][0]);
+    expect(response.result).toBe('new');
+  });
 });

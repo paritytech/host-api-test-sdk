@@ -85,7 +85,14 @@ export function createLoopbackStore(): LoopbackStore {
                 const statement = decodeStatement(fromHex(String(params[0])));
                 // The host owns the store, so nothing can be rejected here.
                 reply('new');
-                for (const listener of submitListeners) listener(statement);
+                // Isolate each listener so one throwing doesn't starve the rest or contradict the success reply.
+                for (const listener of submitListeners) {
+                  try {
+                    listener(statement);
+                  } catch {
+                    // Listener threw; swallow and continue.
+                  }
+                }
                 return;
               }
               case 'statement_subscribeStatement': {
