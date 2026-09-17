@@ -770,7 +770,9 @@ export function signStatement(secretKey: Uint8Array, statement: Statement): Stat
 
 function stripCompactPrefix(encoded: Uint8Array): Uint8Array {
   const marker = encoded[0] & 0b11;
-  const prefixLen = marker === 0 ? 1 : marker === 1 ? 2 : marker === 2 ? 4 : 1 + (encoded[0] >> 2);
+  // Big-integer mode stores (byteCount - 4) in the upper six bits, so the
+  // prefix is the mode byte plus 4 plus that remainder.
+  const prefixLen = marker === 0 ? 1 : marker === 1 ? 2 : marker === 2 ? 4 : 5 + (encoded[0] >> 2);
   return encoded.subarray(prefixLen);
 }
 
