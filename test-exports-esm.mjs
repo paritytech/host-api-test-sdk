@@ -66,6 +66,14 @@ describe('ESM import("@parity/host-api-test-sdk")', () => {
         html.includes('<script type="module" src="/host-runtime.js">'),
         'loads the runtime as a module',
       );
+      // Chrome 130+ blocks clipboard delegation to cross-origin iframes unless
+      // the top-level page carries this header, so a refactor that drops it
+      // must fail here rather than in a product's clipboard test.
+      assert.match(
+        res.headers.get('permissions-policy') ?? '',
+        /clipboard-write/,
+        'keeps the clipboard Permissions-Policy on the host page',
+      );
 
       // The page is a shell now: the runtime, the core worker and the wasm the
       // core instantiates are separate assets, so a page that looks right is

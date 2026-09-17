@@ -1,11 +1,15 @@
 import { build } from 'esbuild';
-import { copyFileSync, mkdirSync } from 'node:fs';
+import { copyFileSync, mkdirSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 /** Everything the page loads at runtime: the entry chunks, the shared chunks, the wasm. */
 const HOST_ASSET_DIR = 'dist/host';
 
+// The chunks are content-hashed and esbuild does not clean its outdir, so a
+// rebuild after a dependency bump would otherwise leave the previous chunks
+// behind for `pnpm pack` to ship.
+rmSync(HOST_ASSET_DIR, { recursive: true, force: true });
 mkdirSync(HOST_ASSET_DIR, { recursive: true });
 
 /** Resolve a published file through its package's `exports` map. */
