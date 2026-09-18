@@ -75,6 +75,19 @@ function toDevicePermissionStatus(value: string): DevicePermissionStatus {
   throw new Error(`invalid device permission status: "${value}"`);
 }
 
+/** Read off the published type, so a mode added there fails to compile here. */
+type BehaviorMode = NonNullable<InitialBehaviors['permission']>;
+
+const BEHAVIOR_MODES: Record<BehaviorMode, true> = { 'approve-all': true, 'reject-all': true };
+
+/** Same JSON boundary: an accepted typo would surface much later, as a call to a non-function. */
+function toBehaviorMode(name: string, value: string): BehaviorMode {
+  if (Object.hasOwn(BEHAVIOR_MODES, value)) {
+    return value as BehaviorMode;
+  }
+  throw new Error(`invalid ${name} behavior: "${value}"`);
+}
+
 /** Apply the page config's overrides before the product can observe anything. */
 function applyInitialConfig(state: HostState, config: HostConfig): void {
   const initial = config.initialState;
@@ -92,10 +105,18 @@ function applyInitialConfig(state: HostState, config: HostConfig): void {
   for (const tag of initial?.grantedPermissions ?? []) state.grantedPermissions.add(tag);
 
   const behaviors = config.behaviors;
-  if (behaviors?.permission) state.permissionBehavior = behaviors.permission;
-  if (behaviors?.userConfirmation) state.userConfirmationBehavior = behaviors.userConfirmation;
-  if (behaviors?.navigation) state.navigationBehavior = behaviors.navigation;
-  if (behaviors?.notification) state.notificationBehavior = behaviors.notification;
+  if (behaviors?.permission) {
+    state.permissionBehavior = toBehaviorMode('permission', behaviors.permission);
+  }
+  if (behaviors?.userConfirmation) {
+    state.userConfirmationBehavior = toBehaviorMode('userConfirmation', behaviors.userConfirmation);
+  }
+  if (behaviors?.navigation) {
+    state.navigationBehavior = toBehaviorMode('navigation', behaviors.navigation);
+  }
+  if (behaviors?.notification) {
+    state.notificationBehavior = toBehaviorMode('notification', behaviors.notification);
+  }
 }
 
 declare global {
