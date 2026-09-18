@@ -261,6 +261,20 @@ export function buildControlApi(options: ControlApiOptions): TestHostAPI {
       state.supportedChainsOverride = chains;
     },
 
+    seedProductStorage(key: string, value: string) {
+      state.productStorage.set(key, new TextEncoder().encode(value));
+    },
+
+    getProductStorage() {
+      const out: Record<string, string> = {};
+      for (const [key, value] of state.productStorage) out[key] = new TextDecoder().decode(value);
+      return out;
+    },
+
+    clearProductStorage() {
+      state.productStorage.clear();
+    },
+
     dispose() {
       options.disposeBridge();
       // Holds a loopback-store subscription: a disposed host must stop answering.

@@ -1336,6 +1336,40 @@ test.describe('Local storage', () => {
       await host.close();
     }
   });
+
+  test('a product reads what the test seeded, and the test sees what it wrote', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice'],
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+
+      // The core namespaces productStorage keys per product before calling the
+      // host, so a write first discovers this session's prefix; seeding then
+      // targets the exact key the product's own read will look up.
+      expectOk(
+        await product.evaluate(() => window.__TEST_PRODUCT__.localStorageWrite('written', 'xyz')),
+      );
+      const afterWrite = await page.evaluate(() => window.__TEST_HOST__.getProductStorage());
+      const [namespacedKey, storedValue] = Object.entries(afterWrite).find(([k]) => k.endsWith(':written')) ?? [];
+      expect(storedValue).toBe('xyz');
+
+      const namespace = namespacedKey!.slice(0, -'written'.length);
+      await page.evaluate(
+        (args) => window.__TEST_HOST__.seedProductStorage(args.key, args.value),
+        { key: `${namespace}resume-token`, value: 'abc' },
+      );
+
+      const read = expectOk(
+        await product.evaluate(() => window.__TEST_PRODUCT__.localStorageRead('resume-token')),
+      );
+      expect(read.value).toBe('abc');
+    } finally {
+      await host.close();
+    }
+  });
 });
 
 // ── Signing ────────────────────────────────────────────────────────

@@ -111,6 +111,9 @@ export interface HostState {
   /** Replaces the derived chain set entirely when set. */
   supportedChainsOverride?: HostChainEntry[];
 
+  /** What `productStorage` serves; seedable so a product can resume from prior state. */
+  productStorage: Map<string, Uint8Array>;
+
   /** One flat namespace: chat state is not partitioned per product. */
   chatRooms: Map<string, ChatRoom>;
   chatBots: Map<string, ChatBot>;
@@ -151,5 +154,7 @@ export function createHostState(): HostState {
     chatRoomSubscribers: new Set(),
 
     featureOverrides: new Map(),
+
+    productStorage: new Map(),
   };
 }

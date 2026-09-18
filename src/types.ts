@@ -285,6 +285,12 @@ export interface TestHostAPI {
   getFeatureSupport(): Record<string, boolean>;
   /** Replace the advertised chain set; `undefined` restores the derived one. */
   setSupportedChains(chains: ChainEntry[] | undefined): void;
+  /** Pre-populate one product-storage entry; the value is stored as UTF-8. */
+  seedProductStorage(key: string, value: string): void;
+  /** Every product-storage entry, decoded as UTF-8. */
+  getProductStorage(): Record<string, string>;
+  /** Drop every product-storage entry. */
+  clearProductStorage(): void;
 
   dispose(): void;
 }

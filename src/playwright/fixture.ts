@@ -135,6 +135,15 @@ export interface TestHost {
   /** Replace the advertised chain set; `undefined` restores the derived one. */
   setSupportedChains(chains: ChainEntry[] | undefined): Promise<void>;
 
+  /** Pre-populate one product-storage entry; the value is stored as UTF-8. */
+  seedProductStorage(key: string, value: string): Promise<void>;
+
+  /** Every product-storage entry, decoded as UTF-8. */
+  getProductStorage(): Promise<Record<string, string>>;
+
+  /** Drop every product-storage entry. */
+  clearProductStorage(): Promise<void>;
+
   /**
    * Wait until the product has actually talked to the host. This is the
    * readiness gate — `window.__TEST_HOST__` says nothing about the product.
@@ -340,6 +349,18 @@ export function createTestHostFixture(defaults: TestHostFixtureOptions) {
 
         async setSupportedChains(chains: ChainEntry[] | undefined) {
           await page.evaluate((c) => window.__TEST_HOST__.setSupportedChains(c), chains);
+        },
+
+        async seedProductStorage(key: string, value: string) {
+          await page.evaluate((args) => window.__TEST_HOST__.seedProductStorage(args.key, args.value), { key, value });
+        },
+
+        async getProductStorage() {
+          return page.evaluate(() => window.__TEST_HOST__.getProductStorage());
+        },
+
+        async clearProductStorage() {
+          await page.evaluate(() => window.__TEST_HOST__.clearProductStorage());
         },
 
         async waitForConnection(timeout = 30_000) {

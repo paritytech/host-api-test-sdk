@@ -5,22 +5,22 @@
  */
 import { encodeCoreStorageKey } from '@parity/truapi-host';
 import type { CoreStorageKey } from '@parity/truapi-host';
+import type { HostState } from './state.js';
 
-export function createProductStorageCallbacks(): {
+export function createProductStorageCallbacks(state: HostState): {
   read(key: string): Promise<Uint8Array | undefined>;
   write(key: string, value: Uint8Array): Promise<void>;
   clear(key: string): Promise<void>;
 } {
-  const store = new Map<string, Uint8Array>();
   return {
     async read(key: string): Promise<Uint8Array | undefined> {
-      return store.get(key);
+      return state.productStorage.get(key);
     },
     async write(key: string, value: Uint8Array): Promise<void> {
-      store.set(key, value);
+      state.productStorage.set(key, value);
     },
     async clear(key: string): Promise<void> {
-      store.delete(key);
+      state.productStorage.delete(key);
     },
   };
 }
