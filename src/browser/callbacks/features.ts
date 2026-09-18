@@ -12,6 +12,18 @@ import { PEOPLE_GENESIS_HASH } from '../constants.js';
 import { type ChainRuntimeConfig, normalizeGenesisHash } from './chain.js';
 import type { HostState } from './state.js';
 
+/** The chain set the configured networks imply — what `supportedChains()` reports unless overridden. */
+export function derivedChains(networks: readonly ChainRuntimeConfig[]): HostChainEntry[] {
+  const chains: HostChainEntry[] = [
+    { identifier: 'People', genesisHash: normalizeGenesisHash(PEOPLE_GENESIS_HASH) },
+  ];
+  for (const network of networks) {
+    if (!network.chain) continue;
+    chains.push({ identifier: network.chain, genesisHash: normalizeGenesisHash(network.genesisHash) });
+  }
+  return chains;
+}
+
 export function createFeatureCallbacks(state: HostState, networks: ChainRuntimeConfig[]): {
   featureSupported(request: HostFeatureSupportedRequest): Promise<HostFeatureSupportedResponse>;
   supportedChains(): Promise<HostChainSet>;
@@ -37,16 +49,7 @@ export function createFeatureCallbacks(state: HostState, networks: ChainRuntimeC
     },
 
     async supportedChains(): Promise<HostChainSet> {
-      if (state.supportedChainsOverride) {
-        return { network: 'polkadot', chains: state.supportedChainsOverride };
-      }
-
-      const chains: HostChainEntry[] = [{ identifier: 'People', genesisHash: peopleGenesis }];
-      for (const network of networks) {
-        if (!network.chain) continue;
-        chains.push({ identifier: network.chain, genesisHash: normalizeGenesisHash(network.genesisHash) });
-      }
-      return { network: 'polkadot', chains };
+      return { network: 'polkadot', chains: state.supportedChainsOverride ?? derivedChains(networks) };
     },
   };
 }

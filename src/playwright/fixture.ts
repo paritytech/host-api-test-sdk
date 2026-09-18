@@ -153,6 +153,9 @@ export interface TestHost {
   /** Replace the advertised chain set; `undefined` restores the derived one. */
   setSupportedChains(chains: ChainEntry[] | undefined): Promise<void>;
 
+  /** The chain set in effect — the override if one is set, the derived one otherwise. */
+  getSupportedChains(): Promise<ChainEntry[]>;
+
   /**
    * Pre-populate one product-storage entry; the value is stored as UTF-8. The
    * core namespaces keys per product, so `key` must be one `getProductStorage()`
@@ -399,6 +402,10 @@ export function createTestHostFixture(defaults: TestHostFixtureOptions) {
 
         async setSupportedChains(chains: ChainEntry[] | undefined) {
           await page.evaluate((c) => window.__TEST_HOST__.setSupportedChains(c), chains);
+        },
+
+        async getSupportedChains() {
+          return page.evaluate(() => window.__TEST_HOST__.getSupportedChains());
         },
 
         async seedProductStorage(key: string, value: string) {

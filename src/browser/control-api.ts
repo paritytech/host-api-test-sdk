@@ -6,7 +6,9 @@ import { blake2b } from '@noble/hashes/blake2.js';
 import { scale } from '@parity/truapi';
 import type { TrUApiProductProvider } from '@parity/truapi-host';
 import type { IframeHost, WorkerPairingHostRuntime } from '@parity/truapi-host/web';
+import type { ChainRuntimeConfig } from './callbacks/chain.js';
 import { roomListSnapshot } from './callbacks/chat.js';
+import { derivedChains } from './callbacks/features.js';
 import type { HostState } from './callbacks/index.js';
 import type { SsoResponder } from './sso/responder.js';
 import type {
@@ -59,6 +61,8 @@ export function normalizeTheme(input: ThemeInput): Theme {
 
 export interface ControlApiOptions {
   state: HostState;
+  /** The configured networks, so `getSupportedChains()` can report the derived set. */
+  networks: readonly ChainRuntimeConfig[];
   /** A stable facade: account switching replaces the live responder underneath. */
   responder: SsoResponder;
   runtime: WorkerPairingHostRuntime;
@@ -286,6 +290,10 @@ export function buildControlApi(options: ControlApiOptions): TestHostAPI {
 
     setSupportedChains(chains: ChainEntry[] | undefined) {
       state.supportedChainsOverride = chains;
+    },
+
+    getSupportedChains(): ChainEntry[] {
+      return state.supportedChainsOverride ?? derivedChains(options.networks);
     },
 
     seedProductStorage(key: string, value: string) {

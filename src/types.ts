@@ -238,6 +238,8 @@ export interface InitialState {
   productStorage?: Record<string, string>;
   /** Device-permission type → reported status. */
   devicePermissionStatuses?: Record<string, DevicePermissionStatus>;
+  /** Replaces the chain set derived from `networks`. */
+  supportedChains?: ChainEntry[];
   grantedPermissions?: string[];
 }
 
@@ -347,6 +349,8 @@ export interface TestHostAPI {
   getFeatureSupport(): Record<string, boolean>;
   /** Replace the advertised chain set; `undefined` restores the derived one. */
   setSupportedChains(chains: ChainEntry[] | undefined): void;
+  /** The chain set in effect — the override if one is set, the derived one otherwise. */
+  getSupportedChains(): ChainEntry[];
   /**
    * Pre-populate one product-storage entry; the value is stored as UTF-8. The
    * core namespaces keys per product, so `key` must be one `getProductStorage()`

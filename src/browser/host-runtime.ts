@@ -102,6 +102,7 @@ function applyInitialConfig(state: HostState, config: HostConfig): void {
   for (const [type, status] of Object.entries(initial?.devicePermissionStatuses ?? {})) {
     state.devicePermissionStatuses.set(type, toDevicePermissionStatus(status));
   }
+  if (initial?.supportedChains) state.supportedChainsOverride = initial.supportedChains;
   for (const tag of initial?.grantedPermissions ?? []) state.grantedPermissions.add(tag);
 
   const behaviors = config.behaviors;
@@ -406,6 +407,7 @@ async function init(): Promise<void> {
 
     window.__TEST_HOST__ = buildControlApi({
       state,
+      networks: config.networks,
       responder: responderFacade,
       runtime,
       iframeHost: host,
