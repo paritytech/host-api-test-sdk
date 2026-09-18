@@ -166,8 +166,14 @@ export type Theme = {
 /** Shorthand inputs accepted by `setTheme` — `'light' | 'dark'` map to `{ name: Default, variant: Light/Dark }`. */
 export type ThemeInput = 'light' | 'dark' | Theme;
 
+/**
+ * How the host answers one kind of request. `fn` receives the request and
+ * returns the answer, so a test can be selective without a matcher language.
+ */
+export type Behavior<Req, Res> = 'approve-all' | 'reject-all' | ((request: Req) => Res);
+
 /** How the test host answers remote permission requests; `'approve-all'` is the default. */
-export type PermissionBehavior = 'approve-all' | 'reject-all' | ((tag: string, value: unknown) => boolean);
+export type PermissionBehavior = Behavior<{ tag: string; value: unknown }, boolean>;
 
 /** Shape of window.__TEST_HOST__ — shared between browser bundle and Playwright fixture. */
 export interface TestHostAPI {
@@ -214,7 +220,7 @@ export interface TestHostAPI {
   /** Get the log of messages the product has posted to chat rooms. */
   getChatMessageLog(): ChatMessageLogEntry[];
   /** Clear rooms, bots and the message log. Live streams stay open and are pushed the empty list. */
-  clearChatState(): void;
+  clearChat(): void;
   /**
    * Inject an incoming chat action into the product. Buffered until the product
    * subscribes; rejects if the payload or the connection cannot carry it.

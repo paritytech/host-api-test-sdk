@@ -863,7 +863,7 @@ test.describe('Chat', () => {
     }
   });
 
-  test('clearChatState wipes rooms, bots, and messages', async ({ page }) => {
+  test('clearChat wipes rooms, bots, and messages', async ({ page }) => {
     const host = await createTestHostServer({
       productUrl: productServer.url,
       accounts: ['alice'],
@@ -891,7 +891,7 @@ test.describe('Chat', () => {
       // Non-empty before the wipe, so the assertions below are not vacuous.
       expect(await page.evaluate(() => window.__TEST_HOST__.getChatRooms())).toHaveLength(1);
 
-      await page.evaluate(() => window.__TEST_HOST__.clearChatState());
+      await page.evaluate(() => window.__TEST_HOST__.clearChat());
 
       expect(await page.evaluate(() => window.__TEST_HOST__.getChatRooms())).toEqual([]);
       expect(await page.evaluate(() => window.__TEST_HOST__.getChatBots())).toEqual([]);

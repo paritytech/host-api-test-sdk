@@ -70,7 +70,7 @@ export interface TestHost {
   getChatMessageLog(): Promise<ChatMessageLogEntry[]>;
 
   /** Clear all chat state (rooms, bots, messages, subscribers) */
-  clearChatState(): Promise<void>;
+  clearChat(): Promise<void>;
 
   /** Inject an incoming chat action into the product; rejects if it could not be delivered. */
   injectChatAction(action: ChatActionInput): Promise<void>;
@@ -221,8 +221,8 @@ export function createTestHostFixture(defaults: TestHostFixtureOptions) {
           return page.evaluate(() => window.__TEST_HOST__.getChatMessageLog());
         },
 
-        async clearChatState() {
-          await page.evaluate(() => window.__TEST_HOST__.clearChatState());
+        async clearChat() {
+          await page.evaluate(() => window.__TEST_HOST__.clearChat());
         },
 
         async injectChatAction(action: ChatActionInput) {

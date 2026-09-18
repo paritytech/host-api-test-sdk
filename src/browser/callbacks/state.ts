@@ -4,8 +4,9 @@
  */
 
 import type { AuthState } from '@parity/truapi-host';
+import type { PermissionBehavior } from '../../types.js';
 
-export type PermissionBehavior = 'approve-all' | 'reject-all' | ((tag: string, value: unknown) => boolean);
+export type { PermissionBehavior };
 
 export interface PermissionLogEntry {
   tag: string;
@@ -93,7 +94,7 @@ export interface HostState {
   chatRooms: Map<string, ChatRoom>;
   chatBots: Map<string, ChatBot>;
   chatMessageLog: ChatMessageLogEntry[];
-  /** Next `msg-<n>` suffix; reset to 1 by `clearChatState()`. */
+  /** Next `msg-<n>` suffix; reset to 1 by `clearChat()`. */
   nextChatMessageId: number;
   /** Active `chat.subscribeChatRooms()` listeners; notified on every room-list change. */
   chatRoomSubscribers: Set<(rooms: Array<{ roomId: string; participatingAs: 'RoomHost' | 'Bot' }>) => void>;

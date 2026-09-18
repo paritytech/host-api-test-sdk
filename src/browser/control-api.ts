@@ -154,7 +154,7 @@ export function buildControlApi(options: ControlApiOptions): TestHostAPI {
       return [...state.chatMessageLog];
     },
 
-    clearChatState() {
+    clearChat() {
       state.chatRooms.clear();
       state.chatBots.clear();
       state.chatMessageLog.length = 0;
