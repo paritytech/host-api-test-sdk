@@ -1,5 +1,6 @@
 /** Notifications: records what the product asked to push instead of displaying it. */
 import type { HostPushNotificationRequest, HostPushNotificationResponse, NotificationId } from '@parity/truapi';
+import { decideBehavior } from '../../types.js';
 import type { HostState } from './state.js';
 
 export function createNotificationCallbacks(state: HostState): {
@@ -29,14 +30,9 @@ export function createNotificationCallbacks(state: HostState): {
 
       // `Notifications.pushNotification` declares no error response, so refusal is a thrown
       // error; the id is still allocated so ids never collide across refusals.
-      const behavior = state.notificationBehavior;
-      const allowed =
-        behavior === 'approve-all'
-          ? true
-          : behavior === 'reject-all'
-            ? false
-            : behavior({ text: notification.text });
-      if (!allowed) throw new Error('Notification refused by the test host');
+      if (!decideBehavior(state.notificationBehavior, { text: notification.text })) {
+        throw new Error('Notification refused by the test host');
+      }
 
       return { id };
     },

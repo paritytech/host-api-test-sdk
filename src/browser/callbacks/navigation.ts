@@ -1,4 +1,5 @@
 /** Navigation: logs what the product tried to open instead of navigating. */
+import { decideBehavior } from '../../types.js';
 import type { HostState } from './state.js';
 
 export function createNavigationCallbacks(state: HostState): { navigateTo(url: string): Promise<void> } {
@@ -11,14 +12,9 @@ export function createNavigationCallbacks(state: HostState): { navigateTo(url: s
       console.log('[test-host] Navigation requested:', url);
 
       // `Navigation.navigateTo` declares no error response, so refusal is a thrown error.
-      const behavior = state.navigationBehavior;
-      const allowed =
-        behavior === 'approve-all'
-          ? true
-          : behavior === 'reject-all'
-            ? false
-            : behavior({ url });
-      if (!allowed) throw new Error(`Navigation refused by the test host: ${url}`);
+      if (!decideBehavior(state.navigationBehavior, { url })) {
+        throw new Error(`Navigation refused by the test host: ${url}`);
+      }
     },
   };
 }

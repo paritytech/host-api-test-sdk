@@ -201,6 +201,13 @@ export type ThemeInput = 'light' | 'dark' | Theme;
  */
 export type Behavior<Req, Res> = 'approve-all' | 'reject-all' | ((request: Req) => Res);
 
+/** The one reading of a `Behavior`, so the named modes cannot drift between handlers. */
+export function decideBehavior<Req>(behavior: Behavior<Req, boolean>, request: Req): boolean {
+  if (behavior === 'approve-all') return true;
+  if (behavior === 'reject-all') return false;
+  return behavior(request);
+}
+
 /** How the test host answers remote permission requests; `'approve-all'` is the default. */
 export type PermissionBehavior = Behavior<{ tag: string; value: unknown }, boolean>;
 
