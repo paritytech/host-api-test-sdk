@@ -124,6 +124,69 @@ test.afterAll(async () => {
 
 // ── Tests ───────────────────────────────────────────────────────────
 
+test.describe('Control API', () => {
+
+  /**
+   * The host page only — no product. Every control that writes host state is
+   * driven through the real `window.__TEST_HOST__` and read back through its
+   * own getter, by value: what each pair proves is that the write happened and
+   * landed where the reader looks, which a handler test against a hand-mutated
+   * `HostState` cannot see.
+   */
+  test('every writable control is read back by its own getter', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice'],
+      networks: [PASEO_ASSET_HUB],
+    });
+
+    try {
+      await loadHost(page, host.url);
+
+      const written = await page.evaluate(() => {
+        const api = window.__TEST_HOST__;
+        api.setDevicePermissionStatus('Camera', 'Denied');
+        api.setFeatureSupport('Chain', false);
+        api.seedChatBot({ botId: 'bot-1', name: 'Helper', icon: 'https://example.com/i.png' });
+        api.setSupportedChains([{ identifier: 'Relay', genesisHash: '0xfeed' }]);
+        return {
+          statuses: api.getDevicePermissionStatuses(),
+          features: api.getFeatureSupport(),
+          bots: api.getChatBots(),
+          chains: api.getSupportedChains(),
+        };
+      });
+
+      expect(written.statuses).toEqual({ Camera: 'Denied' });
+      expect(written.features).toEqual({ Chain: false });
+      expect(written.bots).toEqual([
+        { botId: 'bot-1', name: 'Helper', icon: 'https://example.com/i.png' },
+      ]);
+      expect(written.chains).toEqual([{ identifier: 'Relay', genesisHash: '0xfeed' }]);
+
+      const reset = await page.evaluate(() => {
+        const api = window.__TEST_HOST__;
+        api.setDevicePermissionStatus('Camera', undefined);
+        api.setFeatureSupport('Chain', undefined);
+        api.setSupportedChains(undefined);
+        return {
+          statuses: api.getDevicePermissionStatuses(),
+          features: api.getFeatureSupport(),
+          chains: api.getSupportedChains(),
+        };
+      });
+
+      expect(reset.statuses).toEqual({});
+      expect(reset.features).toEqual({});
+      // The derived set is back: the in-page People loopback plus the one
+      // configured network that declares a role.
+      expect(reset.chains.map((chain) => chain.identifier)).toEqual(['People', 'AssetHub']);
+    } finally {
+      await host.close();
+    }
+  });
+});
+
 test.describe('Product account derivation', () => {
   /**
    * The host does not answer for an indexed product account, and cannot: the
@@ -547,6 +610,28 @@ test.describe('Push notifications', () => {
 
       const log = await page.evaluate(() => window.__TEST_HOST__.getNotificationLog());
       expect(log).toEqual([]);
+    } finally {
+      await host.close();
+    }
+  });
+
+  test('a refused notification surfaces to the product and is still logged', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice'],
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+      await page.evaluate(() => window.__TEST_HOST__.setNotificationBehavior('reject-all'));
+
+      const result = await product.evaluate(() =>
+        window.__TEST_PRODUCT__.pushNotification('blocked'),
+      );
+
+      expect(result.ok).toBe(false);
+      const log = await page.evaluate(() => window.__TEST_HOST__.getNotificationLog());
+      expect(log.some((entry) => entry.text === 'blocked')).toBe(true);
     } finally {
       await host.close();
     }
@@ -1807,6 +1892,31 @@ test.describe('User confirmation', () => {
       expect(result.ok).toBe(false);
       const log = await page.evaluate(() => window.__TEST_HOST__.getUserConfirmationLog());
       expect(log.some((entry) => entry.approved === false)).toBe(true);
+    } finally {
+      await host.close();
+    }
+  });
+
+  test('clearUserConfirmationLog empties the log', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice'],
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+
+      expectOk(
+        await product.evaluate(() =>
+          window.__TEST_PRODUCT__.signRawProduct('test-product.dot', 0, '0x00'),
+        ),
+      );
+      expect(
+        await page.evaluate(() => window.__TEST_HOST__.getUserConfirmationLog()),
+      ).not.toEqual([]);
+
+      await page.evaluate(() => window.__TEST_HOST__.clearUserConfirmationLog());
+      expect(await page.evaluate(() => window.__TEST_HOST__.getUserConfirmationLog())).toEqual([]);
     } finally {
       await host.close();
     }
