@@ -1047,6 +1047,43 @@ test.describe('Theme', () => {
   });
 });
 
+// ── Locale ─────────────────────────────────────────────────────────
+
+test.describe('Locale', () => {
+
+  test('a locale change reaches a subscribed product', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice'],
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+
+      expect(await page.evaluate(() => window.__TEST_HOST__.getLocale())).toBe('en');
+
+      await product.evaluate(() => {
+        window.__LOCALE_SUB__ = window.__TEST_PRODUCT__.subscribeLocale();
+      });
+
+      await expect
+        .poll(() => product.evaluate(() => window.__TEST_PRODUCT__.getReceivedLocales()))
+        .toEqual(['en']);
+
+      await page.evaluate(() => window.__TEST_HOST__.setLocale('pt-BR'));
+
+      await expect
+        .poll(() => product.evaluate(() => window.__TEST_PRODUCT__.getReceivedLocales()))
+        .toContain('pt-BR');
+      expect(await page.evaluate(() => window.__TEST_HOST__.getLocale())).toBe('pt-BR');
+
+      await product.evaluate(() => window.__LOCALE_SUB__.unsubscribe());
+    } finally {
+      await host.close();
+    }
+  });
+});
+
 // ── Entropy ────────────────────────────────────────────────────────
 
 test.describe('Entropy', () => {
@@ -1646,5 +1683,6 @@ declare global {
     __CHAT_ROOMS_SUB__: { unsubscribe(): void };
     __CHAT_ACTIONS_SUB__: { unsubscribe(): void };
     __THEME_SUB__: { unsubscribe(): void };
+    __LOCALE_SUB__: { unsubscribe(): void };
   }
 }

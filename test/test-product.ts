@@ -22,6 +22,7 @@ import type {
   HexString,
   HostChatActionSubscribeItem,
   HostDevicePermissionRequest,
+  HostLocaleSubscribeItem,
   HostThemeSubscribeItem,
   ObservableLike,
   ProductAccountId,
@@ -142,6 +143,8 @@ declare global {
       preimageLookup(key: string): Promise<Outcome<{ value: number[] | null }>>;
       subscribeTheme(): { unsubscribe(): void };
       getReceivedThemes(): HostThemeSubscribeItem[];
+      subscribeLocale(): { unsubscribe(): void };
+      getReceivedLocales(): string[];
       deriveEntropy(contextHex: string): Promise<Outcome<{ entropyHex: HexString }>>;
       getUserId(): Promise<Outcome<{ primaryUsername: string }>>;
       requestResourceAllocation(resources: AllocatableResource[]): Promise<Outcome<{ outcomes: string[] }>>;
@@ -161,6 +164,7 @@ declare global {
 const receivedChatActions: HostChatActionSubscribeItem[] = [];
 const receivedChatRooms: string[][] = [];
 const receivedThemes: HostThemeSubscribeItem[] = [];
+const receivedLocales: string[] = [];
 
 let status: ConnectionStatus = 'disconnected';
 subscribeConnectionStatus((next) => {
@@ -310,6 +314,11 @@ async function init(): Promise<void> {
     subscribeTheme: () => collect(api.theme.subscribe(), receivedThemes, (item) => item),
 
     getReceivedThemes: () => [...receivedThemes],
+
+    subscribeLocale: () =>
+      collect(api.locale.subscribe(), receivedLocales, (item: HostLocaleSubscribeItem) => item.languageTag),
+
+    getReceivedLocales: () => [...receivedLocales],
 
     deriveEntropy: (contextHex) =>
       call(

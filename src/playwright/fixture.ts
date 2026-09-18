@@ -90,6 +90,12 @@ export interface TestHost {
   /** Set the theme and notify subscribers. `'light' | 'dark'` map to the host's `Default` theme. */
   setTheme(theme: ThemeInput): Promise<void>;
 
+  /** The BCP 47 tag the host reports to products. */
+  getLocale(): Promise<string>;
+
+  /** Replace the reported locale; live subscribers are notified. */
+  setLocale(languageTag: string): Promise<void>;
+
   /**
    * Wait until the product has actually talked to the host. This is the
    * readiness gate — `window.__TEST_HOST__` says nothing about the product.
@@ -252,6 +258,14 @@ export function createTestHostFixture(defaults: TestHostFixtureOptions) {
 
         async setTheme(theme: ThemeInput) {
           await page.evaluate((t) => window.__TEST_HOST__.setTheme(t), theme);
+        },
+
+        async getLocale() {
+          return page.evaluate(() => window.__TEST_HOST__.getLocale());
+        },
+
+        async setLocale(languageTag: string) {
+          await page.evaluate((tag) => window.__TEST_HOST__.setLocale(tag), languageTag);
         },
 
         async waitForConnection(timeout = 30_000) {

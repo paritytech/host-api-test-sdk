@@ -215,6 +215,15 @@ export function buildControlApi(options: ControlApiOptions): TestHostAPI {
       for (const notify of state.themeSubscribers) notify(state.theme);
     },
 
+    getLocale() {
+      return state.locale;
+    },
+
+    setLocale(languageTag: string) {
+      state.locale = languageTag;
+      for (const notify of state.localeSubscribers) notify(state.locale);
+    },
+
     dispose() {
       options.disposeBridge();
       // Holds a loopback-store subscription: a disposed host must stop answering.

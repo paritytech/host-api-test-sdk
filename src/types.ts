@@ -236,6 +236,10 @@ export interface TestHostAPI {
   getTheme(): Theme;
   /** Set the theme and notify subscribers. */
   setTheme(theme: ThemeInput): void;
+  /** The BCP 47 tag the host reports to products, e.g. `en`, `pt-BR`. */
+  getLocale(): string;
+  /** Replace the reported locale and push it to live subscribers. */
+  setLocale(languageTag: string): void;
 
   dispose(): void;
 }
