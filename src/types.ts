@@ -2,10 +2,12 @@ import type {
   ChainIdentifier,
   ChatActionPayload,
   HostChatActionSubscribeItem,
+  HostDevicePermissionRequest,
 } from '@parity/truapi';
 // Must stay type-only and erased at emit: `@parity/truapi-host` is a
 // devDependency, so a published declaration naming it would not resolve.
 import type {
+  DevicePermissionStatus as CoreDevicePermissionStatus,
   HostChainEntry,
   ProductExecutionKind as CoreProductExecutionKind,
 } from '@parity/truapi-host';
@@ -15,6 +17,9 @@ export type HexString = `0x${string}`;
 
 /** A network's protocol role, as `features.supportedChains()` reports it. */
 export type { ChainIdentifier };
+
+/** Which device capability a permission request or status names, e.g. `'Camera'`. */
+export type { HostDevicePermissionRequest };
 
 type Equal<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
 type Expect<T extends true> = T;
@@ -39,6 +44,14 @@ export interface ChainEntry {
 
 /** Compile-time guard: this mirror must equal the core's chain-set entry. */
 type _ChainEntryMirrorsCore = Expect<Equal<ChainEntry, HostChainEntry>>;
+
+/** Current OS status of a device permission, as `permissionStatus.devicePermissionStatus` reports it. */
+export type DevicePermissionStatus = 'Granted' | 'Denied' | 'NotDetermined' | 'NotApplicable';
+
+/** Compile-time guard: this mirror must equal the core's device-permission status. */
+type _DevicePermissionStatusMirrorsCore = Expect<
+  Equal<DevicePermissionStatus, CoreDevicePermissionStatus>
+>;
 
 export interface NetworkConfig {
   id: string;
@@ -234,6 +247,10 @@ export interface TestHostAPI {
   getPermissionLog(): PermissionLogEntry[];
   /** Clear the permission log. */
   clearPermissionLog(): void;
+  /** Force the OS status `permissionStatus.devicePermissionStatus` reports for one device permission. */
+  setDevicePermissionStatus(type: HostDevicePermissionRequest, status: DevicePermissionStatus): void;
+  /** The forced device-permission statuses currently in effect. */
+  getDevicePermissionStatuses(): Record<string, DevicePermissionStatus>;
   /** Get the log of navigation attempts (hostApi.navigateTo) from the product. */
   getNavigationLog(): NavigationLogEntry[];
   /** Clear the navigation log. */

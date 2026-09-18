@@ -14,7 +14,9 @@ import type {
   ChatActionInput,
   ChatBot,
   ChatRoom,
+  DevicePermissionStatus,
   HexString,
+  HostDevicePermissionRequest,
   NavigationBehavior,
   NotificationBehavior,
   PermissionBehavior,
@@ -131,6 +133,14 @@ export function buildControlApi(options: ControlApiOptions): TestHostAPI {
 
     clearPermissionLog() {
       state.permissionLog.length = 0;
+    },
+
+    setDevicePermissionStatus(type: HostDevicePermissionRequest, status: DevicePermissionStatus) {
+      state.devicePermissionStatuses.set(type, status);
+    },
+
+    getDevicePermissionStatuses() {
+      return Object.fromEntries(state.devicePermissionStatuses);
     },
 
     getNavigationLog() {

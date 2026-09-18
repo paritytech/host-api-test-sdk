@@ -3,7 +3,7 @@
  * than a class because `control-api.ts` mutates them directly.
  */
 
-import type { AuthState, HostChainEntry } from '@parity/truapi-host';
+import type { AuthState, DevicePermissionStatus, HostChainEntry } from '@parity/truapi-host';
 import type {
   NavigationBehavior,
   NotificationBehavior,
@@ -79,6 +79,8 @@ export interface HostState {
   permissionBehavior: PermissionBehavior;
   grantedPermissions: Set<string>;
   permissionLog: PermissionLogEntry[];
+  /** Device-permission type → reported status; unset types report the default. */
+  devicePermissionStatuses: Map<string, DevicePermissionStatus>;
   navigationLog: NavigationLogEntry[];
   notificationLog: NotificationLogEntry[];
 
@@ -130,6 +132,7 @@ export function createHostState(): HostState {
     permissionBehavior: 'approve-all',
     grantedPermissions: new Set(),
     permissionLog: [],
+    devicePermissionStatuses: new Map(),
     navigationLog: [],
     notificationLog: [],
     navigationBehavior: 'approve-all',

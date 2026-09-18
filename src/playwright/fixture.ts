@@ -1,7 +1,7 @@
 import type { Page, FrameLocator } from '@playwright/test';
 import { createTestHostServer } from '../server.js';
 import { DEFAULT_CHAIN } from '../networks.js';
-import type { ChainEntry, ChatActionInput, ChatBot, ChatMessageLogEntry, ChatRoom, CreateTestHostOptions, DevAccountName, HexString, NavigationLogEntry, NotificationLogEntry, PermissionLogEntry, PreimageEntry, SigningLogEntry, TestHostAPI, Theme, ThemeInput, UserConfirmationLogEntry } from '../types.js';
+import type { ChainEntry, ChatActionInput, ChatBot, ChatMessageLogEntry, ChatRoom, CreateTestHostOptions, DevAccountName, DevicePermissionStatus, HexString, HostDevicePermissionRequest, NavigationLogEntry, NotificationLogEntry, PermissionLogEntry, PreimageEntry, SigningLogEntry, TestHostAPI, Theme, ThemeInput, UserConfirmationLogEntry } from '../types.js';
 
 export interface TestHost {
   /** The host page (contains the iframe) */
@@ -51,6 +51,12 @@ export interface TestHost {
 
   /** Clear the permission log */
   clearPermissionLog(): Promise<void>;
+
+  /** Force the OS status `permissionStatus.devicePermissionStatus` reports for one device permission. */
+  setDevicePermissionStatus(type: HostDevicePermissionRequest, status: DevicePermissionStatus): Promise<void>;
+
+  /** The forced device-permission statuses currently in effect. */
+  getDevicePermissionStatuses(): Promise<Record<string, DevicePermissionStatus>>;
 
   /** Get the log of navigation attempts from the product */
   getNavigationLog(): Promise<NavigationLogEntry[]>;
@@ -255,6 +261,17 @@ export function createTestHostFixture(defaults: TestHostFixtureOptions) {
 
         async clearPermissionLog() {
           await page.evaluate(() => window.__TEST_HOST__.clearPermissionLog());
+        },
+
+        async setDevicePermissionStatus(type: HostDevicePermissionRequest, status: DevicePermissionStatus) {
+          await page.evaluate(
+            (args) => window.__TEST_HOST__.setDevicePermissionStatus(args.type, args.status),
+            { type, status },
+          );
+        },
+
+        async getDevicePermissionStatuses() {
+          return page.evaluate(() => window.__TEST_HOST__.getDevicePermissionStatuses());
         },
 
         async getNavigationLog() {

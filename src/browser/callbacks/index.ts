@@ -16,6 +16,7 @@ import { createNavigationCallbacks } from './navigation.js';
 import { createNotificationCallbacks } from './notifications.js';
 import { createLocaleCallbacks, createPreimageCallbacks, createThemeCallbacks } from './passive.js';
 import { createPermissionCallbacks } from './permissions.js';
+import { createPermissionStatusCallbacks } from './permission-status.js';
 import { createCoreStorageCallbacks, createProductStorageCallbacks } from './storage.js';
 import { createUserConfirmationCallbacks } from './user-confirmation.js';
 import type { HostState } from './state.js';
@@ -36,6 +37,7 @@ export function createHostCallbacks(options: CreateHostCallbacksOptions): Requir
     navigation: createNavigationCallbacks(state),
     notifications: createNotificationCallbacks(state),
     permissions: createPermissionCallbacks(state),
+    permissionStatus: createPermissionStatusCallbacks(state),
     features: createFeatureCallbacks(state, networks),
     productStorage: createProductStorageCallbacks(state),
     coreStorage: createCoreStorageCallbacks(),
