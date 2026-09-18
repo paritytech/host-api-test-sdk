@@ -3,16 +3,19 @@ export type { TestHost, TestHostFixtureOptions } from './fixture.js';
 
 export type {
   Account,
+  ChainEntry,
   ChatActionInput,
   ChatActionPayload,
   NetworkConfig,
   DevAccountInfo,
   DevAccountName,
+  DevicePermissionStatus,
   HexString,
+  HostDevicePermissionRequest,
   InitialBehaviors,
   InitialState,
   SigningLogEntry,
-  UserConfirmationBehavior,
+  UserConfirmationLogEntry,
 } from '../types.js';
 export {
   DEFAULT_CHAIN,
