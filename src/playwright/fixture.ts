@@ -3,6 +3,12 @@ import { createTestHostServer } from '../server.js';
 import { DEFAULT_CHAIN } from '../networks.js';
 import type { ChainEntry, ChatActionInput, ChatBot, ChatMessageLogEntry, ChatRoom, CreateTestHostOptions, DevAccountName, DevicePermissionStatus, HexString, HostDevicePermissionRequest, InitialBehaviors, InitialState, NavigationLogEntry, NotificationLogEntry, PermissionLogEntry, PreimageEntry, SigningLogEntry, TestHostAPI, Theme, ThemeInput, UserConfirmationLogEntry } from '../types.js';
 
+/**
+ * What the fixture's behaviour setters accept. A `Behavior`'s function form
+ * cannot cross `page.evaluate`, so it is in-page only — via `window.__TEST_HOST__`.
+ */
+export type FixtureBehavior = 'approve-all' | 'reject-all';
+
 export interface TestHost {
   /** The host page (contains the iframe) */
   page: Page;
@@ -30,12 +36,8 @@ export interface TestHost {
   /** Clear the signing log */
   clearSigningLog(): Promise<void>;
 
-  /**
-   * Set how the host responds to remote permission requests. The function form
-   * of a behaviour cannot cross `page.evaluate`, so only the two named modes
-   * are accepted here.
-   */
-  setPermissionBehavior(behavior: 'approve-all' | 'reject-all'): Promise<void>;
+  /** Set how the host responds to remote permission requests. */
+  setPermissionBehavior(behavior: FixtureBehavior): Promise<void>;
 
   /** Pre-grant a permission without the product requesting it */
   grantPermission(tag: string): Promise<void>;
@@ -118,12 +120,8 @@ export interface TestHost {
   /** Replace the reported locale; live subscribers are notified. */
   setLocale(languageTag: string): Promise<void>;
 
-  /**
-   * Set how the host answers `confirmUserAction`. The function form of a
-   * behaviour cannot cross `page.evaluate`, so only the two named modes are
-   * accepted here.
-   */
-  setUserConfirmationBehavior(behavior: 'approve-all' | 'reject-all'): Promise<void>;
+  /** Set how the host answers `confirmUserAction`. */
+  setUserConfirmationBehavior(behavior: FixtureBehavior): Promise<void>;
 
   /** Every review the core asked the host to confirm. */
   getUserConfirmationLog(): Promise<UserConfirmationLogEntry[]>;
@@ -131,18 +129,11 @@ export interface TestHost {
   /** Drop the confirmation log. */
   clearUserConfirmationLog(): Promise<void>;
 
-  /**
-   * Set how the host answers `navigateTo`. The function form of a behaviour
-   * cannot cross `page.evaluate`, so only the two named modes are accepted here.
-   */
-  setNavigationBehavior(behavior: 'approve-all' | 'reject-all'): Promise<void>;
+  /** Set how the host answers `navigateTo`. */
+  setNavigationBehavior(behavior: FixtureBehavior): Promise<void>;
 
-  /**
-   * Set how the host answers `pushNotification`. The function form of a
-   * behaviour cannot cross `page.evaluate`, so only the two named modes are
-   * accepted here.
-   */
-  setNotificationBehavior(behavior: 'approve-all' | 'reject-all'): Promise<void>;
+  /** Set how the host answers `pushNotification`. */
+  setNotificationBehavior(behavior: FixtureBehavior): Promise<void>;
 
   /** Force `featureSupported` for one feature tag; `undefined` restores the derived answer. */
   setFeatureSupport(feature: string, supported: boolean | undefined): Promise<void>;
@@ -254,7 +245,7 @@ export function createTestHostFixture(defaults: TestHostFixtureOptions) {
           await page.evaluate(() => window.__TEST_HOST__.clearSigningLog());
         },
 
-        async setPermissionBehavior(behavior: 'approve-all' | 'reject-all') {
+        async setPermissionBehavior(behavior: FixtureBehavior) {
           await page.evaluate((b) => window.__TEST_HOST__.setPermissionBehavior(b), behavior);
         },
 
@@ -369,7 +360,7 @@ export function createTestHostFixture(defaults: TestHostFixtureOptions) {
           await page.evaluate((tag) => window.__TEST_HOST__.setLocale(tag), languageTag);
         },
 
-        async setUserConfirmationBehavior(behavior: 'approve-all' | 'reject-all') {
+        async setUserConfirmationBehavior(behavior: FixtureBehavior) {
           await page.evaluate((b) => window.__TEST_HOST__.setUserConfirmationBehavior(b), behavior);
         },
 
@@ -381,11 +372,11 @@ export function createTestHostFixture(defaults: TestHostFixtureOptions) {
           await page.evaluate(() => window.__TEST_HOST__.clearUserConfirmationLog());
         },
 
-        async setNavigationBehavior(behavior: 'approve-all' | 'reject-all') {
+        async setNavigationBehavior(behavior: FixtureBehavior) {
           await page.evaluate((b) => window.__TEST_HOST__.setNavigationBehavior(b), behavior);
         },
 
-        async setNotificationBehavior(behavior: 'approve-all' | 'reject-all') {
+        async setNotificationBehavior(behavior: FixtureBehavior) {
           await page.evaluate((b) => window.__TEST_HOST__.setNotificationBehavior(b), behavior);
         },
 
