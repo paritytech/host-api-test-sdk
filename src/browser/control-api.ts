@@ -11,6 +11,8 @@ import type { SsoResponder } from './sso/responder.js';
 import type {
   ChainEntry,
   ChatActionInput,
+  ChatBot,
+  ChatRoom,
   HexString,
   NavigationBehavior,
   NotificationBehavior,
@@ -166,6 +168,16 @@ export function buildControlApi(options: ControlApiOptions): TestHostAPI {
       // Subscribers are kept: they are the core's live `subscribeChatRooms`
       // streams, and dropping one stops that product seeing another room.
       for (const notify of state.chatRoomSubscribers) notify([]);
+    },
+
+    seedChatRoom(room: ChatRoom) {
+      state.chatRooms.set(room.roomId, room);
+      const rooms = [...state.chatRooms.values()];
+      for (const notify of state.chatRoomSubscribers) notify(rooms);
+    },
+
+    seedChatBot(bot: ChatBot) {
+      state.chatBots.set(bot.botId, bot);
     },
 
     injectChatAction(action: ChatActionInput): Promise<void> {

@@ -250,6 +250,10 @@ export interface TestHostAPI {
   getChatMessageLog(): ChatMessageLogEntry[];
   /** Clear rooms, bots and the message log. Live streams stay open and are pushed the empty list. */
   clearChat(): void;
+  /** Add a chat room without the product creating it; live subscribers are notified. */
+  seedChatRoom(room: ChatRoom): void;
+  /** Add a chat bot without the product registering it. */
+  seedChatBot(bot: ChatBot): void;
   /**
    * Inject an incoming chat action into the product. Buffered until the product
    * subscribes; rejects if the payload or the connection cannot carry it.

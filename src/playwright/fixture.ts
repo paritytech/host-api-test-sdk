@@ -76,6 +76,12 @@ export interface TestHost {
   /** Clear all chat state (rooms, bots, messages, subscribers) */
   clearChat(): Promise<void>;
 
+  /** Add a chat room without the product creating it; live subscribers are notified. */
+  seedChatRoom(room: ChatRoom): Promise<void>;
+
+  /** Add a chat bot without the product registering it. */
+  seedChatBot(bot: ChatBot): Promise<void>;
+
   /** Inject an incoming chat action into the product; rejects if it could not be delivered. */
   injectChatAction(action: ChatActionInput): Promise<void>;
 
@@ -281,6 +287,14 @@ export function createTestHostFixture(defaults: TestHostFixtureOptions) {
 
         async clearChat() {
           await page.evaluate(() => window.__TEST_HOST__.clearChat());
+        },
+
+        async seedChatRoom(room: ChatRoom) {
+          await page.evaluate((r) => window.__TEST_HOST__.seedChatRoom(r), room);
+        },
+
+        async seedChatBot(bot: ChatBot) {
+          await page.evaluate((b) => window.__TEST_HOST__.seedChatBot(b), bot);
         },
 
         async injectChatAction(action: ChatActionInput) {

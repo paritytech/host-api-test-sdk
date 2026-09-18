@@ -922,6 +922,42 @@ test.describe('Chat', () => {
       await host.close();
     }
   });
+
+  test('a room seeded by the test reaches a product already subscribed', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice'],
+      // Chat is Worker-only in the core: every Chat entry point is denied
+      // unless the connection's execution kind is `Worker`
+      // (`truapi-server/src/runtime/chat.rs`).
+      executionKind: 'Worker',
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+
+      await product.evaluate(() => {
+        window.__CHAT_ROOMS_SUB__ = window.__TEST_PRODUCT__.subscribeChatRooms();
+      });
+
+      await page.evaluate(() =>
+        window.__TEST_HOST__.seedChatRoom({
+          roomId: 'seeded',
+          name: 'Seeded',
+          icon: 'https://example.com/i.png',
+          participatingAs: 'RoomHost',
+        }),
+      );
+
+      await expect
+        .poll(() => product.evaluate(() => window.__TEST_PRODUCT__.getReceivedChatRooms()))
+        .toContainEqual(['seeded']);
+
+      await product.evaluate(() => window.__CHAT_ROOMS_SUB__.unsubscribe());
+    } finally {
+      await host.close();
+    }
+  });
 });
 
 // ── Preimage ────────────────────────────────────────────────────────

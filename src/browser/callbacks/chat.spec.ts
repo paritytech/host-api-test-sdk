@@ -93,4 +93,22 @@ describe('chat callbacks', () => {
     await createChatRoom(product, { roomId: 'room-1', name: 'Room', icon: 'icon.png' });
     expect(state.chatRoomSubscribers.size).toBe(0);
   });
+
+  it('a seeded room reaches a subscriber that is already listening', async () => {
+    const state = createHostState();
+    const { subscribeChatRooms } = createChatCallbacks(state);
+    const items = subscribeChatRooms(product)[Symbol.asyncIterator]();
+    await items.next();
+
+    state.chatRooms.set('seeded', {
+      roomId: 'seeded',
+      name: 'Seeded',
+      icon: 'https://example.com/i.png',
+      participatingAs: 'RoomHost',
+    });
+    for (const notify of state.chatRoomSubscribers) notify([...state.chatRooms.values()]);
+
+    const next = await items.next();
+    expect(JSON.stringify(next.value)).toContain('seeded');
+  });
 });
