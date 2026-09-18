@@ -357,15 +357,15 @@ Two families cover the whole surface:
 
 | Member | Family | Description |
 |--------|--------|-------------|
-| `setDevicePermissionStatus(type, status)` / `getDevicePermissionStatuses()` | data | Force the OS status `permissionStatus.devicePermissionStatus` reports for one `HostDevicePermissionRequest` (`'Granted' \| 'Denied' \| 'NotDetermined' \| 'NotApplicable'`) |
+| `setDevicePermissionStatus(type, status)` / `getDevicePermissionStatuses()` | data | Force the OS status `permissionStatus.devicePermissionStatus` reports for one `HostDevicePermissionRequest` (`'Granted' \| 'Denied' \| 'NotDetermined' \| 'NotApplicable'`); `undefined` restores the default |
 | `seedChatRoom(room)` / `seedChatBot(bot)` | data | Add a chat room/bot without the product creating it; live subscribers are notified (needs `executionKind: 'Worker'`) |
 | `getLocale()` / `setLocale(languageTag)` | data | The BCP 47 tag the host reports to products |
 | `setFeatureSupport(feature, supported)` / `getFeatureSupport()` | data | Force `featureSupported` for one feature tag; `undefined` restores the derived answer |
-| `setSupportedChains(chains)` | data | Replace the advertised chain set (`ChainEntry[]`); `undefined` restores the derived one |
+| `setSupportedChains(chains)` / `getSupportedChains()` | data | Replace the advertised chain set (`ChainEntry[]`); `undefined` restores the one derived from `networks`, which the getter also reports |
 | `seedProductStorage(key, value)` / `getProductStorage()` / `clearProductStorage()` | data | Pre-populate, read, or wipe product-storage entries (see limitation below) |
 | `setUserConfirmationBehavior(b)` / `getUserConfirmationLog()` / `clearUserConfirmationLog()` | decision | How the host answers `confirmUserAction` |
 | `setNavigationBehavior(b)` | decision | How the host answers `navigateTo` (log: `getNavigationLog()` / `clearNavigationLog()`, above) |
-| `setNotificationBehavior(b)` | decision | How the host answers `pushNotification` (log: `getNotificationLog()` / `clearNotificationLog()`, above) |
+| `setNotificationBehavior(b)` | decision | How the host answers `pushNotification`; the function form sees `{ text, deeplink, scheduledAt }` (log: `getNotificationLog()` / `clearNotificationLog()`, above) |
 
 `initialState` and `behaviors` apply the same data and decisions before the product's first frame:
 
@@ -377,6 +377,10 @@ const { testHost } = createTestHostFixture({
     theme: "dark",
     devicePermissionStatuses: { Camera: "Denied" },
     features: { Chain: false },
+    supportedChains: [{ identifier: "AssetHub", genesisHash: "0x23e7..." }],
+    // Granted without the product asking, as `grantPermission(tag)` would.
+    grantedPermissions: ["ChainSubmit"],
+    productStorage: { "some-key-getProductStorage-reported": "value" },
   },
   behaviors: {
     userConfirmation: "reject-all",
@@ -387,7 +391,7 @@ const { testHost } = createTestHostFixture({
 Two limitations worth knowing:
 
 - **`seedProductStorage` only replays a key `getProductStorage()` has reported.** The core namespaces product-storage keys per product, so a key is always round-tripped, never hand-constructed — seeding a key the product has never written is not supported. `initialState.productStorage` carries the same restriction.
-- **A function-form behavior cannot cross `page.evaluate`.** `setUserConfirmationBehavior` / `setNavigationBehavior` / `setNotificationBehavior` on the fixture, and the `behaviors` boot option, accept only `'approve-all' | 'reject-all'`. The function form — `(request) => boolean` — works only in-page, via `window.__TEST_HOST__`.
+- **A function-form behavior cannot cross `page.evaluate`.** `setUserConfirmationBehavior` / `setNavigationBehavior` / `setNotificationBehavior` on the fixture, and the `behaviors` boot option, accept only `'approve-all' | 'reject-all'` — the `FixtureBehavior` type. The function form — `(request) => boolean`, the third arm of `Behavior<Req>` — works only in-page, via `window.__TEST_HOST__`.
 
 ### Built-in networks
 

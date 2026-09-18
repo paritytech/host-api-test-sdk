@@ -928,8 +928,8 @@ Beyond theme, a product can now be exercised under a much wider set of condition
 
 Two families, named consistently:
 
-- **Ambient data** the host reports — device-permission status, locale, feature support, the supported chain set, product storage, plus seeding chat rooms and bots. `get<Thing>` reads it, `set<Thing>` / `seed<Thing>` writes it, `clear<Thing>` resets it: `setDevicePermissionStatus` / `getDevicePermissionStatuses`, `seedChatRoom`, `seedChatBot`, `getLocale` / `setLocale`, `setFeatureSupport` / `getFeatureSupport`, `setSupportedChains`, `seedProductStorage` / `getProductStorage` / `clearProductStorage`.
-- **Decisions** the host makes on the product's behalf — confirmations, navigation, notifications. `set<Thing>Behavior(b)` takes `'approve-all'` (default), `'reject-all'`, or, in-page only, a function of the request; `get<Thing>Log` / `clear<Thing>Log` inspect what was asked and how it was answered: `setUserConfirmationBehavior`, `getUserConfirmationLog` / `clearUserConfirmationLog`, `setNavigationBehavior`, `setNotificationBehavior`.
+- **Ambient data** the host reports — device-permission status, locale, feature support, the supported chain set, product storage, plus seeding chat rooms and bots. `get<Thing>` reads it, `set<Thing>` / `seed<Thing>` writes it, `clear<Thing>` resets it: `setDevicePermissionStatus` / `getDevicePermissionStatuses`, `seedChatRoom`, `seedChatBot`, `getLocale` / `setLocale`, `setFeatureSupport` / `getFeatureSupport`, `setSupportedChains` / `getSupportedChains`, `seedProductStorage` / `getProductStorage` / `clearProductStorage`. The per-key ones take `undefined` to put the host's own answer back.
+- **Decisions** the host makes on the product's behalf — confirmations, navigation, notifications. `set<Thing>Behavior(b)` takes `'approve-all'` (default), `'reject-all'`, or, in-page only, a function of the request — a notification's carries `{ text, deeplink, scheduledAt }`, so a test can refuse only the scheduled ones. `get<Thing>Log` / `clear<Thing>Log` inspect what was asked and how it was answered: `setUserConfirmationBehavior`, `getUserConfirmationLog` / `clearUserConfirmationLog`, `setNavigationBehavior`, `setNotificationBehavior`.
 
 Both families can be set up front, via `initialState` and `behaviors` on `createTestHostFixture` / `createTestHostServer`, so the product never sees the default:
 
@@ -941,6 +941,8 @@ const { testHost } = createTestHostFixture({
     theme: "dark",
     devicePermissionStatuses: { Camera: "Denied" },
     features: { Chain: false },
+    supportedChains: [{ identifier: "AssetHub", genesisHash: "0x23e7..." }],
+    grantedPermissions: ["ChainSubmit"],
   },
   behaviors: {
     userConfirmation: "reject-all",
