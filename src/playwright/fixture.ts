@@ -1,7 +1,7 @@
 import type { Page, FrameLocator } from '@playwright/test';
 import { createTestHostServer } from '../server.js';
 import { DEFAULT_CHAIN } from '../networks.js';
-import type { ChatActionInput, ChatBot, ChatMessageLogEntry, ChatRoom, CreateTestHostOptions, DevAccountName, HexString, NavigationLogEntry, NotificationLogEntry, PermissionBehavior, PermissionLogEntry, PreimageEntry, SigningLogEntry, TestHostAPI, Theme, ThemeInput } from '../types.js';
+import type { ChatActionInput, ChatBot, ChatMessageLogEntry, ChatRoom, CreateTestHostOptions, DevAccountName, HexString, NavigationLogEntry, NotificationLogEntry, PermissionBehavior, PermissionLogEntry, PreimageEntry, SigningLogEntry, TestHostAPI, Theme, ThemeInput, UserConfirmationLogEntry } from '../types.js';
 
 export interface TestHost {
   /** The host page (contains the iframe) */
@@ -95,6 +95,19 @@ export interface TestHost {
 
   /** Replace the reported locale; live subscribers are notified. */
   setLocale(languageTag: string): Promise<void>;
+
+  /**
+   * Set how the host answers `confirmUserAction`. The function form of a
+   * behaviour cannot cross `page.evaluate`, so only the two named modes are
+   * accepted here.
+   */
+  setUserConfirmationBehavior(behavior: 'approve-all' | 'reject-all'): Promise<void>;
+
+  /** Every review the core asked the host to confirm. */
+  getUserConfirmationLog(): Promise<UserConfirmationLogEntry[]>;
+
+  /** Drop the confirmation log. */
+  clearUserConfirmationLog(): Promise<void>;
 
   /**
    * Wait until the product has actually talked to the host. This is the
@@ -266,6 +279,18 @@ export function createTestHostFixture(defaults: TestHostFixtureOptions) {
 
         async setLocale(languageTag: string) {
           await page.evaluate((tag) => window.__TEST_HOST__.setLocale(tag), languageTag);
+        },
+
+        async setUserConfirmationBehavior(behavior: 'approve-all' | 'reject-all') {
+          await page.evaluate((b) => window.__TEST_HOST__.setUserConfirmationBehavior(b), behavior);
+        },
+
+        async getUserConfirmationLog() {
+          return page.evaluate(() => window.__TEST_HOST__.getUserConfirmationLog());
+        },
+
+        async clearUserConfirmationLog() {
+          await page.evaluate(() => window.__TEST_HOST__.clearUserConfirmationLog());
         },
 
         async waitForConnection(timeout = 30_000) {

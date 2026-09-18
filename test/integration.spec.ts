@@ -1678,6 +1678,31 @@ test.describe('Session and connection state', () => {
   });
 });
 
+test.describe('User confirmation', () => {
+
+  test('a rejected confirmation fails the product call', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice'],
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+      await page.evaluate(() => window.__TEST_HOST__.setUserConfirmationBehavior('reject-all'));
+
+      const result = await product.evaluate(() =>
+        window.__TEST_PRODUCT__.signRawProduct('test-product.dot', 0, '0x00'),
+      );
+
+      expect(result.ok).toBe(false);
+      const log = await page.evaluate(() => window.__TEST_HOST__.getUserConfirmationLog());
+      expect(log.some((entry) => entry.approved === false)).toBe(true);
+    } finally {
+      await host.close();
+    }
+  });
+});
+
 declare global {
   interface Window {
     __CHAT_ROOMS_SUB__: { unsubscribe(): void };

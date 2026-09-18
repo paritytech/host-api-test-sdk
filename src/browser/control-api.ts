@@ -15,6 +15,7 @@ import type {
   TestHostAPI,
   Theme,
   ThemeInput,
+  UserConfirmationBehavior,
 } from '../types.js';
 
 /** Matches dot.li's own mapping, and is why `grantPermission` touches the iframe. */
@@ -222,6 +223,18 @@ export function buildControlApi(options: ControlApiOptions): TestHostAPI {
     setLocale(languageTag: string) {
       state.locale = languageTag;
       for (const notify of state.localeSubscribers) notify(state.locale);
+    },
+
+    setUserConfirmationBehavior(behavior: UserConfirmationBehavior) {
+      state.userConfirmationBehavior = behavior;
+    },
+
+    getUserConfirmationLog() {
+      return [...state.userConfirmationLog];
+    },
+
+    clearUserConfirmationLog() {
+      state.userConfirmationLog.length = 0;
     },
 
     dispose() {

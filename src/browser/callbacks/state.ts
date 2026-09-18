@@ -4,7 +4,7 @@
  */
 
 import type { AuthState } from '@parity/truapi-host';
-import type { PermissionBehavior } from '../../types.js';
+import type { PermissionBehavior, UserConfirmationBehavior, UserConfirmationLogEntry } from '../../types.js';
 
 export type { PermissionBehavior };
 
@@ -76,6 +76,11 @@ export interface HostState {
   navigationLog: NavigationLogEntry[];
   notificationLog: NotificationLogEntry[];
 
+  /** How `userConfirmation.confirmUserAction` answers; `'approve-all'` by default. */
+  userConfirmationBehavior: UserConfirmationBehavior;
+  /** Every review the core asked the host to confirm. */
+  userConfirmationLog: UserConfirmationLogEntry[];
+
   theme: Theme;
   /** Active `theme.subscribeTheme()` listeners; notified when `theme` changes. */
   themeSubscribers: Set<(theme: Theme) => void>;
@@ -108,6 +113,9 @@ export function createHostState(): HostState {
     permissionLog: [],
     navigationLog: [],
     notificationLog: [],
+
+    userConfirmationBehavior: 'approve-all',
+    userConfirmationLog: [],
 
     theme: { name: { tag: 'Default', value: undefined }, variant: 'Light' },
     themeSubscribers: new Set(),

@@ -175,6 +175,17 @@ export type Behavior<Req, Res> = 'approve-all' | 'reject-all' | ((request: Req) 
 /** How the test host answers remote permission requests; `'approve-all'` is the default. */
 export type PermissionBehavior = Behavior<{ tag: string; value: unknown }, boolean>;
 
+/** One `confirmUserAction` review the host was asked to answer. */
+export interface UserConfirmationLogEntry {
+  /** The review's variant tag, e.g. `SignRaw`. */
+  tag: string;
+  approved: boolean;
+  timestamp: number;
+}
+
+/** How the host answers `confirmUserAction`; `'approve-all'` is the default. */
+export type UserConfirmationBehavior = Behavior<{ tag: string; value: unknown }, boolean>;
+
 /** Shape of window.__TEST_HOST__ — shared between browser bundle and Playwright fixture. */
 export interface TestHostAPI {
   switchAccount(name: string): Promise<void>;
@@ -240,6 +251,12 @@ export interface TestHostAPI {
   getLocale(): string;
   /** Replace the reported locale and push it to live subscribers. */
   setLocale(languageTag: string): void;
+  /** Set how the host answers `confirmUserAction`. */
+  setUserConfirmationBehavior(behavior: UserConfirmationBehavior): void;
+  /** Every review the core asked the host to confirm. */
+  getUserConfirmationLog(): UserConfirmationLogEntry[];
+  /** Drop the confirmation log. */
+  clearUserConfirmationLog(): void;
 
   dispose(): void;
 }
