@@ -22,6 +22,7 @@
 - Gates after every task: `pnpm typecheck` (two projects), `pnpm vitest run`, `pnpm build` (exit 0, no warnings), `pnpm test`, `pnpm test:integration`.
 - `@playwright/test` is a peerDependency — drive Playwright through `pnpm exec`. Local runs use system Chrome; do not change the CI path.
 - CLAUDE.md requires `package.json`, `CHANGELOG.md`, `forum-post.md` and `README.md` to move with any public API change. Task 10 does this once for the whole feature; earlier tasks do not touch them.
+- **Integration-test idiom — this overrides every sample in this plan.** `test/integration.spec.ts` does NOT use a `{ page, testHost }` Playwright fixture; no test in the repo does. Every test is `async ({ page }) => { … }` and builds its own host with `createTestHostServer({ productUrl, accounts, … })`, then drives `window.__TEST_HOST__` and `window.__TEST_PRODUCT__` through `page.evaluate`, using the `loadHost` / `loadHostAndProduct` helpers from `./support.js`. Where a task's sample integration test is written against a fixture object (`testHost.setLocale(...)`, `await testHost.waitForConnection()`), translate it into that established idiom — copy the shape of the nearest existing `test.describe` block in the same file. The sample shows the assertion's intent; the file shows the form.
 
 ---
 
