@@ -5,7 +5,10 @@ import type {
 } from '@parity/truapi';
 // Must stay type-only and erased at emit: `@parity/truapi-host` is a
 // devDependency, so a published declaration naming it would not resolve.
-import type { ProductExecutionKind as CoreProductExecutionKind } from '@parity/truapi-host';
+import type {
+  HostChainEntry,
+  ProductExecutionKind as CoreProductExecutionKind,
+} from '@parity/truapi-host';
 
 /** A `0x`-prefixed hex string. */
 export type HexString = `0x${string}`;
@@ -27,6 +30,15 @@ export type ProductExecutionKind = 'App' | 'Widget' | 'Worker';
 type _ProductExecutionKindMirrorsCore = Expect<
   Equal<ProductExecutionKind, CoreProductExecutionKind>
 >;
+
+/** One chain `features.supportedChains()` advertises. */
+export interface SupportedChainEntry {
+  identifier: ChainIdentifier;
+  genesisHash: HexString;
+}
+
+/** Compile-time guard: this mirror must equal the core's chain-set entry. */
+type _SupportedChainEntryMirrorsCore = Expect<Equal<SupportedChainEntry, HostChainEntry>>;
 
 export interface NetworkConfig {
   id: string;
@@ -267,6 +279,12 @@ export interface TestHostAPI {
   setNavigationBehavior(behavior: NavigationBehavior): void;
   /** Set how the host answers `pushNotification`. */
   setNotificationBehavior(behavior: NotificationBehavior): void;
+  /** Force `featureSupported` for one feature tag; `undefined` restores the derived answer. */
+  setFeatureSupport(feature: string, supported: boolean | undefined): void;
+  /** The forced answers currently in effect. */
+  getFeatureSupport(): Record<string, boolean>;
+  /** Replace the advertised chain set; `undefined` restores the derived one. */
+  setSupportedChains(chains: SupportedChainEntry[] | undefined): void;
 
   dispose(): void;
 }

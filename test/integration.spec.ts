@@ -1278,6 +1278,28 @@ test.describe('Feature check', () => {
       await host.close();
     }
   });
+
+  test('an override flips a chain feature the host would otherwise support', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice'],
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+      const probe = () =>
+        product.evaluate(
+          (genesis) => window.__TEST_PRODUCT__.featureSupported(genesis),
+          PASEO_ASSET_HUB.genesisHash,
+        );
+
+      expect(expectOk(await probe()).supported).toBe(true);
+      await page.evaluate(() => window.__TEST_HOST__.setFeatureSupport('Chain', false));
+      expect(expectOk(await probe()).supported).toBe(false);
+    } finally {
+      await host.close();
+    }
+  });
 });
 
 // ── Local storage ──────────────────────────────────────────────────

@@ -1,7 +1,7 @@
 import type { Page, FrameLocator } from '@playwright/test';
 import { createTestHostServer } from '../server.js';
 import { DEFAULT_CHAIN } from '../networks.js';
-import type { ChatActionInput, ChatBot, ChatMessageLogEntry, ChatRoom, CreateTestHostOptions, DevAccountName, HexString, NavigationLogEntry, NotificationLogEntry, PermissionLogEntry, PreimageEntry, SigningLogEntry, TestHostAPI, Theme, ThemeInput, UserConfirmationLogEntry } from '../types.js';
+import type { ChatActionInput, ChatBot, ChatMessageLogEntry, ChatRoom, CreateTestHostOptions, DevAccountName, HexString, NavigationLogEntry, NotificationLogEntry, PermissionLogEntry, PreimageEntry, SigningLogEntry, SupportedChainEntry, TestHostAPI, Theme, ThemeInput, UserConfirmationLogEntry } from '../types.js';
 
 export interface TestHost {
   /** The host page (contains the iframe) */
@@ -125,6 +125,15 @@ export interface TestHost {
    * accepted here.
    */
   setNotificationBehavior(behavior: 'approve-all' | 'reject-all'): Promise<void>;
+
+  /** Force `featureSupported` for one feature tag; `undefined` restores the derived answer. */
+  setFeatureSupport(feature: string, supported: boolean | undefined): Promise<void>;
+
+  /** The forced answers currently in effect. */
+  getFeatureSupport(): Promise<Record<string, boolean>>;
+
+  /** Replace the advertised chain set; `undefined` restores the derived one. */
+  setSupportedChains(chains: SupportedChainEntry[] | undefined): Promise<void>;
 
   /**
    * Wait until the product has actually talked to the host. This is the
@@ -316,6 +325,21 @@ export function createTestHostFixture(defaults: TestHostFixtureOptions) {
 
         async setNotificationBehavior(behavior: 'approve-all' | 'reject-all') {
           await page.evaluate((b) => window.__TEST_HOST__.setNotificationBehavior(b), behavior);
+        },
+
+        async setFeatureSupport(feature: string, supported: boolean | undefined) {
+          await page.evaluate(
+            (args) => window.__TEST_HOST__.setFeatureSupport(args.feature, args.supported),
+            { feature, supported },
+          );
+        },
+
+        async getFeatureSupport() {
+          return page.evaluate(() => window.__TEST_HOST__.getFeatureSupport());
+        },
+
+        async setSupportedChains(chains: SupportedChainEntry[] | undefined) {
+          await page.evaluate((c) => window.__TEST_HOST__.setSupportedChains(c), chains);
         },
 
         async waitForConnection(timeout = 30_000) {

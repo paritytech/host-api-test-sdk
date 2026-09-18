@@ -36,7 +36,7 @@ export function createHostCallbacks(options: CreateHostCallbacksOptions): Requir
     navigation: createNavigationCallbacks(state),
     notifications: createNotificationCallbacks(state),
     permissions: createPermissionCallbacks(state),
-    features: createFeatureCallbacks(networks),
+    features: createFeatureCallbacks(state, networks),
     productStorage: createProductStorageCallbacks(),
     coreStorage: createCoreStorageCallbacks(),
     chain: createChainCallbacks({ store, networks }),

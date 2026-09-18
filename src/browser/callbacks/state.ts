@@ -3,7 +3,7 @@
  * than a class because `control-api.ts` mutates them directly.
  */
 
-import type { AuthState } from '@parity/truapi-host';
+import type { AuthState, HostChainEntry } from '@parity/truapi-host';
 import type {
   NavigationBehavior,
   NotificationBehavior,
@@ -106,6 +106,11 @@ export interface HostState {
   /** Listeners waiting on one preimage key, keyed by lowercased `0x`-hex. */
   preimageSubscribers: Map<string, Set<(value: Uint8Array | undefined) => void>>;
 
+  /** Feature tag → forced answer; absent means fall back to the derived one. */
+  featureOverrides: Map<string, boolean>;
+  /** Replaces the derived chain set entirely when set. */
+  supportedChainsOverride?: HostChainEntry[];
+
   /** One flat namespace: chat state is not partitioned per product. */
   chatRooms: Map<string, ChatRoom>;
   chatBots: Map<string, ChatBot>;
@@ -144,5 +149,7 @@ export function createHostState(): HostState {
     chatMessageLog: [],
     nextChatMessageId: 1,
     chatRoomSubscribers: new Set(),
+
+    featureOverrides: new Map(),
   };
 }

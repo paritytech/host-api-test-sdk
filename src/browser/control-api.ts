@@ -14,6 +14,7 @@ import type {
   NavigationBehavior,
   NotificationBehavior,
   PermissionBehavior,
+  SupportedChainEntry,
   TestHostAPI,
   Theme,
   ThemeInput,
@@ -245,6 +246,19 @@ export function buildControlApi(options: ControlApiOptions): TestHostAPI {
 
     setNotificationBehavior(behavior: NotificationBehavior) {
       state.notificationBehavior = behavior;
+    },
+
+    setFeatureSupport(feature: string, supported: boolean | undefined) {
+      if (supported === undefined) state.featureOverrides.delete(feature);
+      else state.featureOverrides.set(feature, supported);
+    },
+
+    getFeatureSupport() {
+      return Object.fromEntries(state.featureOverrides);
+    },
+
+    setSupportedChains(chains: SupportedChainEntry[] | undefined) {
+      state.supportedChainsOverride = chains;
     },
 
     dispose() {
