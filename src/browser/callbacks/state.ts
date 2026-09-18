@@ -135,6 +135,7 @@ export function createHostState(): HostState {
     devicePermissionStatuses: new Map(),
     navigationLog: [],
     notificationLog: [],
+
     navigationBehavior: 'approve-all',
     notificationBehavior: 'approve-all',
 
@@ -150,14 +151,15 @@ export function createHostState(): HostState {
     preimages: new Map(),
     preimageSubscribers: new Map(),
 
+    featureOverrides: new Map(),
+    supportedChainsOverride: undefined,
+
+    productStorage: new Map(),
+
     chatRooms: new Map(),
     chatBots: new Map(),
     chatMessageLog: [],
     nextChatMessageId: 1,
     chatRoomSubscribers: new Set(),
-
-    featureOverrides: new Map(),
-
-    productStorage: new Map(),
   };
 }
