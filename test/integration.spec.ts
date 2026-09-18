@@ -1828,9 +1828,9 @@ test.describe('Initial configuration', () => {
     try {
       const product = await loadHostAndProduct(page, host.url, productServer.url);
 
-      // Subscribed only after connecting, so the FIRST delivered value is what
-      // the product saw at startup — proving the override reached it before
-      // any `set*` call could, not merely that host state reads back correctly.
+      // The guard is the exact single-element list below: `toEqual([...Dark])`
+      // fails if a second, later value (e.g. the pre-override default) is ever
+      // delivered first. Nothing here observes the product's own boot sequence.
       await product.evaluate(() => {
         window.__THEME_SUB__ = window.__TEST_PRODUCT__.subscribeTheme();
         window.__LOCALE_SUB__ = window.__TEST_PRODUCT__.subscribeLocale();
@@ -1850,6 +1850,8 @@ test.describe('Initial configuration', () => {
         window.__TEST_PRODUCT__.signRawProduct('test-product.dot', 0, '0x00'),
       );
       expect(result.ok).toBe(false);
+      const log = await page.evaluate(() => window.__TEST_HOST__.getUserConfirmationLog());
+      expect(log.some((entry) => entry.approved === false)).toBe(true);
 
       await product.evaluate(() => {
         window.__THEME_SUB__.unsubscribe();

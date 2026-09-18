@@ -53,12 +53,15 @@ interface HostConfig {
   behaviors?: InitialBehaviors;
 }
 
-const DEVICE_PERMISSION_STATUSES: readonly DevicePermissionStatus[] = [
-  'Granted',
-  'Denied',
-  'NotDetermined',
-  'NotApplicable',
-];
+// A `Record` over the union rather than a restated array: if `DevicePermissionStatus`
+// gains a member upstream, this fails to compile instead of silently rejecting
+// a now-valid status at runtime.
+const DEVICE_PERMISSION_STATUSES: Record<DevicePermissionStatus, true> = {
+  Granted: true,
+  Denied: true,
+  NotDetermined: true,
+  NotApplicable: true,
+};
 
 /**
  * The page config crosses a JSON boundary a plain-JS caller can put anything
@@ -66,7 +69,7 @@ const DEVICE_PERMISSION_STATUSES: readonly DevicePermissionStatus[] = [
  * the field — a bad value must throw rather than silently misreport.
  */
 function toDevicePermissionStatus(value: string): DevicePermissionStatus {
-  if ((DEVICE_PERMISSION_STATUSES as readonly string[]).includes(value)) {
+  if (Object.hasOwn(DEVICE_PERMISSION_STATUSES, value)) {
     return value as DevicePermissionStatus;
   }
   throw new Error(`invalid device permission status: "${value}"`);
