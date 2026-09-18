@@ -52,8 +52,14 @@ export interface TestHost {
   /** Clear the permission log */
   clearPermissionLog(): Promise<void>;
 
-  /** Force the OS status `permissionStatus.devicePermissionStatus` reports for one device permission. */
-  setDevicePermissionStatus(type: HostDevicePermissionRequest, status: DevicePermissionStatus): Promise<void>;
+  /**
+   * Force the OS status `permissionStatus.devicePermissionStatus` reports for
+   * one device permission; `undefined` restores the default status.
+   */
+  setDevicePermissionStatus(
+    type: HostDevicePermissionRequest,
+    status: DevicePermissionStatus | undefined,
+  ): Promise<void>;
 
   /** The forced device-permission statuses currently in effect. */
   getDevicePermissionStatuses(): Promise<Record<string, DevicePermissionStatus>>;
@@ -269,7 +275,10 @@ export function createTestHostFixture(defaults: TestHostFixtureOptions) {
           await page.evaluate(() => window.__TEST_HOST__.clearPermissionLog());
         },
 
-        async setDevicePermissionStatus(type: HostDevicePermissionRequest, status: DevicePermissionStatus) {
+        async setDevicePermissionStatus(
+          type: HostDevicePermissionRequest,
+          status: DevicePermissionStatus | undefined,
+        ) {
           await page.evaluate(
             (args) => window.__TEST_HOST__.setDevicePermissionStatus(args.type, args.status),
             { type, status },

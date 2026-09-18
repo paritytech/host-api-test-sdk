@@ -135,8 +135,12 @@ export function buildControlApi(options: ControlApiOptions): TestHostAPI {
       state.permissionLog.length = 0;
     },
 
-    setDevicePermissionStatus(type: HostDevicePermissionRequest, status: DevicePermissionStatus) {
-      state.devicePermissionStatuses.set(type, status);
+    setDevicePermissionStatus(
+      type: HostDevicePermissionRequest,
+      status: DevicePermissionStatus | undefined,
+    ) {
+      if (status === undefined) state.devicePermissionStatuses.delete(type);
+      else state.devicePermissionStatuses.set(type, status);
     },
 
     getDevicePermissionStatuses() {

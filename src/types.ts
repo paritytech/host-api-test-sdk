@@ -282,8 +282,14 @@ export interface TestHostAPI {
   getPermissionLog(): PermissionLogEntry[];
   /** Clear the permission log. */
   clearPermissionLog(): void;
-  /** Force the OS status `permissionStatus.devicePermissionStatus` reports for one device permission. */
-  setDevicePermissionStatus(type: HostDevicePermissionRequest, status: DevicePermissionStatus): void;
+  /**
+   * Force the OS status `permissionStatus.devicePermissionStatus` reports for
+   * one device permission; `undefined` restores the default status.
+   */
+  setDevicePermissionStatus(
+    type: HostDevicePermissionRequest,
+    status: DevicePermissionStatus | undefined,
+  ): void;
   /** The forced device-permission statuses currently in effect. */
   getDevicePermissionStatuses(): Record<string, DevicePermissionStatus>;
   /** Get the log of navigation attempts (hostApi.navigateTo) from the product. */
