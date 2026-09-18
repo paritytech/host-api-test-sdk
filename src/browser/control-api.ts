@@ -1,17 +1,6 @@
 /**
- * `window.__TEST_HOST__` — the surface Playwright drives the host from.
- *
- * Every member is a port of the pre-migration control API in
- * `host-runtime.ts`: same names, same return shapes, same observable
- * behaviour, so existing consumers do not have to change. What moved is
- * where the state lives — `HostState` for the callback groups, the SSO
- * responder for the signing log, and the product provider for the one
- * control (`injectChatAction`) that pushes *into* the product rather than
- * reading something out of the host.
- *
- * It is a separate module from `host-runtime.ts` because the runtime's job
- * is the boot sequence; this is the readout over the state that sequence
- * produced.
+ * `window.__TEST_HOST__` — the surface Playwright drives the host from: the
+ * readout over the state `host-runtime.ts`'s boot sequence produced.
  */
 import { blake2b } from '@noble/hashes/blake2.js';
 import { scale } from '@parity/truapi';
@@ -28,11 +17,7 @@ import type {
   ThemeInput,
 } from '../types.js';
 
-/**
- * Host permission names mapped to the Permissions Policy directives that
- * belong in the product iframe's `allow` attribute. Matches dot.li's own
- * mapping, and is the reason `grantPermission` touches the iframe at all.
- */
+/** Matches dot.li's own mapping, and is why `grantPermission` touches the iframe. */
 export const DEVICE_PERMISSION_POLICY: Record<string, string> = {
   Camera: 'camera',
   Microphone: 'microphone',
@@ -43,10 +28,7 @@ export const DEVICE_PERMISSION_POLICY: Record<string, string> = {
   Biometrics: 'publickey-credentials-get',
 };
 
-/**
- * Build the iframe `allow` attribute for the currently granted permissions.
- * Clipboard access is always present, as it was pre-migration.
- */
+/** Clipboard access is unconditional; everything else follows the grants. */
 export function buildAllowAttribute(granted: Iterable<string>): string {
   const policies = ['clipboard-read', 'clipboard-write'];
   for (const tag of granted) {
@@ -68,25 +50,15 @@ function normalizeTheme(input: ThemeInput): Theme {
 
 export interface ControlApiOptions {
   state: HostState;
-  /**
-   * The SSO responder that answers signing requests. Account switching
-   * replaces the live responder, so `host-runtime.ts` passes a stable facade
-   * that forwards to whichever one is current.
-   */
+  /** A stable facade: account switching replaces the live responder underneath. */
   responder: SsoResponder;
   runtime: WorkerPairingHostRuntime;
   iframeHost: IframeHost;
   /** The live product provider. Re-created when accounts switch. */
   provider(): TrUApiProductProvider;
-  /**
-   * Re-mint the session for these dev accounts, re-activate it, and
-   * re-create the product provider. Resolves once routing has resumed.
-   */
+  /** Re-mint and re-activate the session; resolves once routing has resumed. */
   setAccounts(names: string[]): Promise<void>;
-  /**
-   * The PRODUCT connection: `'disconnected'` until a frame has actually
-   * arrived from the product over the bridge.
-   */
+  /** The PRODUCT connection — `'connected'` only once a frame has crossed the bridge. */
   connectionStatus(): string;
   /** Tear down the MessagePort ↔ provider bridge. */
   disposeBridge(): void;
@@ -118,18 +90,12 @@ export function buildControlApi(options: ControlApiOptions): TestHostAPI {
     },
 
     getConnectionStatus() {
-      // The product's own connection, as pre-migration's
-      // `subscribeProductConnectionStatus` reported it — this is the gate
-      // `waitForConnection()` waits on, so it must not be true before the
-      // product has spoken.
       return options.connectionStatus();
     },
 
     getChainStatus() {
-      // This host's session, as the CORE last reported it — the only chain
-      // this host serves unconditionally is the in-page loopback People
-      // store, which is up as soon as the session is. Silence before the
-      // first report is the activation still in flight.
+      // The core's own report; silence before the first one is activation
+      // still in flight.
       if (!state.authState) return 'connecting';
       return state.authState.tag === 'Connected' ? 'connected' : 'disconnected';
     },
@@ -193,18 +159,15 @@ export function buildControlApi(options: ControlApiOptions): TestHostAPI {
       state.chatBots.clear();
       state.chatMessageLog.length = 0;
       state.nextChatMessageId = 1;
-      // Subscribers are deliberately kept: they are the core's own live
-      // `subscribeChatRooms` streams, and dropping them would silently stop
-      // a product from ever seeing another room. Push the empty list instead.
+      // Subscribers are kept: they are the core's live `subscribeChatRooms`
+      // streams, and dropping one stops that product seeing another room.
       for (const notify of state.chatRoomSubscribers) notify([]);
     },
 
     injectChatAction(action: ChatActionInput): Promise<void> {
-      // Not a callback-group read: an inbound chat action goes out through
-      // the product's own runtime connection, which buffers it until the
-      // product subscribes. The promise is returned rather than swallowed, so
-      // a payload the codec rejects fails the caller's `await` instead of
-      // resolving with nothing delivered.
+      // Goes out over the product's own runtime connection, which buffers it
+      // until the product subscribes. The promise is returned, not swallowed,
+      // so a rejected payload fails the caller's `await`.
       const live = provider();
       if (!live.publishChatAction) {
         return Promise.reject(new Error('this product connection cannot publish chat actions'));
@@ -242,8 +205,8 @@ export function buildControlApi(options: ControlApiOptions): TestHostAPI {
 
     getTheme(): Theme {
       const { name, variant } = state.theme;
-      // `HostState`'s `value` is optional on the `Default` arm; the public
-      // `Theme` spells it out, so normalise rather than assert.
+      // `HostState` leaves `value` optional on `Default`; the public `Theme`
+      // spells it out.
       return { name: name.tag === 'Default' ? { tag: 'Default', value: undefined } : name, variant };
     },
 
@@ -254,8 +217,7 @@ export function buildControlApi(options: ControlApiOptions): TestHostAPI {
 
     dispose() {
       options.disposeBridge();
-      // The responder holds a subscription on the loopback store; dropping it
-      // here keeps a disposed host from answering statements.
+      // Holds a loopback-store subscription: a disposed host must stop answering.
       responder.dispose();
       runtime.dispose();
       iframeHost.dispose();

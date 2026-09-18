@@ -1,17 +1,9 @@
 /**
- * Push-to-async-iterator bridge, plus the three callback groups the core
- * pulls as `AsyncIterable`s: theme, locale, and preimage lookup.
- *
- * All three — and the chain connection's `responses()` in `chain.ts` — are
- * fed by ordinary pushes (a `Set` of subscriber callbacks, a per-key waiter
- * map, a loopback store's `onResponse` callback), but the core pulls them
- * via `for await`. `createPushChannel` is the one bridge shared by all four:
- * `push` feeds it from the producer side, and the `AsyncIterable` it returns
- * hands items to whichever consumer pulls — buffering anything pushed
- * before the first pull so nothing pushed early is dropped, and running
- * `onClose` (unsubscribing from whatever is feeding it) exactly once,
- * whether the stream is closed explicitly or the consumer stops pulling
- * (`for await...break` calls the iterator's `return()`).
+ * Push-to-async-iterator bridge, plus the callback groups the core pulls as
+ * `AsyncIterable`s. Everything feeding these is push-shaped while the core
+ * pulls with `for await`, so `createPushChannel` buffers anything pushed before
+ * the first pull and runs `onClose` exactly once — on an explicit close or on
+ * the `return()` a `for await ... break` triggers.
  */
 import { ok } from 'neverthrow';
 import { type GenericError, type HostLocaleSubscribeItem, type HostThemeSubscribeItem, type Result, scale } from '@parity/truapi';
@@ -73,12 +65,7 @@ export function createPushChannel<T>(onClose?: () => void): PushChannel<T> {
   return { push, close, iterable };
 }
 
-/**
- * Host theme source. Ported from `host-runtime.ts`'s `handleThemeSubscribe` /
- * `themeSubscribers`: every subscription is sent the current theme
- * immediately, then future `setTheme` calls (the control API pushes onto
- * `state.themeSubscribers` directly, matching the pre-migration pattern).
- */
+/** Every subscription is replayed the current theme before future `setTheme` pushes. */
 export function createThemeCallbacks(state: HostState): {
   subscribeTheme(): AsyncIterable<Result<HostThemeSubscribeItem, GenericError>>;
 } {
@@ -95,11 +82,7 @@ export function createThemeCallbacks(state: HostState): {
   };
 }
 
-/**
- * Host locale source. No pre-migration analogue — a single static default
- * emitted once, following the same subscribe-then-replay shape as theme so
- * a later control-plane addition can drive it the same way.
- */
+/** A single static default, in the same subscribe-then-replay shape as theme. */
 export function createLocaleCallbacks(state: HostState): {
   subscribeLocale(): AsyncIterable<Result<HostLocaleSubscribeItem, GenericError>>;
 } {
@@ -116,12 +99,7 @@ export function createLocaleCallbacks(state: HostState): {
   };
 }
 
-/**
- * Host preimage backend. Ported from `host-runtime.ts`'s
- * `handlePreimageLookupSubscribe`: emits the current value (or `undefined`
- * for a miss) immediately, then whatever `seedPreimage` / a product's
- * `preimageSubmit` deliver for that exact key later.
- */
+/** Emits the current value (`undefined` for a miss) first, then later writes to that key. */
 export function createPreimageCallbacks(state: HostState): {
   lookupPreimage(key: Uint8Array): AsyncIterable<Result<Uint8Array | undefined, GenericError>>;
 } {

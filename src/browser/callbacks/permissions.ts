@@ -1,11 +1,4 @@
-/**
- * Permissions: device and remote prompts.
- *
- * Ported from `host-runtime.ts`'s `handlePermission` / `handleDevicePermission`
- * — same approve-all / reject-all / custom-function decision, the same
- * `grantedPermissions` bookkeeping, and the same `permissionLog` entry shape
- * and console logging.
- */
+/** Permissions: device and remote prompts, answered from `state.permissionBehavior`. */
 import type {
   HostDevicePermissionRequest,
   HostDevicePermissionResponse,

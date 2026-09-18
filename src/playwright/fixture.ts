@@ -11,27 +11,16 @@ export interface TestHost {
   productFrame(): FrameLocator;
 
   /**
-   * Re-mint the host session under one account.
-   *
-   * `name` is matched case-insensitively against the `accounts` the fixture
-   * was configured with, so a custom `{ name, uri }` entry is switched to by
-   * its name and signs with its own URI. A dev name that is not in that
-   * roster falls back to the bare derivation (`'bob'` → `//Bob`).
-   *
-   * The product iframe is NOT reloaded: its `MessagePort` is transferred once
-   * at load and cannot be handed over again, so the session is re-installed
-   * and the product's core connection replaced underneath it. The product
-   * keeps running and is not told; reload the page yourself if a test needs
-   * the product to re-initialise. `getConnectionStatus()` returns to
-   * `'disconnected'` until the product's next frame arrives.
+   * Re-mint the host session under one account, matched case-insensitively
+   * against the configured `accounts` (an unknown dev name falls back to
+   * `'bob'` → `//Bob`). The product iframe is NOT reloaded and the product is
+   * not told — reload the page yourself if it must re-initialise.
    */
   switchAccount(name: DevAccountName | (string & {})): Promise<void>;
 
   /**
-   * Replace the whole roster. The FIRST name becomes the active identity and
-   * is the only account that signs — the SSO session holds exactly one. The
-   * rest are switch targets for a later `switchAccount`. Names resolve the
-   * same way as in `switchAccount`.
+   * Replace the whole roster. The FIRST name becomes the active identity and is
+   * the only account that signs; the rest are later `switchAccount` targets.
    */
   setAccounts(names: Array<DevAccountName | (string & {})>): Promise<void>;
 
@@ -83,11 +72,7 @@ export interface TestHost {
   /** Clear all chat state (rooms, bots, messages, subscribers) */
   clearChatState(): Promise<void>;
 
-  /**
-   * Inject an incoming chat action (peer message) into the product.
-   *
-   * Rejects if the action could not be delivered.
-   */
+  /** Inject an incoming chat action into the product; rejects if it could not be delivered. */
   injectChatAction(action: ChatActionInput): Promise<void>;
 
   /** List preimages known to the test host (submitted + seeded) */
@@ -99,40 +84,27 @@ export interface TestHost {
   /** Clear all preimages */
   clearPreimages(): Promise<void>;
 
-  /**
-   * Get the current theme as the upstream struct (`{ name, variant }`).
-   * Use `theme.variant` for the light/dark sub-mode (`'Light' | 'Dark'`).
-   */
+  /** Get the current theme; `theme.variant` is the light/dark sub-mode. */
   getTheme(): Promise<Theme>;
 
-  /**
-   * Set the theme and notify subscribers.
-   *
-   * Accepts `'light' | 'dark'` (mapped to the host's `Default` theme with
-   * the matching variant) or the full `{ name, variant }` struct.
-   */
+  /** Set the theme and notify subscribers. `'light' | 'dark'` map to the host's `Default` theme. */
   setTheme(theme: ThemeInput): Promise<void>;
 
   /**
-   * Wait until the embedded product has actually talked to the host — the
-   * first wire frame off its `MessagePort`. This is the readiness gate; the
-   * presence of `window.__TEST_HOST__` says nothing about the product.
+   * Wait until the product has actually talked to the host. This is the
+   * readiness gate — `window.__TEST_HOST__` says nothing about the product.
    */
   waitForConnection(timeout?: number): Promise<void>;
 
   /**
-   * The product connection: `'disconnected'` until the product's first wire
-   * frame, `'connected'` after. Returns to `'disconnected'` for the duration
-   * of an account switch. Prefer `waitForConnection()` as a gate; read this
+   * The product connection. Prefer `waitForConnection()` as a gate; read this
    * when a test needs to assert the product went quiet.
    */
   getConnectionStatus(): Promise<string>;
 
   /**
-   * The host's own session: `'connecting'` until it activates, then
-   * `'connected'`, or `'disconnected'` if an account switch failed to
-   * re-establish it. This is what carries local signing, so a switch that
-   * leaves it `'disconnected'` means no signature will ever come back.
+   * The host's own session, which is what carries local signing: a switch that
+   * leaves this `'disconnected'` means no signature will ever come back.
    */
   getChainStatus(): Promise<string>;
 }
@@ -141,9 +113,8 @@ export interface TestHostFixtureOptions {
   /** URL of the product to test */
   productUrl: string;
   /**
-   * The account roster — dev names or custom `{ name, uri }` (default:
-   * `['alice']`). The FIRST entry is the active identity and the only account
-   * that signs; the rest are targets `switchAccount` can name later.
+   * The account roster (default `['alice']`). The FIRST entry is the active
+   * identity and the only account that signs.
    */
   accounts?: CreateTestHostOptions['accounts'];
   /** Networks the host can route (default: [PASEO_ASSET_HUB]) */
@@ -151,12 +122,7 @@ export interface TestHostFixtureOptions {
   /** Map a product's account subtree to a specific account, keyed by the bare
    * product id (see `CreateTestHostOptions.productAccounts`) */
   productAccounts?: CreateTestHostOptions['productAccounts'];
-  /**
-   * Trusted executable kind declared for the product (default: `'App'`).
-   *
-   * Set `'Worker'` to exercise chat — the core denies every Chat entry point
-   * for any other kind. See `CreateTestHostOptions.executionKind`.
-   */
+  /** Default `'App'`; set `'Worker'` to exercise chat, which the core serves for no other kind. */
   executionKind?: CreateTestHostOptions['executionKind'];
 }
 
@@ -173,10 +139,8 @@ export function createTestHostFixture(defaults: TestHostFixtureOptions) {
 
       await page.goto(server.url);
 
-      // The host page boots the WASM core in a worker, mints and activates its
-      // SSO session and embeds the product before it publishes its control
-      // plane, so this is the gate on the HOST being up. It says nothing about
-      // the product — `waitForConnection()` is that gate.
+      // The control plane is published last, so this gates on the HOST being
+      // up. The product is a separate gate — `waitForConnection()`.
       await page.waitForFunction(() => !!window.__TEST_HOST__, { timeout: 30_000 });
 
       const testHost: TestHost = {
@@ -186,11 +150,9 @@ export function createTestHostFixture(defaults: TestHostFixtureOptions) {
           return page.frameLocator('#product-frame');
         },
 
-        // Both of these return the host's own promise, which `page.evaluate`
-        // awaits: it resolves only once the new session is active and the
-        // product provider has been replaced over the same port. There is
-        // nothing further to wait on — the iframe is deliberately never
-        // reloaded, so waiting on it would gate on nothing.
+        // `page.evaluate` awaits the host's own promise, which resolves once
+        // the session is active and the provider replaced. Nothing further to
+        // wait on: the iframe is deliberately never reloaded.
         async switchAccount(name: DevAccountName | (string & {})) {
           await page.evaluate((n) => window.__TEST_HOST__.switchAccount(n), name);
         },
@@ -264,8 +226,8 @@ export function createTestHostFixture(defaults: TestHostFixtureOptions) {
         },
 
         async injectChatAction(action: ChatActionInput) {
-          // The arrow returns the host's promise, so Playwright awaits it and
-          // a delivery failure surfaces here rather than in the page console.
+          // Returning the host's promise makes a delivery failure surface here
+          // rather than in the page console.
           await page.evaluate((a) => window.__TEST_HOST__.injectChatAction(a), action);
         },
 
@@ -310,14 +272,12 @@ export function createTestHostFixture(defaults: TestHostFixtureOptions) {
 
       await use(testHost);
 
-      // Cleanup
       await page.evaluate(() => window.__TEST_HOST__?.dispose());
       await server.close();
     },
   };
 }
 
-// Augment Window type for Playwright evaluate calls
 declare global {
   interface Window {
     __TEST_HOST__: TestHostAPI;

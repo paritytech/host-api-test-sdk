@@ -1,10 +1,6 @@
 /**
- * Genesis hash identifying the in-page loopback statement store.
- *
- * The core opens its SSO channel by asking the host to connect to the People
- * chain. Nothing real is behind it here, so a fixed synthetic hash marks the
- * connection the loopback store answers — distinct from the all-zero hash,
- * which declares "this host has no such chain".
+ * Synthetic genesis marking the connection the in-page loopback store answers.
+ * Distinct from the all-zero hash, which declares an absent chain.
  */
 export const PEOPLE_GENESIS_HASH = new Uint8Array(32).fill(1);
 

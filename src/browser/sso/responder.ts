@@ -1,34 +1,18 @@
 /**
- * The peer half of the SSO signing session, served in-page.
+ * The peer half of the SSO signing session, served in-page: decrypt the request
+ * off the loopback statement store, sign with a dev account, publish the reply
+ * back on `sessionIdPeer`. No handler here touches a chain.
  *
- * The WASM core never signs. Every signing request is forwarded to the paired
- * wallet as an encrypted statement on the People chain. This SDK has no wallet
- * and no network, so the host mints both halves of the session and answers as
- * the peer here: decrypt the request off the loopback statement store, sign
- * with a dev account, publish the reply back on `sessionIdPeer`.
+ * Three rules are load-bearing, all from `../host-rust-core`:
  *
- * Three details are load-bearing, all verified against
- * `../host-rust-core` at the `@parity/truapi 0.17.0` release tag:
- *
- * 1. Each entry of `StatementData.request.data` is a `RemoteMessageEnvelope`
- *    (`message_id` + versioned body), and every reply must echo that
- *    `message_id` as `respondingTo` — `reply_matcher` in
- *    `runtime/sso_remote.rs` discards anything else.
- * 2. Application replies travel as a `StatementData.request` frame, not a
- *    `response` frame. `StatementData.response` is only the transport
- *    acknowledgement (`response_code == 0`), and the core will not surface a
- *    reply until it has seen that ack for the request id it submitted. The
- *    responder therefore publishes an ack first, then the replies.
- * 3. `decode_sso_session_statement` treats a statement signed by `ssPublicKey`
- *    as the core's own echo and reads nothing but the ack from it. Application
- *    replies must be signed by the key behind `identityAccountId` — hence
- *    `session.identitySecret`.
- *
- * No handler here touches a chain. In particular `ResourceAllocationRequest`
- * is answered with granted allowance slots: a pairing host obtains allowances
- * by asking its peer, and only a signing host would submit
- * `Resources.set_statement_store_account`. Answering it locally is what keeps
- * "no network" true.
+ * 1. Every reply must echo the request envelope's `message_id` as
+ *    `respondingTo` — `reply_matcher` (`runtime/sso_remote.rs`) discards
+ *    anything else.
+ * 2. Replies travel as a `request` frame; `StatementData.response` is only the
+ *    transport ack, and the core surfaces no reply before it. Ack goes first.
+ * 3. Replies must be signed by `identitySecret`, NOT `ssSecret`:
+ *    `decode_sso_session_statement` reads an `ssPublicKey`-signed statement as
+ *    the core's own echo and takes nothing but the ack from it.
  */
 import { blake2b } from '@noble/hashes/blake2.js';
 import { TypeRegistry } from '@polkadot/types';
@@ -59,12 +43,7 @@ export interface SigningLogEntry {
 export interface ResponderSession extends ExternalSessionOptions {
   /** The peer's X25519 secret — the other half of the channel the host minted. */
   peerEncSecret: Uint8Array;
-  /**
-   * 64-byte sr25519 secret whose public key is `identityAccountId`.
-   *
-   * Replies are signed with it, because the core only accepts application
-   * messages from the peer identity (see the module note).
-   */
+  /** 64-byte sr25519 secret whose public key is `identityAccountId`; signs every reply. */
   identitySecret: Uint8Array;
 }
 
@@ -72,12 +51,8 @@ export interface ResponderOptions {
   store: LoopbackStore;
   session: ResponderSession;
   /**
-   * Resolve the dev keypair behind one product account.
-   *
-   * `derivationIndex` is the SCALE `DerivationIndex` as decoded, or
-   * `undefined` for `ProductSubtreeRequest`, which names a product's subtree
-   * root and carries no index. Legacy accounts never reach this callback: they
-   * name a bare `AccountId`, and only the session identity can answer for one.
+   * `derivationIndex` is `undefined` for `ProductSubtreeRequest`. Legacy
+   * accounts never reach this callback — only the session identity answers those.
    */
   resolveAccount: ResolveAccount;
 }
@@ -104,12 +79,8 @@ type SignPayloadData = Extract<
 >['value']['payload'];
 
 /**
- * The response variant, and the error flavour, each request is refused with.
- *
- * A handler that throws would otherwise leave the core waiting for a reply
- * that never comes, so every request gets an answer either way. The three
- * flavours are the three error types `messages.ts` pairs with these variants:
- * a plain `String`, a `RingVrfError`, or a `HostAccountSignVrfError`.
+ * How each request is refused. A handler that threw with no reply would leave
+ * the core waiting forever, so every request is answered either way.
  */
 const FAILURE_ROUTES = {
   SignRequest: ['SignResponse', 'string'],
@@ -172,11 +143,7 @@ function rawPayload(
     : { tag: 'Payload', value: payload.value.payload };
 }
 
-/**
- * Deterministic contextual alias, byte-for-byte what the pre-migration
- * `handleAccountGetAlias` returned: blake2-256 over the account public key
- * with a role label. Stable across runs so tests can assert exact values.
- */
+/** Stand-in alias, stable across runs so tests can assert exact values. */
 function contextualAlias(publicKey: Uint8Array) {
   return {
     context: scale.bytesToHex(digest(publicKey, encoder.encode('context'))),
@@ -185,14 +152,10 @@ function contextualAlias(publicKey: Uint8Array) {
 }
 
 /**
- * Sign a Substrate signer payload.
- *
- * `HostSignPayloadData` is the classic `SignerPayloadJSON`: hex fields whose
- * assembly into `method || extra || additionalSigned` depends on the named
- * signed extensions. `@polkadot/types` owns that table, so the pre-migration
- * `ExtrinsicPayload` path is kept rather than hand-rolled — only `pair.sign`
- * becomes `@scure/sr25519`, with the type prefix and the >256-byte blake2
- * hashing that polkadot-js applies reproduced here.
+ * Assembling `method || extra || additionalSigned` depends on the named signed
+ * extensions, and `@polkadot/types` owns that table — hence `ExtrinsicPayload`
+ * rather than hand-rolling it. The type prefix and the >256-byte blake2 hashing
+ * are what polkadot-js signers apply, reproduced here.
  */
 function signPayloadData(keypair: DevKeypair, payload: SignPayloadData): HexString {
   const registry = new TypeRegistry();
@@ -232,15 +195,9 @@ export function createSsoResponder(options: ResponderOptions): SsoResponder {
   };
 
   /**
-   * The keypair for a bare `AccountId`.
-   *
-   * A legacy account is the wallet's own identity account, and this host holds
-   * exactly one. Refusing anything else is what stops a mismatched
-   * `resolveAccount` from signing — and attributing, since `buildExtrinsic`
-   * embeds the public key — a transaction with an unrelated key. Mirrors
-   * `sign_raw`/`create_transaction` in
-   * `../host-rust-core/rust/crates/truapi-server/src/runtime/signing_host.rs`,
-   * which error when the resolved public key is not the requested account.
+   * A legacy account is the wallet's own identity and this host holds exactly
+   * one; refusing anything else stops a transaction being signed, and
+   * attributed, to an unrelated key. Mirrors `runtime/signing_host.rs`.
    */
   const legacyAccount = (accountId: string): DevKeypair => {
     if (accountId !== scale.bytesToHex(session.identityAccountId)) {
@@ -294,8 +251,6 @@ export function createSsoResponder(options: ResponderOptions): SsoResponder {
     request: RemoteMessagePayload<'CreateTransactionWithLegacyAccountRequest'>,
   ): RemoteMessageValue {
     record('createTransaction', request.payload.value);
-    // The legacy signer is an `AccountId`; `legacyAccount` refuses any account
-    // this host does not hold rather than signing with a diverging key.
     return reply('CreateTransactionResponse', {
       success: true,
       value: buildExtrinsic(legacyAccount(request.payload.value.signer), request.payload.value),
@@ -315,14 +270,11 @@ export function createSsoResponder(options: ResponderOptions): SsoResponder {
   }
 
   /**
-   * Grant every requested allowance slot, locally.
-   *
-   * `slotAccountKey` is a 64-byte sr25519 secret the core adopts as the slot's
-   * signer (`StatementStoreAllowanceKey::from_secret_bytes`), so it is derived
-   * deterministically per product and resource rather than invented. The
-   * AutoSigning grant hands over the product subtree secret itself, which is
-   * why it must be the same key `ProductSubtreeRequest` reports — the core
-   * rejects a capability whose secret does not match the subtree it cached.
+   * Granted locally — asking a peer is how a pairing host gets allowances, and
+   * answering in-page is what keeps "no network" true. `slotAccountKey` is a
+   * secret the core adopts as the slot's signer verbatim, and the AutoSigning
+   * grant must hand over the same subtree secret `ProductSubtreeRequest`
+   * reports, or the core rejects the capability against its cached subtree.
    */
   function answerResourceAllocation(
     request: RemoteMessagePayload<'ResourceAllocationRequest'>,
@@ -347,9 +299,8 @@ export function createSsoResponder(options: ResponderOptions): SsoResponder {
           return allocated({
             tag: 'autoSigning',
             value: {
-              // Canonical form: the core validates this one with
-              // `SecretKey::from_bytes`, which refuses the ed25519-shifted
-              // encoding `@scure/sr25519` hands out. See `canonicalSecretKey`.
+              // `SecretKey::from_bytes` refuses the encoding `@scure/sr25519`
+              // hands out. See `canonicalSecretKey`.
               productRootPrivateKey: canonicalSecretKey(subtree.secretKey),
               ringVrfDomainEntropy: digest(
                 subtree.publicKey,
@@ -398,11 +349,7 @@ export function createSsoResponder(options: ResponderOptions): SsoResponder {
     });
   }
 
-  /**
-   * RFC-0023 VRF stand-in: `preOutput` is a deterministic digest of the
-   * account key and the transcript, `proof` an sr25519 signature over the same
-   * transcript. Same shape and same determinism as the alias stand-in.
-   */
+  /** RFC-0023 VRF stand-in: right shape, deterministic, not a real VRF. */
   function answerSignVrf(request: RemoteMessagePayload<'SignVrfRequest'>): RemoteMessageValue {
     const keypair = account(request.payload.account);
     const transcript = concat([
@@ -512,17 +459,10 @@ export function createSsoResponder(options: ResponderOptions): SsoResponder {
   // ---- transport ------------------------------------------------------------
 
   /**
-   * SCALE-encode one reply, degrading to a failure reply if it will not encode.
-   *
-   * Encoding used to happen after the ack had already been published, outside
-   * every `try`: a mis-shaped success payload threw there, the throw was
-   * swallowed by the store's submit-listener isolation, and the core waited
-   * forever for a reply that was never sent — with nothing on the console to
-   * say why. That is precisely the failure this module's error isolation exists
-   * to prevent, so encoding is part of building a reply now. A failure reply is
-   * a fixed shape (a tag and a string or a small struct), so the fallback
-   * encodes when the original did not; if even that fails there is nothing
-   * honest left to send, and the log is the only remaining signal.
+   * Encoding must happen here, before the ack is published: a throw later is
+   * swallowed by the store's listener isolation and the core then waits forever
+   * with nothing on the console. A failure reply is a fixed shape, so it
+   * encodes where a mis-shaped success payload did not.
    */
   function encodeReply(
     answered: RemoteMessageValue,
@@ -591,16 +531,13 @@ function withRespondingTo(message: RemoteMessageValue, respondingTo: string): Re
 }
 
 /**
- * The 64-byte sr25519 secret handed over as an allowance slot's signer.
- *
- * Derived, not random, so a product that re-requests the same allowance gets
- * the same slot account. The product id is folded in as a hashed junction
- * because a derivation junction label may not exceed 31 bytes.
+ * Derived, not random, so re-requesting an allowance yields the same slot
+ * account. The product id is folded in hashed because a junction label may not
+ * exceed 31 bytes.
  */
 function allowanceSlotSecret(kind: 'statement-store' | 'bulletin', productId: string): Uint8Array {
   const tag = scale.bytesToHex(digest(encoder.encode(`${kind}:${productId}`))).slice(2, 26);
-  // Canonical form for the same reason as the AutoSigning subtree secret: the
-  // core adopts these bytes as a signer verbatim.
+  // Canonical for the same reason as the AutoSigning subtree secret.
   return canonicalSecretKey(deriveDev('allowance', tag).secretKey);
 }
 

@@ -3,45 +3,27 @@ import type {
   ChatActionPayload,
   HostChatActionSubscribeItem,
 } from '@parity/truapi';
-// Referenced only by the drift guard under `ProductExecutionKind`, so it is
-// erased at emit. It has to be, because `@parity/truapi-host` is a
-// devDependency of this package — a published declaration that named it would
-// not resolve for a consumer.
+// Must stay type-only and erased at emit: `@parity/truapi-host` is a
+// devDependency, so a published declaration naming it would not resolve.
 import type { ProductExecutionKind as CoreProductExecutionKind } from '@parity/truapi-host';
 
-/**
- * A `0x`-prefixed hex string. Declared here rather than re-exported from a
- * host-api package so the published types stand on their own.
- */
+/** A `0x`-prefixed hex string. */
 export type HexString = `0x${string}`;
 
-/**
- * A network's protocol role, as `features.supportedChains()` reports it.
- * Re-exported from `@parity/truapi`, which this package depends on.
- */
+/** A network's protocol role, as `features.supportedChains()` reports it. */
 export type { ChainIdentifier };
 
 type Equal<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
 type Expect<T extends true> = T;
 
 /**
- * Trusted kind of executable the host declares the product to be.
- *
- * `App` (the default) is a visible full-page entrypoint — what an iframe-
- * embedded product genuinely is. `Widget` is a visible embedded surface and
- * carries the same capabilities as `App`. `Worker` is a headless executable,
- * and it is the ONLY kind the core lets serve the Chat modality: every Chat
- * entry point is denied for `App` and `Widget`. So a test that drives chat
- * must ask for `executionKind: 'Worker'`.
- *
- * Mirrored here rather than re-exported because `@parity/truapi-host` is a
- * devDependency of this package: a published declaration naming it would not
- * resolve for a consumer. `_ProductExecutionKindMirrorsCore` fails the build
- * if the two drift.
+ * Trusted kind of executable the host declares the product to be. `Worker` is
+ * the only kind the core lets serve Chat — it denies every Chat entry point for
+ * `App` and `Widget`.
  */
 export type ProductExecutionKind = 'App' | 'Widget' | 'Worker';
 
-/** Compile-time guard, erased at emit: this mirror must equal the core's enum. */
+/** Compile-time guard: this mirror must equal the core's enum. */
 type _ProductExecutionKindMirrorsCore = Expect<
   Equal<ProductExecutionKind, CoreProductExecutionKind>
 >;
@@ -53,24 +35,14 @@ export interface NetworkConfig {
   rpcUrl: string;
   tokenSymbol: string;
   tokenDecimals: number;
-  /**
-   * This network's protocol role, if known. Reported to products through
-   * `supportedChains()`; a network that omits it is left out of that report
-   * rather than labelled by guesswork.
-   */
+  /** Protocol role, if known. A network that omits it is left out of `supportedChains()`. */
   chain?: ChainIdentifier;
 }
 
 /**
  * One inbound chat action, as `injectChatAction` delivers it to the product.
- *
- * An alias of the protocol's own `HostChatActionSubscribeItem` rather than a
- * copy, so the two cannot drift: the host forwards the value straight into
- * the core, which decodes it against this exact schema. Building one needs
- * `ChatActionPayload`, re-exported below.
- *
- * NOTE: this makes the published types reference `@parity/truapi`. It must be
- * a real `dependency` of this package, not a devDependency.
+ * Aliasing the protocol type puts `@parity/truapi` in the published types, so
+ * it must stay a real `dependency`.
  */
 export type ChatActionInput = HostChatActionSubscribeItem;
 
@@ -81,23 +53,10 @@ export type DevAccountName = 'alice' | 'bob' | 'charlie' | 'dave' | 'eve' | 'fer
 export interface DevAccountInfo {
   name: string;
   /**
-   * A path of HARD junctions under the dev seed.
-   *
-   * The host derives in-page with `@scure/sr25519` — there is no keyring — so
-   * this is narrower than a polkadot-js SURI:
-   *  - `'//Alice'` — dev account
-   *  - `'//Alice//myapp'` — a further hard junction
-   *
-   * The exact rule: the string is split on `//` and every segment becomes one
-   * hard-junction LABEL, verbatim. Nothing else is interpreted. So a `/`
-   * inside a segment (`'//Alice//myapp/0'`) is part of that label rather than
-   * a polkadot-js soft junction, and does not name the address polkadot-js
-   * would give it.
-   *
-   * A mnemonic or a hex seed is therefore not a seed here either — it is read
-   * as a junction label. A label is capped at 31 bytes, so a real mnemonic or
-   * a `0x`-prefixed 32-byte seed throws on that limit; a SHORT hex string
-   * silently derives a real but unintended account instead. Pass neither.
+   * Hard junctions under the dev seed (`'//Alice//myapp'`) — NOT a polkadot-js
+   * SURI. The string is split on `//` and each segment is one hard-junction
+   * label verbatim; a `/` is part of the label, and a mnemonic or hex seed is
+   * read as a label too (a short one silently derives an unintended account).
    */
   uri: string;
 }
@@ -116,60 +75,24 @@ export interface CreateTestHostOptions {
   /** URL of the product to embed (e.g. http://localhost:3001) */
   productUrl: string;
   /**
-   * The account roster (default: `['alice']`).
-   *
-   * The FIRST entry is the active identity: the SSO session is minted for it,
-   * and it is the only account that signs. The rest are switch targets —
-   * `switchAccount` / `setAccounts` resolve a name against this roster
-   * case-insensitively, which is how a custom `{ name, uri }` entry keeps its
-   * own URI when a test switches to it.
-   *
-   * This is NOT a legacy-account list. `getLegacyAccounts()` answers with an
-   * empty vector whatever the host holds — the core never enumerates them —
-   * and a legacy request naming any account but the active identity is
-   * refused, because the SSO session carries exactly one.
+   * The account roster (default: `['alice']`). The FIRST entry is the active
+   * identity — the SSO session is minted for it and it is the only account that
+   * signs; the rest are targets `switchAccount` resolves case-insensitively.
    */
   accounts?: Account[];
-  /**
-   * Networks the host can route, matched by genesis hash.
-   */
+  /** Networks the host can route, matched by genesis hash. */
   networks?: NetworkConfig[];
   /** Port to listen on (default: 0 = random available port) */
   port?: number;
   /**
-   * Trusted executable kind the host declares for the embedded product
-   * (default: `'App'`).
-   *
-   * An iframe-embedded product really is an `App`, so that is the default and
-   * it is what a host should report. Set `'Worker'` only to exercise the Chat
-   * modality: the core denies every Chat entry point unless the connection's
-   * execution kind is `Worker`.
+   * Trusted executable kind the host declares for the product (default `'App'`).
+   * Set `'Worker'` to exercise Chat, which the core serves for no other kind.
    */
   executionKind?: ProductExecutionKind;
   /**
-   * Map a product's account SUBTREE to a specific account.
-   *
-   * Keys are bare product identifiers (e.g. `"myapp.dot"`). Values are dev
-   * account names or custom `{ name, uri }` objects.
-   *
-   * The host answers one question per product — which keypair is that
-   * product's subtree root — and the core derives every indexed account from
-   * it itself, as a soft junction. So an entry moves ALL of a product's
-   * accounts together:
-   *
-   * ```ts
-   * productAccounts: {
-   *   'myapp.dot': 'bob',                                // subtree → //Bob
-   *   'other.dot': { name: 'Custom', uri: '//My//Custom' },
-   * }
-   * ```
-   *
-   * Without an entry the subtree is `//Selected//dotnsId` under the selected
-   * account, and index `n` is that subtree soft-derived at `index_bytes(n)`.
-   *
-   * Per-index keys (`"myapp.dot/0"`) are NOT accepted and throw: the core no
-   * longer asks the host for an indexed account, so such a key could not move
-   * an address. Use the bare product id instead.
+   * Map a product's account SUBTREE to an account, keyed by bare product id
+   * (`"myapp.dot"`). One entry moves ALL of that product's accounts, since the
+   * core derives each index from the subtree. Per-index keys throw.
    */
   productAccounts?: Record<string, Account>;
 }
@@ -197,7 +120,7 @@ export interface NotificationLogEntry {
   id: number;
   text: string;
   deeplink: string | undefined;
-  /** Upstream 0.7.9: future delivery time in epoch-ms, or undefined for immediate. */
+  /** Future delivery time in epoch-ms, or undefined for immediate. */
   scheduledAt: bigint | undefined;
   /** Set true once the product calls pushNotificationCancel with this id. */
   cancelled: boolean;
@@ -234,13 +157,7 @@ export interface PreimageEntry {
   timestamp: number;
 }
 
-/**
- * Host theme (host_theme_subscribe payload, upstream 0.8).
- *
- * `name` selects the active theme — `Default` for the host's built-in,
- * `Custom` for a named host-specific theme. `variant` is the light/dark
- * sub-mode (note the capitalization is `'Light' | 'Dark'`, upstream-aligned).
- */
+/** Host theme, as the `host_theme_subscribe` payload carries it. */
 export type Theme = {
   name: { tag: 'Default'; value: undefined } | { tag: 'Custom'; value: string };
   variant: 'Light' | 'Dark';
@@ -249,12 +166,7 @@ export type Theme = {
 /** Shorthand inputs accepted by `setTheme` — `'light' | 'dark'` map to `{ name: Default, variant: Light/Dark }`. */
 export type ThemeInput = 'light' | 'dark' | Theme;
 
-/**
- * Controls how the test host responds to remote permission requests.
- * - `'approve-all'` — auto-approve every request (default)
- * - `'reject-all'` — auto-reject every request
- * - `(tag: string, value: unknown) => boolean` — custom per-request decision
- */
+/** How the test host answers remote permission requests; `'approve-all'` is the default. */
 export type PermissionBehavior = 'approve-all' | 'reject-all' | ((tag: string, value: unknown) => boolean);
 
 /** Shape of window.__TEST_HOST__ — shared between browser bundle and Playwright fixture. */
@@ -264,18 +176,15 @@ export interface TestHostAPI {
   getSigningLog(): SigningLogEntry[];
   clearSigningLog(): void;
   /**
-   * The PRODUCT connection: `'disconnected'` until a frame has actually
-   * arrived from the embedded product, `'connected'` from then on. An account
-   * switch returns it to `'disconnected'` until the product speaks again.
-   * This is the readiness gate to wait on before driving a product.
+   * The PRODUCT connection — `'connected'` once a frame has arrived from it,
+   * back to `'disconnected'` on an account switch. The gate to wait on before
+   * driving a product.
    */
   getConnectionStatus(): string;
   /**
-   * This HOST's session: `'connecting'` until `activateExternalSession` has
-   * resolved, then `'connected'`; `'disconnected'` if an account switch
-   * failed to re-establish it. Named for the chain because the only chain
-   * this host serves unconditionally — the in-page loopback People store
-   * that carries signing — is up exactly when the session is.
+   * This HOST's session: `'connecting' | 'connected' | 'disconnected'`. Named
+   * for the chain because the in-page loopback People store that carries
+   * signing is up exactly when the session is.
    */
   getChainStatus(): string;
   /** Set how the host responds to remote permission requests. */
@@ -304,45 +213,22 @@ export interface TestHostAPI {
   getChatBots(): ChatBot[];
   /** Get the log of messages the product has posted to chat rooms. */
   getChatMessageLog(): ChatMessageLogEntry[];
-  /**
-   * Clear chat state: rooms, bots and the message log. Live
-   * `subscribeChatRooms` streams stay open and are pushed the now-empty
-   * room list.
-   */
+  /** Clear rooms, bots and the message log. Live streams stay open and are pushed the empty list. */
   clearChatState(): void;
   /**
-   * Inject an incoming chat action (e.g. a peer message) into the product.
-   *
-   * Published through the product's own runtime connection, which buffers it
-   * until the product subscribes to its chat action stream. The promise
-   * rejects if the action cannot be delivered — a payload the protocol codec
-   * refuses, or a connection that cannot reach Chat — so await it.
+   * Inject an incoming chat action into the product. Buffered until the product
+   * subscribes; rejects if the payload or the connection cannot carry it.
    */
   injectChatAction(action: ChatActionInput): Promise<void>;
   /** List all preimages known to the test host (submitted by product + seeded by test). */
   getPreimages(): PreimageEntry[];
-  /**
-   * Seed the test host with a preimage value. The key is derived as
-   * blake2b-256 of the value and returned. Any active `preimageLookup`
-   * subscriptions for that key will be notified.
-   */
+  /** Seed a preimage; returns its blake2b-256 key and notifies `preimageLookup` subscribers. */
   seedPreimage(value: Uint8Array): HexString;
   /** Clear all preimages. */
   clearPreimages(): void;
-  /**
-   * Get the current theme as the upstream struct
-   * (`{ name: { tag, value }, variant }`). Use `theme.variant` for the
-   * light/dark sub-mode (note the capitalization: `'Light' | 'Dark'`).
-   */
+  /** Get the current theme. */
   getTheme(): Theme;
-  /**
-   * Set the theme and notify subscribers.
-   *
-   * Accepts either a string shorthand (`'light' | 'dark'` — mapped to the
-   * host's `Default` theme with the matching variant) or the full
-   * `{ name, variant }` struct (e.g. to test product branches that read
-   * `theme.name`).
-   */
+  /** Set the theme and notify subscribers. */
   setTheme(theme: ThemeInput): void;
 
   dispose(): void;

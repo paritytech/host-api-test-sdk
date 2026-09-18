@@ -1,9 +1,4 @@
-/**
- * Extrinsic construction and raw signing.
- *
- * Ported from the pre-migration `host-runtime.ts`; the layout is unchanged, only
- * the key source moved from @polkadot/keyring to @scure/sr25519.
- */
+/** Extrinsic construction and raw signing. */
 import { blake2b } from '@noble/hashes/blake2.js';
 import { hexToBytes } from '@noble/hashes/utils.js';
 import { sign } from '@scure/sr25519';
@@ -67,13 +62,9 @@ const endsWith = (data: Uint8Array, suffix: Uint8Array) =>
   suffix.every((byte, i) => data[data.length - suffix.length + i] === byte);
 
 /**
- * Interpret a string payload the way polkadot-app does.
- *
- * `isHex` means a `0x` prefix *and* an even total length. A string that looks
- * like hex but is not valid hex is a hard error rather than silently signed as
- * UTF-8; anything else is signed as its UTF-8 bytes. Mirrors
- * `decode_payload_string` in
- * `../host-rust-core/rust/crates/truapi-server/src/runtime/signing_host.rs`.
+ * polkadot-app's `isHex` rule: a `0x` prefix *and* an even total length. A
+ * string that looks like hex but is not is a hard error rather than silently
+ * signed as UTF-8. Mirrors `decode_payload_string` (`runtime/signing_host.rs`).
  */
 function decodePayloadString(payload: string): Uint8Array {
   if (!payload.startsWith('0x') || payload.length % 2 !== 0) {
@@ -87,12 +78,9 @@ function decodePayloadString(payload: string): Uint8Array {
 }
 
 /**
- * The bytes a raw-signing request actually signs.
- *
- * A watermarked request is wrapped in `<Bytes>…</Bytes>` — the polkadot-app
- * convention that keeps a raw signature from being mistaken for an extrinsic —
- * unless the payload already carries the wrapper. The deprecated
- * `…Unwatermarked` request variants skip it. Mirrors `raw_payload_bytes`.
+ * The `<Bytes>…</Bytes>` watermark is the polkadot-app convention that keeps a
+ * raw signature from being mistaken for an extrinsic; it is not applied twice.
+ * Mirrors `raw_payload_bytes`.
  */
 export function rawPayloadBytes(payload: RawSignPayload, watermarked: boolean): Uint8Array {
   const raw = payload.tag === 'Bytes' ? payload.value : decodePayloadString(payload.value);

@@ -1,15 +1,4 @@
-/**
- * Notifications: records what the product asked to push instead of
- * displaying anything.
- *
- * Ported from `host-runtime.ts`'s `handlePushNotification` /
- * `handlePushNotificationCancel` — same id assignment and logging. One
- * deliberate deviation: the upstream `cancelNotification` contract is
- * documented as idempotent ("cancelling an already-fired or unknown id
- * still returns success"), unlike the pre-migration handler, which errored
- * on an unknown id. This follows the new contract rather than the old
- * behavior.
- */
+/** Notifications: records what the product asked to push instead of displaying it. */
 import type { HostPushNotificationRequest, HostPushNotificationResponse, NotificationId } from '@parity/truapi';
 import type { HostState } from './state.js';
 

@@ -75,15 +75,9 @@ describe('dev account derivation', () => {
     };
 
     /**
-     * Cross-implementation check against schnorrkel, NOT a self-computed pin.
-     *
-     * The three expected values below are the ones the core's own Rust tests
-     * assert in `truapi-server/src/host_logic/product_account.rs`
-     * (`root_keypair_from_entropy_regression_pin` and
-     * `wire_index_derivation_matches_the_mobile_vector`), where schnorrkel
-     * computed them. Reproducing the last one here proves `HDKD.secretSoft`
-     * is the counterpart of `derived_key_simple(ChainCode(cc), [])` — the
-     * junction `derive_product_public_key` applies — down to the byte.
+     * Cross-implementation check, NOT a self-computed pin: the expected values
+     * are schnorrkel's own, asserted by the Rust tests in
+     * `host_logic/product_account.rs`.
      */
     it("reproduces schnorrkel's product-account vector", () => {
       const root = secretFromSeed(entropyToMiniSecret(new Uint8Array(16).fill(0xab)));
@@ -91,8 +85,7 @@ describe('dev account derivation', () => {
         '0062ba8ae929ea64bc2ad6f21359e96a29e236a41d376d1c5ba76491da94fc72',
       );
 
-      // `//product//myapp.dot`, the hard subtree the core firewalls a product
-      // behind and the only thing it asks a host for.
+      // The hard subtree the core firewalls a product behind.
       const subtreeSecret = HDKD.secretHard(
         HDKD.secretHard(root, junction('product')),
         junction('myapp.dot'),
@@ -104,9 +97,8 @@ describe('dev account derivation', () => {
         address: ss58Address(publicKey, 42),
       };
 
-      // `derivation_index_bytes(DerivationIndex::Index(0))`, spelled out from
-      // the core's own `index_bytes_matches_ios_vector` rather than recomputed,
-      // so this test does not lean on `product-accounts.ts`.
+      // Spelled out from the core's `index_bytes_matches_ios_vector` so this
+      // test does not lean on `product-accounts.ts`.
       const indexZero = Uint8Array.from(
         '0000000012e86013736c5498f050b03cdc16957dff0e422fb92ca77ec3ab168f'.match(/../g)!,
         (byte) => Number.parseInt(byte, 16),
@@ -117,8 +109,7 @@ describe('dev account derivation', () => {
         '1c1ae478b564572f806ffa6352b4273d612beb01610b19f4e5bf444521cd5b5c',
       );
       expect(account.address).toBe('5ChZBnBw9eDQUMBhnXUKrGMdK5MTfGrca3T1xZZtBQhW8eis');
-      // The secret and public halves of the junction agree, which is what lets
-      // the core derive an address this host can then sign for.
+      // Secret and public halves of the junction agree.
       expect(hex(HDKD.publicSoft(subtree.publicKey, indexZero))).toBe(hex(account.publicKey));
     });
 

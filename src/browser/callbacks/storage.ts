@@ -1,16 +1,7 @@
 /**
- * Product and core storage: both in-memory `Map`s, never persisted.
- *
- * `productStorage` keys arrive already namespaced by the core, so they are
- * used as-is — no extra scoping is added here (unlike pre-migration's
- * `handleLocalStorageRead/Write/Clear`, which prefixed `localStorage` keys
- * with `test-host:` itself; that scoping is now the core's job).
- *
- * `coreStorage` keys are typed `CoreStorageKey` variants, encoded via
- * `encodeCoreStorageKey` (exported by `@parity/truapi-host`) into a stable
- * string so they can key a `Map`. Every run starts from a clean session —
- * this is a fresh `Map` per `createHostCallbacks()` call, with no backing
- * store to load from or persist to.
+ * Product and core storage: both in-memory `Map`s, never persisted, so every
+ * run starts clean. `productStorage` keys arrive already namespaced by the
+ * core, so no scoping is added here.
  */
 import { encodeCoreStorageKey } from '@parity/truapi-host';
 import type { CoreStorageKey } from '@parity/truapi-host';

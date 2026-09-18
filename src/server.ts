@@ -7,20 +7,16 @@ import { DEFAULT_CHAIN } from './networks.js';
 import type { CreateTestHostOptions, TestHostServer } from './types.js';
 
 /**
- * Where `build.mjs` puts the browser assets: the host runtime chunk, the worker
- * chunk, the shared chunks and the `.wasm` payloads.
- *
- * `import.meta.url` is this module's own file — `dist/server.js` for the ESM
- * build, and `dist/index.cjs` / `dist/playwright.cjs` for the CJS bundles, where
- * `build.mjs` defines it as `pathToFileURL(__filename)`. All three sit directly
- * in `dist/`, so `./host` beside them is the same directory in every case.
+ * Where `build.mjs` puts the browser assets. Every bundle that contains this
+ * module — `dist/server.js` and both `.cjs` bundles, where `build.mjs` defines
+ * `import.meta.url` — sits directly in `dist/`, so `./host` beside it resolves
+ * the same either way.
  */
 const ASSET_DIR = join(dirname(fileURLToPath(import.meta.url)), 'host');
 
 /**
- * `.js` matters: a module script served as anything but a JavaScript MIME type
- * is refused outright by the browser, which would break the whole page. `.wasm`
- * matters for `WebAssembly.instantiateStreaming`.
+ * `.js` matters: a browser refuses a module script served as anything else.
+ * `.wasm` matters for `WebAssembly.instantiateStreaming`.
  */
 const CONTENT_TYPES: Record<string, string> = {
   '.js': 'text/javascript; charset=utf-8',
@@ -83,7 +79,6 @@ function requestPath(req: IncomingMessage): string {
   try {
     return decodeURIComponent(new URL(req.url ?? '/', 'http://127.0.0.1').pathname);
   } catch {
-    // An undecodable path can only be a bad request; it never names an asset.
     return '/';
   }
 }
@@ -92,10 +87,8 @@ function sendHostPage(res: ServerResponse, html: string): void {
   res.writeHead(200, {
     'Content-Type': 'text/html; charset=utf-8',
     'Content-Length': Buffer.byteLength(html),
-    // Allow clipboard delegation to cross-origin iframes (Chrome 130+ enforcement).
-    // The 'allow' attribute on <iframe> can only delegate permissions the parent
-    // page itself has — without this header, clipboard-write is blocked for
-    // cross-origin iframes regardless of the iframe's 'allow' attribute.
+    // An iframe's `allow` can only delegate what the parent page itself has,
+    // so without this clipboard-write is blocked for the product (Chrome 130+).
     'Permissions-Policy': 'clipboard-read=*, clipboard-write=*',
   });
   res.end(html);
@@ -112,7 +105,6 @@ async function sendAsset(res: ServerResponse, path: string): Promise<void> {
   try {
     body = await readFile(file);
   } catch {
-    // Missing, unreadable, or a directory — all 404 rather than hanging the load.
     sendStatus(res, 404, 'Not Found');
     return;
   }

@@ -1,23 +1,11 @@
 /**
- * Chat: create/resolve rooms and bots, post messages, and stream the room
- * list.
+ * Chat: create/resolve rooms and bots, post messages, and stream the room list.
+ * Chat state is one flat namespace, so the `ProductContext` every handler takes
+ * goes unused.
  *
- * Ported from `host-runtime.ts`'s `handleChatCreateRoom`,
- * `handleChatBotRegistration`, `handleChatListSubscribe` and
- * `handleChatPostMessage` — the same New/Exists idempotence on a repeated
- * id, the same default `participatingAs: 'RoomHost'` for a room this host
- * creates, and the same `msg-<n>` message-id counter format.
- *
- * `subscribeChatRooms` takes a `product: ProductContext`, but — matching
- * pre-migration, which never partitioned chat state by product — chat rooms
- * are one flat namespace here and `product` goes unused.
- *
- * Pre-migration's `handleChatActionSubscribe` / `injectChatAction` (a peer
- * message or button press delivered *to* the product) has no equivalent on
- * `ChatPlatform`: the new architecture delivers that down the product's own
- * connection, not through a `HostCallbacks` subscription. There is nothing to
- * implement here for it — the control API's `injectChatAction` calls the
- * product provider's `publishChatAction` instead (`control-api.ts`).
+ * The inbound direction has no place here: an action delivered *to* a product
+ * travels down that product's own connection, which is why `injectChatAction`
+ * lives on the control API instead.
  */
 import { ok } from 'neverthrow';
 import type {

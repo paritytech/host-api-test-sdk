@@ -3,12 +3,10 @@ import { copyFileSync, mkdirSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-/** Everything the page loads at runtime: the entry chunks, the shared chunks, the wasm. */
 const HOST_ASSET_DIR = 'dist/host';
 
-// The chunks are content-hashed and esbuild does not clean its outdir, so a
-// rebuild after a dependency bump would otherwise leave the previous chunks
-// behind for `pnpm pack` to ship.
+// Content-hashed chunks, and esbuild does not clean its outdir: stale chunks
+// would otherwise be shipped by `pnpm pack`.
 rmSync(HOST_ASSET_DIR, { recursive: true, force: true });
 mkdirSync(HOST_ASSET_DIR, { recursive: true });
 
@@ -18,14 +16,11 @@ function resolveExport(specifier) {
 }
 
 /**
- * The core runs as Rust/WASM in a Web Worker, so the worker is its own entry
- * point rather than something the main chunk can inline: esbuild passes
- * `new Worker(new URL(...))` through verbatim, it does not bundle the target.
- * Naming the entries with an object pins the output basenames — `host-runtime.js`
- * and `worker-runtime.js` — regardless of how far apart the two source roots are
- * (one is in `src/`, the other in `node_modules/`), which is what lets
- * `src/browser/host-worker.ts` name `./worker-runtime.js` relative to its own
- * `import.meta.url`.
+ * esbuild passes `new Worker(new URL(...))` through verbatim rather than
+ * bundling the target, so the worker is its own entry point. Naming the entries
+ * with an object pins the output basenames despite the two source roots being
+ * far apart, which is what lets `host-worker.ts` name `./worker-runtime.js`
+ * relative to its own `import.meta.url`.
  */
 const browserResult = await build({
   entryPoints: {
@@ -44,27 +39,22 @@ const browserResult = await build({
   define: {
     'process.env.NODE_ENV': '"production"',
   },
-  // polkadot WASM crypto needs this
   conditions: ['browser'],
 });
 
 console.log(`Browser bundles built into ${HOST_ASSET_DIR}/`);
 
 /**
- * Copy the wasm payloads next to the chunk that asks for them.
+ * Copy each wasm payload next to the chunk that asks for it.
  *
  * Both wasm-pack glues resolve their payload with
- * `new URL('<name>_bg.wasm', import.meta.url)`, and esbuild passes that through
- * verbatim — the `.wasm` is never emitted, and the URL is resolved at runtime
- * against the URL of whichever chunk the glue ended up in. `splitting` puts
- * shared and dynamically imported chunks in the outdir root, so that is
- * `dist/host/`; the assertion below fails the build if a future esbuild (or a
- * `chunkNames` setting) ever moves one of them somewhere else, instead of
- * shipping a green build whose page 404s on its wasm at runtime.
+ * `new URL('<name>_bg.wasm', import.meta.url)`, which esbuild leaves verbatim —
+ * so the `.wasm` must sit in the directory the glue chunk lands in. The
+ * assertion fails the build if one ever moves, rather than shipping a green
+ * build whose page 404s on its wasm at runtime.
  *
- * `glue` is the input path suffix identifying the glue module, and `pkgEntry`
- * resolves the directory the payload sits in (the `.wasm` is not always in the
- * package's own `exports` map, so resolve the glue and take the sibling).
+ * `pkgEntry` only locates the payload's directory: the `.wasm` is not always in
+ * the package's `exports` map, so resolve the glue and take the sibling.
  */
 for (const { pkgEntry, glue, wasmName } of [
   {
@@ -93,8 +83,7 @@ for (const { pkgEntry, glue, wasmName } of [
   console.log(`WASM payload copied: ${HOST_ASSET_DIR}/${wasmName} (glue: ${glueChunks[0]})`);
 }
 
-// CJS bundles for CommonJS compatibility (e.g. Playwright's default CJS loader).
-// Both bundles live in dist/ so `src/server.ts`'s `import.meta.url` resolves
+// Both bundles live in dist/ so `server.ts`'s `import.meta.url` resolves
 // dist/host/ the same way it does from the ESM build's dist/server.js.
 const cjsShared = {
   bundle: true,
@@ -103,7 +92,7 @@ const cjsShared = {
   target: 'es2022',
   sourcemap: false,
   external: ['@playwright/test'],
-  // Polyfill import.meta.url for CJS (used by server.ts to locate dist/host/)
+  // `server.ts` locates dist/host/ through `import.meta.url`, which CJS lacks.
   banner: {
     js: 'var __import_meta_url = require("url").pathToFileURL(__filename).href;',
   },

@@ -1,26 +1,13 @@
 /**
- * Composes the twelve required TrUAPI host callback groups, plus the
- * optional `chat` group, from the small, single-responsibility modules in
- * this directory.
+ * Composes the required TrUAPI host callback groups, plus the optional `chat`
+ * one, which is included because the control API reads state only its handlers
+ * populate.
  *
- * `chat` is included (unlike `permissionStatus`/`pocket`) because the control
- * API in `control-api.ts` (`getChatRooms`, `getChatBots`,
- * `getChatMessageLog`, `clearChatState`, `injectChatAction`) reads chat state
- * that only this group's handlers populate.
- *
- * `auth` and `userConfirmation` are wired inline rather than given files of
- * their own, because neither has any behaviour to put in one:
- *
- *  - `auth.authStateChanged` records what the core reports into `state`.
- *    This host has no login UI to drive from it — it mints its own SSO
- *    session at boot — but the core IS the authority on whether that session
- *    is up, and `getChainStatus()` answers from this one field rather than
- *    from a status this host tries to keep in step by hand.
- *  - `userConfirmation.confirmUserAction` always approves. Per-action review
- *    is a human prompt, and a host whose whole purpose is unattended
- *    auto-signing has nobody to ask; approving is the same default-approve
- *    stance the permission group takes, and there is deliberately no control
- *    to flip it.
+ * `auth.authStateChanged` is recorded because the core is the authority on
+ * whether this host's session is up; `getChainStatus()` answers from it rather
+ * than from a status kept in step by hand. `confirmUserAction` always approves:
+ * unattended auto-signing has nobody to prompt, and there is deliberately no
+ * control to flip it.
  */
 import type { RequiredHostCallbacks } from '@parity/truapi-host';
 import type { LoopbackStore } from '../loopback-chain.js';

@@ -96,10 +96,9 @@ describe('resolveProductSubtree', () => {
 
 describe('resolveProductAccount', () => {
   /**
-   * The property the whole file exists for: the key this host SIGNS with must
-   * be the key the core DERIVES and reports, and the core derives it from the
-   * subtree PUBLIC key alone (`derive_product_public_key`). Reproduced here
-   * with `HDKD.publicSoft` — the public-only half of the same junction.
+   * The property the whole file exists for: the key this host SIGNS with is the
+   * one the core DERIVES from the subtree PUBLIC key alone, reproduced here
+   * with the public-only half of the same junction.
    */
   it('signs with the key the core derives from the subtree public key', () => {
     const subtree = resolveProductSubtree(ALICE, 'myapp.dot');
@@ -107,7 +106,6 @@ describe('resolveProductAccount', () => {
       const signer = resolveProductAccount(ALICE, 'myapp.dot', { tag: 'Index', value: index });
       const reported = HDKD.publicSoft(subtree.publicKey, indexBytes(index));
       expect(hex(signer.publicKey)).toBe(hex(reported));
-      // And it really is a usable keypair, not just a matching public key.
       const message = new Uint8Array([1, 2, 3]);
       expect(verify(message, sign(signer.secretKey, message), reported)).toBe(true);
       expect(hex(getPublicKey(signer.secretKey))).toBe(hex(reported));

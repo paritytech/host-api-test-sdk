@@ -1,4 +1,3 @@
-// src/browser/sso/statement.ts
 /**
  * Statement-store `Statement` codec and sr25519 proof.
  *
@@ -13,7 +12,7 @@ import { Bytes, Enum, Struct, Vector, u64 } from 'scale-ts';
 const Bytes32 = Bytes(32);
 const Bytes64 = Bytes(64);
 
-/** Declaration order is the wire index — see the note above. */
+/** Declaration order IS the field index. */
 const Field = Enum({
   proof: Enum({
     sr25519: Struct({ signature: Bytes64, signer: Bytes32 }),
@@ -107,11 +106,8 @@ export function signStatement(secretKey: Uint8Array, statement: Statement): Stat
 }
 
 /**
- * Length of a SCALE compact-encoded integer's prefix, in bytes.
- *
- * The big-integer mode (marker `0b11`) stores `byteCount - 4` in the upper
- * six bits of the mode byte, so the total prefix is the mode byte itself,
- * plus the implied 4, plus that remainder: `1 + 4 + (encoded[0] >> 2)`.
+ * Length of a SCALE compact prefix. In big-integer mode (`0b11`) the mode byte
+ * holds `byteCount - 4`, hence `1 + 4 + (encoded[0] >> 2)`.
  */
 export function stripCompactPrefix(encoded: Uint8Array): Uint8Array {
   const marker = encoded[0] & 0b11;

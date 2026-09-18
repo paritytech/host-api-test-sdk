@@ -23,16 +23,12 @@ export function generateHostPage(config: HostPageConfig): string {
 
   const accountConfigs = accounts.map(resolveAccount);
 
-  // Resolve productAccounts map values to { name, uri }
   let productAccountConfigs: Record<string, { name: string; uri: string }> | undefined;
   if (config.productAccounts) {
     productAccountConfigs = {};
     for (const [key, value] of Object.entries(config.productAccounts)) {
-      // A pre-0.13 `"dotnsId/index"` key can no longer be honoured: the core
-      // derives indexed accounts itself from the product subtree and never
-      // asks the host for one. Silently ignoring such a key would leave the
-      // caller believing an address had moved when it had not, so it is a
-      // hard error that names the replacement.
+      // A per-index key cannot move an address — the core never asks the host
+      // for an indexed account — so it is refused rather than silently ignored.
       if (key.includes('/')) {
         throw new Error(
           `productAccounts keys are product identifiers, not "dotnsId/index": ` +
@@ -51,17 +47,14 @@ export function generateHostPage(config: HostPageConfig): string {
       genesisHash: n.genesisHash,
       rpcUrl: n.rpcUrl,
       name: n.name,
-      // Omitted when unset: the runtime leaves a network with no declared
-      // role out of `supportedChains()` rather than guessing one.
       ...(n.chain && { chain: n.chain }),
     })),
     ...(productAccountConfigs && { productAccounts: productAccountConfigs }),
-    // Omitted rather than defaulted here: the browser runtime owns the
-    // default, so there is exactly one place that says what it is.
+    // The browser runtime owns the default, so it is not repeated here.
     ...(config.executionKind && { executionKind: config.executionKind }),
   });
 
-  // Escape closing script tags to prevent breaking out of inline script
+  // Otherwise the product URL could break out of the inline script.
   const safeConfigJson = configJson.replace(/<\//g, '<\\/');
 
   return `<!DOCTYPE html>

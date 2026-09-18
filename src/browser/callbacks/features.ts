@@ -1,25 +1,10 @@
 /**
- * Feature support probing.
- *
- * `featureSupported` ports `host-runtime.ts`'s `handleFeatureSupported`
- * genesis-hash comparison (case/`0x`-insensitive), but it answers for
- * everything `chain.connect` can actually open: the synthetic
- * `PEOPLE_GENESIS_HASH` loopback chain plus every configured network. The
- * People hash is not in `networks` — it is served in-page — so matching only
- * against `networks` told a product `false` about the one chain this host
- * always serves.
- *
- * `supportedChains` (RFC 0026) has no pre-migration analogue. It reports the
- * same People loopback, tagged `People`, plus any configured network that
- * declares its own `chain` role explicitly. `ChainIdentifier` is a fixed enum
- * (`Relay | AssetHub | People | Bulletin`) with real routing consequences, so
- * a network with no declared role is omitted rather than guessed from its
- * display name — a silently wrong label is worse than an absent one.
- *
- * Hence the deliberate asymmetry: a role-less network is routable and
- * `featureSupported` says so, but it cannot be named in `supportedChains`.
- * Everything `supportedChains` advertises is supported; the reverse does not
- * hold.
+ * Feature support probing. The two answers are deliberately asymmetric:
+ * `featureSupported` covers everything `chain.connect` can open, including the
+ * in-page People loopback that is not in `networks`, while `supportedChains`
+ * (RFC 0026) can only name a network that declares its `ChainIdentifier` role —
+ * guessing one from a display name would mislabel routing. So everything
+ * `supportedChains` advertises is supported, but not the reverse.
  */
 import type { HostFeatureSupportedRequest, HostFeatureSupportedResponse } from '@parity/truapi';
 import type { HostChainEntry, HostChainSet } from '@parity/truapi-host';

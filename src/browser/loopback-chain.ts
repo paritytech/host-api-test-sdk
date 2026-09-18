@@ -1,9 +1,7 @@
 /**
- * In-memory statement store behind `chain.connect`.
- *
- * The core reaches its paired peer by submitting and subscribing to statements
- * on the People chain. Serving that surface in-page is what keeps signing local:
- * no node, no network, no allowance to register.
+ * In-memory statement store behind `chain.connect`. The core reaches its paired
+ * peer over People-chain statements, so serving that surface in-page is what
+ * keeps signing local: no node, no network, no allowance to register.
  */
 import { scale } from '@parity/truapi';
 import {
@@ -40,12 +38,9 @@ export function createLoopbackStore(): LoopbackStore {
   let nextSubscriptionId = 1;
 
   /**
-   * Accepts the filter object the core sends, and the bare array form.
-   *
-   * The core spells the keys lower-camel — `json!({ "matchAll": topics })` /
-   * `json!({ "matchAny": topics })` in `statement_store_rpc.rs`. `matchAny` is
+   * Lower-camel keys, as `statement_store_rpc.rs` sends them. `matchAny` is
    * probed first so an object carrying both keys is never narrowed to
-   * `MatchAll`, which would drop statements a `matchAny` subscriber asked for.
+   * `MatchAll`, which would drop statements the subscriber asked for.
    */
   const FILTER_KEYS: ReadonlyArray<readonly [key: string, kind: TopicFilterKind]> = [
     ['matchAny', 'MatchAny'],
@@ -58,7 +53,7 @@ export function createLoopbackStore(): LoopbackStore {
     if (Array.isArray(raw)) {
       return { kind: 'MatchAll', topics: toTopics(raw) };
     }
-    // Guard against non-object primitives (strings, numbers, etc.) which would throw on `in` operator.
+    // `in` throws on a non-object primitive.
     if (typeof raw !== 'object' || raw === null) {
       return { kind: 'MatchAll', topics: [] };
     }
@@ -68,9 +63,8 @@ export function createLoopbackStore(): LoopbackStore {
       const topics = filter[key];
       return { kind, topics: Array.isArray(topics) ? toTopics(topics) : [] };
     }
-    // No recognised key: subscribe to everything rather than to nothing, so a
-    // filter this store cannot read is loud (extra deliveries) instead of a
-    // silent black hole.
+    // An unreadable filter subscribes to everything, so it is loud (extra
+    // deliveries) rather than a silent black hole.
     return { kind: 'MatchAll', topics: [] };
   }
 
@@ -92,21 +86,17 @@ export function createLoopbackStore(): LoopbackStore {
             switch (method) {
               case 'statement_submit': {
                 const statement = decodeStatement(scale.hexToBytes(String(params[0])));
-                // The core reads `.status` off the result object and treats
-                // only `new`/`known` as accepted (`statement_store_rpc.rs`,
-                // `fn submit`); a bare `"new"` string has no `status` field
-                // and is rejected as `statement_submit not accepted`. The host
-                // owns the store, so nothing is ever rejected here.
+                // The core reads `.status` off this object and accepts only
+                // `new`/`known`; a bare `"new"` string is rejected as
+                // `statement_submit not accepted`.
                 reply({ status: 'new' });
-                // Isolate each listener so one throwing doesn't starve the rest or contradict the success reply.
                 for (const listener of submitListeners) {
                   try {
                     listener(statement);
                   } catch (error) {
-                    // Swallowed so one listener cannot starve the rest or
-                    // contradict the success reply — but never silently: the
-                    // SSO responder is a listener, and a throw here is a reply
-                    // the core will wait for forever.
+                    // Swallowed so one listener cannot starve the rest, but
+                    // never silently: the SSO responder is a listener, and a
+                    // throw here is a reply the core waits for forever.
                     console.error('[loopback-chain] statement_submit listener threw:', error);
                   }
                 }
@@ -146,13 +136,12 @@ export function createLoopbackStore(): LoopbackStore {
                 );
             }
           } catch (error) {
-            // Try to extract id from the request for error response.
             let id: number | string = 'unknown';
             try {
               const parsed = JSON.parse(request) as { id?: number | string };
               if (parsed.id !== undefined) id = parsed.id;
             } catch {
-              // If we can't even parse the request, we can't get the id.
+              // Unparseable request: no id to echo.
             }
             onResponse(
               JSON.stringify({
@@ -174,21 +163,16 @@ export function createLoopbackStore(): LoopbackStore {
     },
 
     publish(statement) {
-      // The core decodes every subscription item with
-      // `parse_new_statements_result` (`host_logic/statement_store/rpc.rs`):
-      // it demands `result.event === 'newStatements'` and reads the SCALE
-      // statements out of `result.data.statements`. A bare hex string there is
-      // rejected as `malformed statement-store frame`. `remaining` is the
-      // server-side backlog, and this store never has one. The notification
-      // method name is the one Substrate uses for this subscription; the core
-      // ignores it and keys only on `params.subscription`.
+      // `parse_new_statements_result` demands this exact envelope — a bare hex
+      // string is rejected as `malformed statement-store frame`. `remaining` is
+      // a server backlog this store never has, and the core keys on
+      // `params.subscription`, ignoring the method name.
       const result = {
         event: 'newStatements',
         data: { statements: [scale.bytesToHex(encodeStatement(statement))], remaining: 0 },
       };
       for (const subscription of subscriptions) {
         if (!matchesTopics(statement, subscription.kind, subscription.topics)) continue;
-        // Isolate each subscriber's errors so one throwing callback doesn't starve the rest.
         try {
           subscription.notify(
             JSON.stringify({
@@ -198,8 +182,8 @@ export function createLoopbackStore(): LoopbackStore {
             }),
           );
         } catch (error) {
-          // Swallowed to avoid cascading failures, but logged: a subscriber
-          // that throws is a statement nobody received.
+          // Logged, not silent: a subscriber that throws is a statement
+          // nobody received.
           console.error('[loopback-chain] statement subscriber threw:', error);
         }
       }

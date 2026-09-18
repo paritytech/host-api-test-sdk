@@ -82,9 +82,8 @@ describe('loopback statement store', () => {
     const statement = { topics: [topic(8)], data: new Uint8Array([7]) };
     store.publish(statement);
 
-    // `parse_new_statements_result` keys on `result.event` and reads the SCALE
-    // statements out of `result.data.statements`; a bare hex string there is
-    // rejected as a malformed statement-store frame.
+    // `parse_new_statements_result` keys on `result.event`; a bare hex string
+    // is rejected as a malformed statement-store frame.
     expect(JSON.parse(onResponse.mock.calls[0][0])).toEqual({
       jsonrpc: '2.0',
       method: 'statement_statement',
@@ -112,11 +111,9 @@ describe('loopback statement store', () => {
     );
     onResponse.mockClear();
 
-    // Neither topic present: not a match under any kind.
     store.publish({ topics: [topic(12)], data: new Uint8Array([1]) });
     expect(onResponse).not.toHaveBeenCalled();
 
-    // One of the two present: a match for `matchAny`, but NOT for `matchAll`.
     store.publish({ topics: [topic(11)], data: new Uint8Array([2]) });
     expect(onResponse).toHaveBeenCalledOnce();
   });
@@ -153,7 +150,6 @@ describe('loopback statement store', () => {
     const onResponse = vi.fn();
     const connection = store.connect(onResponse);
 
-    // Bare string filter should not throw; should return an error response instead.
     connection.send(
       JSON.stringify({
         jsonrpc: '2.0',
@@ -173,7 +169,6 @@ describe('loopback statement store', () => {
     let callCount = 0;
     const onResponse1 = vi.fn(() => {
       callCount++;
-      // Throw only on the publish call (callCount > 1), not on subscription setup (callCount === 1).
       if (callCount > 1) throw new Error('subscriber 1 error');
     });
     const onResponse2 = vi.fn();
@@ -201,7 +196,6 @@ describe('loopback statement store', () => {
 
     store.publish({ topics: [topic(5)], data: new Uint8Array([1]) });
 
-    // Even though subscriber 1 threw, subscriber 2 should still receive the message.
     expect(onResponse2).toHaveBeenCalledOnce();
   });
 
@@ -212,7 +206,6 @@ describe('loopback statement store', () => {
     const connection1 = store.connect(onResponse1);
     const connection2 = store.connect(onResponse2);
 
-    // Both subscribe to the same topic.
     connection1.send(
       JSON.stringify({
         jsonrpc: '2.0',
@@ -232,13 +225,10 @@ describe('loopback statement store', () => {
     onResponse1.mockClear();
     onResponse2.mockClear();
 
-    // Close connection1.
     connection1.close();
 
-    // Publish a matching statement.
     store.publish({ topics: [topic(6)], data: new Uint8Array([1]) });
 
-    // Only connection2 should receive it.
     expect(onResponse1).not.toHaveBeenCalled();
     expect(onResponse2).toHaveBeenCalledOnce();
   });
@@ -263,11 +253,9 @@ describe('loopback statement store', () => {
       }),
     );
 
-    // Both listeners should have been called.
     expect(listener1).toHaveBeenCalledOnce();
     expect(listener2).toHaveBeenCalledOnce();
 
-    // Exactly one response should be sent for this request id, and it should be success.
     expect(onResponse).toHaveBeenCalledOnce();
     const response = JSON.parse(onResponse.mock.calls[0][0]);
     expect(response.result).toEqual({ status: 'new' });

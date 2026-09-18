@@ -85,7 +85,6 @@ describe('chain routing', () => {
     connection.send(
       JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'statement_submit', params: ['0x00'] }),
     );
-    // The loopback answers every request, so a response must arrive.
     const { value } = await responses.next();
     expect(JSON.parse(value as string).id).toBe(1);
     connection.close();
@@ -103,9 +102,7 @@ describe('chain routing', () => {
     const provider = createChainCallbacks({ store: createLoopbackStore(), networks: [] });
     const connection = await provider.connect(PEOPLE_GENESIS_HASH);
 
-    // Two iterators over the same push channel would race each other for
-    // frames — each response would reach exactly one of them. The configured-
-    // network route gets this from its generator; this one must match it.
+    // Two iterators over one push channel would race for frames.
     const first = connection.responses()[Symbol.asyncIterator]();
     const second = connection.responses()[Symbol.asyncIterator]();
     expect(second).toBe(first);
@@ -117,9 +114,8 @@ describe('chain routing', () => {
     const provider = createChainCallbacks({ store, networks: [] });
     const connection = await provider.connect(PEOPLE_GENESIS_HASH);
 
-    // `for await ... break` ends with the iterator's `return()`. Without an
-    // `onClose` the channel would close and the store subscription would stay
-    // behind, feeding nothing.
+    // `for await ... break` ends with `return()`; without `onClose` the store
+    // subscription would be left feeding a dead channel.
     await connection.responses()[Symbol.asyncIterator]().return?.();
     expect(closes()).toBe(1);
   });
@@ -171,14 +167,12 @@ describe('configured-network routing', () => {
 
     const opened = await provider.connect(Uint8Array.from({ length: 32 }, () => 0xab));
     expect(wasm.asked).toEqual([`0x${'ab'.repeat(32)}`]);
-    // The provider is built from the configured networks, not from thin air.
     expect(wasm.registered).toEqual([[`0x${'ab'.repeat(32)}`, 'wss://previewnet.example/relay']]);
 
     opened.send('{"id":1,"method":"chainSpec_v1_genesisHash"}');
     expect(wasm.sent).toEqual(['{"id":1,"method":"chainSpec_v1_genesisHash"}']);
 
-    // `responses()` is a pull loop over `nextResponse()`, and the queue above
-    // runs dry — which is how the provider reports a closed or dead pipe.
+    // A dry `nextResponse()` queue is how the provider reports a dead pipe.
     const received: string[] = [];
     for await (const frame of opened.responses()) received.push(frame);
     expect(received).toEqual(['{"id":1}', '{"id":2}']);

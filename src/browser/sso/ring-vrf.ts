@@ -1,13 +1,8 @@
 /**
- * In-memory ring-VRF key registry for the local SSO responder.
- *
- * A real Account Holder registers ring-VRF keys against an on-chain ring and
- * proves membership with a Bandersnatch ring proof. Nothing here touches a
- * chain: registration records the requested ring against a deterministic
- * stand-in key derived from the product account, listing replays what was
- * registered, and signing is an sr25519 signature over the message. That is
- * enough for a product to exercise the full request/response surface, and the
- * registry's behaviour (unknown handle → `keyNotRegistered`) is real.
+ * In-memory ring-VRF key registry. A real Account Holder would prove ring
+ * membership with a Bandersnatch proof; nothing here touches a chain, so the
+ * keys and signatures are deterministic stand-ins. The registry's own behaviour
+ * (unknown handle → `keyNotRegistered`) is real, which is what products test.
  */
 import { blake2b } from '@noble/hashes/blake2.js';
 import { sign } from '@scure/sr25519';
@@ -58,12 +53,7 @@ function handleKey(handle: KeyHandle): string {
   return `${handle.dotNsIdentifier}#${index.tag}:${String(index.value)}`;
 }
 
-/**
- * Deterministic 32-byte stand-in for the ring-VRF public key.
- *
- * Derived from the account public key so the same product account always
- * reports the same key, across runs and across responder instances.
- */
+/** Stand-in key, derived so one product account reports the same key across runs. */
 function ringVrfPublicKey(accountPublicKey: Uint8Array): Uint8Array {
   const label = new TextEncoder().encode('ring-vrf');
   const input = new Uint8Array(accountPublicKey.length + label.length);
@@ -84,8 +74,7 @@ export function createRingVrfRegistry(resolveAccount: ResolveAccount): RingVrfRe
       const key = handleKey(handle);
       const existing = entries.get(key);
       if (existing) {
-        // Re-registering an existing handle widens it to the new ring rather
-        // than replacing it, matching "a key may belong to several rings".
+        // A key may belong to several rings, so this widens rather than replaces.
         existing.rings.push(payload.ring);
         return { success: true, value: existing.publicKey };
       }

@@ -1,4 +1,3 @@
-// src/browser/sso/responder.spec.ts
 import { blake2b } from '@noble/hashes/blake2.js';
 import { x25519 } from '@noble/curves/ed25519.js';
 import { verify } from '@scure/sr25519';
@@ -277,7 +276,7 @@ describe('sso responder', () => {
     const [reply] = replyValues(frames);
     const value = reply.value as { payload: { success: boolean; value: { signature: string } } };
     expect(value.payload.success).toBe(true);
-    // 64-byte sr25519 signature, unprefixed — what the pre-migration raw path returned.
+    // 64-byte sr25519 signature, unprefixed.
     expect(scale.hexToBytes(value.payload.value.signature)).toHaveLength(64);
   });
 
@@ -761,10 +760,8 @@ describe('sso responder', () => {
   });
 
   it('answers with a failure when a reply will not encode, instead of dropping it', () => {
-    // Fault injection: a subtree answer with no public key. `Bytes(32)` throws
-    // on it, which is the class of defect that used to escape the reply loop —
-    // the ack was published, the encode threw outside every `try`, the store
-    // swallowed it, and the core waited forever with nothing in the console.
+    // Fault injection: a subtree answer with no public key, which `Bytes(32)`
+    // throws on. This is the defect class that can escape the reply loop.
     const withoutPublicKey: ResolveAccountFn = () => ({
       ...deriveDev('Alice'),
       publicKey: undefined as unknown as Uint8Array,

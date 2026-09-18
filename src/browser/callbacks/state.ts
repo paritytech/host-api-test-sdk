@@ -1,23 +1,10 @@
 /**
- * Mutable state backing the host callback groups.
- *
- * A plain object rather than a class: the control API in `control-api.ts`
- * (the `window.__TEST_HOST__` surface) reads and mutates these fields
- * directly —
- * pushing log entries, swapping `permissionBehavior`, replacing `theme` and
- * notifying `themeSubscribers` — the same way the pre-migration
- * `src/browser/host-runtime.ts` mutated its module-level `let`/`const`
- * state. Keeping it a bag of fields (not private closures) is what makes
- * that direct mutation possible.
+ * Mutable state backing the host callback groups. A bag of public fields rather
+ * than a class because `control-api.ts` mutates them directly.
  */
 
 import type { AuthState } from '@parity/truapi-host';
 
-/**
- * Controls how the host answers `permissions.remotePermission` and
- * `permissions.devicePermission`. Ported from the pre-migration
- * `PermissionBehavior` semantics in `src/types.ts` / `host-runtime.ts`.
- */
 export type PermissionBehavior = 'approve-all' | 'reject-all' | ((tag: string, value: unknown) => boolean);
 
 export interface PermissionLogEntry {
@@ -56,11 +43,7 @@ export interface PreimageEntry {
   timestamp: number;
 }
 
-/**
- * A chat room this host tracks. Carries `name`/`icon` for the control API's
- * `getChatRooms()`, even though the generated `ChatRoom` the core pulls via
- * `subscribeChatRooms` only carries `roomId`/`participatingAs`.
- */
+/** Carries `name`/`icon` for `getChatRooms()`; the core's own `ChatRoom` has neither. */
 export interface ChatRoom {
   roomId: string;
   name: string;
@@ -83,11 +66,7 @@ export interface ChatMessageLogEntry {
 }
 
 export interface HostState {
-  /**
-   * The core's last `auth.authStateChanged` report, or `undefined` before the
-   * first one. This host's session state is the core's to report, so it is
-   * recorded verbatim here rather than tracked by hand alongside it.
-   */
+  /** The core's last `auth.authStateChanged` report; `undefined` before the first. */
   authState: AuthState | undefined;
 
   permissionBehavior: PermissionBehavior;
@@ -100,7 +79,7 @@ export interface HostState {
   /** Active `theme.subscribeTheme()` listeners; notified when `theme` changes. */
   themeSubscribers: Set<(theme: Theme) => void>;
 
-  /** BCP 47 language tag. No pre-migration analogue — a single static default. */
+  /** BCP 47 language tag. */
   locale: string;
   /** Active `locale.subscribeLocale()` listeners; notified when `locale` changes. */
   localeSubscribers: Set<(locale: string) => void>;
@@ -110,11 +89,7 @@ export interface HostState {
   /** Listeners waiting on one preimage key, keyed by lowercased `0x`-hex. */
   preimageSubscribers: Map<string, Set<(value: Uint8Array | undefined) => void>>;
 
-  /**
-   * Chat rooms and bots the product has created/registered this session, and
-   * the log of messages posted to them. One flat namespace, not scoped by
-   * product — matching pre-migration, which never partitioned chat state.
-   */
+  /** One flat namespace: chat state is not partitioned per product. */
   chatRooms: Map<string, ChatRoom>;
   chatBots: Map<string, ChatBot>;
   chatMessageLog: ChatMessageLogEntry[];

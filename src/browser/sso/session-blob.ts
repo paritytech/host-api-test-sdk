@@ -1,15 +1,11 @@
 /**
- * Codec for the core-owned persisted-session blob.
- *
- * Mirrors `SessionInfo` in
- * `../host-rust-core/rust/crates/truapi-server/src/host_logic/session.rs`.
- * The layout is positional and core-private; the leading version tag is what
- * turns an upstream layout change into a decode failure rather than silent
- * drift, so it must never be dropped.
+ * Codec for the core-owned persisted-session blob, mirroring `SessionInfo`
+ * (`host_logic/session.rs`). The layout is positional and core-private; the
+ * leading version tag is what turns an upstream change into a decode failure
+ * rather than silent drift, so it must never be dropped.
  */
 import { Bytes, Option, Struct, str } from 'scale-ts';
 
-/** `PERSISTED_SESSION_V1`. */
 const PERSISTED_SESSION_V1 = 1;
 
 const Bytes32 = Bytes(32);
@@ -68,15 +64,13 @@ export interface ExternalSessionOptions {
 }
 
 /**
- * Encode an already-paired session, as `encode_external_paired_session` does.
- *
- * Usernames are deliberately absent: the runtime resolves and persists those
- * through its own identity lookup.
+ * Mirrors `encode_external_paired_session`. Usernames are deliberately absent —
+ * the runtime resolves and persists those itself.
  */
 export function encodeExternalPairedSession(
   options: ExternalSessionOptions,
 ): Uint8Array {
-  // Guard caller-supplied widths to prevent silent misalignment.
+  // A wrong width would misalign the positional layout silently.
   if (options.ssSecret.length !== 64) {
     throw new Error(
       `ssSecret must be exactly 64 bytes, got ${options.ssSecret.length}`,

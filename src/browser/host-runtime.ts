@@ -1,21 +1,9 @@
 /**
  * Browser-side host runtime — the boot sequence for the in-page TrUAPI host.
  *
- * Reads `window.__TEST_HOST_CONFIG__`, then brings up, in this order (the
- * order matters, each step is the previous one's input):
- *
- *   1. the in-page loopback statement store and the callback state bag;
- *   2. an SSO session, BOTH halves of which this page mints — there is no
- *      wallet and no network here, so the host also plays the peer;
- *   3. the SSO responder, which answers every signing request off the
- *      loopback store with dev keys;
- *   4. the WASM core in a Web Worker, wired to the host callback groups;
- *   5. `activateExternalSession`, installing the minted session;
- *   6. the product provider and the product iframe, bridged port-to-provider.
- *
- * Nothing leaves the page: no node, no signer process, no network at boot.
- *
- * Exposes `window.__TEST_HOST__` (see `control-api.ts`) for Playwright.
+ * Boot order in `init` is load-bearing: each step is the next one's input.
+ * Nothing leaves the page — this host mints BOTH halves of the SSO session
+ * because there is no wallet and no network here, so it also plays the peer.
  */
 import { blake2b } from '@noble/hashes/blake2.js';
 import { x25519 } from '@noble/curves/ed25519.js';
@@ -53,10 +41,7 @@ interface HostConfig {
   productUrl: string;
   /** dotNS identifier the product runs as. */
   productId?: string;
-  /**
-   * Trusted executable kind declared for the product. Absent means
-   * `DEFAULT_EXECUTION_KIND`.
-   */
+  /** Absent means `DEFAULT_EXECUTION_KIND`. */
   executionKind?: ProductExecutionKind;
   accounts: AccountConfig[];
   /** Networks the host can route, matched by genesis. First is the default. */
@@ -72,34 +57,24 @@ declare global {
   }
 }
 
-/** Matches the sandbox the pre-migration host page put on the product iframe. */
 const PRODUCT_SANDBOX = 'allow-scripts allow-same-origin allow-forms allow-popups';
 
-/** dotNS identifier used when the page config names no product. */
 const DEFAULT_PRODUCT_ID = 'test-product.dot';
 
 /**
- * Executable kind declared when the page config names none.
- *
- * `App` is the truth for an iframe-embedded product — a visible full-page
- * entrypoint — and it is also the core's own default. It is NOT `Worker`
- * even though `Worker` is the only kind the core lets reach Chat
- * (`runtime/chat.rs`): declaring every product headless to unlock one
- * modality would misreport what this host is running. A test that drives
- * chat asks for `'Worker'` explicitly through `CreateTestHostOptions`.
+ * `App` is the core's own default and the truth for an iframe-embedded product.
+ * Chat needs `'Worker'` (`runtime/chat.rs`), but a test asks for that
+ * explicitly rather than every product being declared headless.
  */
 const DEFAULT_EXECUTION_KIND: ProductExecutionKind = 'App';
 
 const encoder = new TextEncoder();
 
 /**
- * Mint both halves of an SSO session for one signer.
- *
- * A paired host holds only its own half and the peer's public key; this page
- * is also the peer, so it keeps `peerEncSecret` too and hands it to the
- * responder. `identityAccountId` is the peer's statement-store account id and
- * the key every application reply must be signed by — hence `identitySecret`
- * is the signer's own secret, which the responder verifies at construction.
+ * Mint both halves of an SSO session for one signer. A real paired host holds
+ * only its own half and the peer's public key; this page is also the peer, so
+ * it keeps `peerEncSecret`. `identitySecret` is the key every application reply
+ * must be signed by, which the responder verifies at construction.
  */
 function mintSession(signer: DevKeypair): ResponderSession {
   const statementStore = deriveDev('Alice', 'statement-store');
@@ -108,8 +83,8 @@ function mintSession(signer: DevKeypair): ResponderSession {
     rootPublicKey: signer.publicKey,
     identityAccountId: signer.publicKey,
     identitySecret: signer.secretKey,
-    // Per-signer and non-zero, so two accounts never derive the same product
-    // entropy the way an all-zero source would.
+    // Per-signer and non-zero: an all-zero source would give two accounts the
+    // same product entropy.
     rootEntropySource: blake2b(concat(signer.publicKey, encoder.encode('root-entropy')), { dkLen: 32 }),
     encSecret: x25519.utils.randomSecretKey(),
     peerEncPubkey: x25519.getPublicKey(peerEncSecret),
@@ -129,19 +104,10 @@ function concat(left: Uint8Array, right: Uint8Array): Uint8Array {
 }
 
 /**
- * Resolve one `setAccounts` name against the roster the page was configured
- * with.
- *
- * The configured roster wins, matched case-insensitively on `name`. That is
- * what makes a custom `{ name, uri }` entry switchable at all: deriving
- * `//Custom` from its display name would sign with a key the caller never
- * asked for, silently. A name the roster does not carry falls back to the bare
- * dev derivation — `'alice'` → `{ name: 'Alice', uri: '//Alice' }`, as
- * pre-migration did — so `switchAccount('bob')` works whether or not Bob was
- * listed at boot.
- *
- * The roster is always the BOOT config, never the accounts currently in force,
- * so a switch away from a custom account can be switched back.
+ * The configured roster wins so that a custom `{ name, uri }` keeps its URI —
+ * deriving `//Custom` from a display name would silently sign with a key nobody
+ * asked for. The roster passed in is always the BOOT config, never the accounts
+ * in force, so a switch away from a custom account can be switched back.
  */
 function resolveAccountName(roster: readonly AccountConfig[], name: string): AccountConfig {
   const wanted = name.toLowerCase();
@@ -152,14 +118,9 @@ function resolveAccountName(roster: readonly AccountConfig[], name: string): Acc
 }
 
 /**
- * Two-way pipe between two wire providers.
- *
- * The product's `MessagePort` and the core's product provider are both
- * `WireProvider`s carrying the same SCALE wire frames, so relaying one into
- * the other is the whole bridge — no translation, no framing, no filtering.
- * `onFrameFromLeft` is how the product's connection status is observed: the
- * first frame off the port is the product actually talking.
- * Returns the disposer that stops both directions.
+ * Two-way pipe between two wire providers. Both carry the same SCALE frames, so
+ * a plain relay is the whole bridge. `onFrameFromLeft` is how product
+ * connection status is observed — the first frame off the port is the product.
  */
 function bridgeProviders(
   left: WireProvider,
@@ -178,19 +139,11 @@ function bridgeProviders(
 }
 
 /**
- * Re-apply the iframe's Permissions Policy whenever a device permission is
- * answered.
+ * Re-apply the iframe's Permissions Policy when a device permission is answered.
  *
- * The callback groups know nothing about the iframe, but a granted `Camera`
- * belongs in the `allow` attribute, as the pre-migration
- * `handleDevicePermission` put it there. Note what that buys and what it does
- * not: a Permissions Policy only takes effect at navigation, so — exactly as
- * pre-migration noted — this applies on the NEXT navigation or iframe
- * recreation, not to the document already loaded. Pre-migration at least
- * re-navigated the iframe on an account switch; this host deliberately does
- * not (see `setAccounts`), so today nothing re-navigates it and the attribute
- * is written for a future load. It is kept because it is correct and because
- * it is what makes a rebuilt iframe inherit the right policy.
+ * A Permissions Policy only takes effect at navigation, and nothing here
+ * re-navigates the iframe (see `setAccounts`), so this writes the attribute for
+ * a future load rather than changing the document already running.
  */
 function withIframePermissionsPolicy(
   callbacks: RequiredHostCallbacks,
@@ -212,25 +165,16 @@ function withIframePermissionsPolicy(
   };
 }
 
-/**
- * Where the product iframe points.
- *
- * The host page's own path, query and hash are forwarded so a deep link
- * opened against the test host reaches the product unchanged.
- */
+/** Forwards the host page's path, query and hash so a deep link reaches the product. */
 function productIframeUrl(productUrl: string): string {
   const { pathname, search, hash } = window.location;
   return new URL(pathname + search + hash, productUrl).href;
 }
 
 /**
- * The page's placeholder iframe slot.
- *
- * `createIframeHost` builds its own iframe, so the placeholder is handed over
- * rather than reused: its parent becomes the container, and the new iframe
- * takes its `#product-frame` id — that is what the Playwright fixture locates
- * the product by. The placeholder is returned rather than removed here, so a
- * `createIframeHost` that throws leaves the page intact.
+ * `createIframeHost` builds its own iframe, so the placeholder only lends its
+ * parent and its `#product-frame` id — which is what the fixture locates the
+ * product by. Returned rather than removed, so a throw leaves the page intact.
  */
 function placeholderSlot(): { container: HTMLElement; placeholder: Element | null } {
   const placeholder = document.getElementById('product-frame');
@@ -250,8 +194,7 @@ async function init(): Promise<void> {
   /** The accounts in force. Replaced by `setAccounts`. */
   let accounts = config.accounts;
   if (accounts.length === 0) {
-    // The session has exactly one identity, and it is the first account, so
-    // there is nothing to boot without one.
+    // The session carries exactly one identity, and it is the first account.
     console.error('[test-host] No accounts configured');
     return;
   }
@@ -274,16 +217,14 @@ async function init(): Promise<void> {
     () => iframeHost?.iframe,
   );
 
-  // The worker is held in a local so a runtime that never takes ownership of it
-  // cannot leak it: `createWebWorkerPairingHostRuntime` rejects when the core
-  // fails to come up (a chunk that will not load, wasm that will not
-  // instantiate), and at that point nothing but this frame holds the worker.
+  // Held in a local so a rejected runtime (bad chunk, wasm that will not
+  // instantiate) does not leak a worker nothing else holds.
   const worker = createHostWorker();
   const runtime = await createWebWorkerPairingHostRuntime(worker, callbacks, {
     hostConfig: {
       host: { name: 'Test Host', platform: 'Web' },
-      // The loopback store answers this genesis in-page; the other two are
-      // all-zero, which declares "this host deliberately has no such chain".
+      // The loopback store answers this genesis in-page; all-zero declares
+      // "this host deliberately has no such chain".
       people: { genesisHash: PEOPLE_GENESIS_HASH },
       bulletin: { genesisHash: ZERO_HASH },
       assetHub: { genesisHash: ZERO_HASH },
@@ -294,13 +235,9 @@ async function init(): Promise<void> {
     throw cause;
   });
 
-  // `productStatus` is the PRODUCT connection — what the pre-migration
-  // `subscribeProductConnectionStatus` reported, and what the fixture's
-  // `waitForConnection` gates on. It is tracked here because nothing else
-  // knows it: it flips on the first inbound frame over the bridge. The host's
-  // OWN session is a separate readout and is NOT tracked here — the core
-  // reports it through `auth.authStateChanged`, which `state.authState`
-  // records and `getChainStatus()` answers from.
+  // The PRODUCT connection, tracked here because only the bridge knows it. The
+  // host's OWN session is separate: the core reports it through
+  // `auth.authStateChanged`, and `getChainStatus()` answers from that.
   let productStatus = 'disconnected';
   const productIsTalking = () => {
     productStatus = 'connected';
@@ -314,7 +251,7 @@ async function init(): Promise<void> {
     let provider = await runtime.createProvider({ productId, executionKind });
 
     // `createIframeHost` hands the port over synchronously, before the iframe
-    // loads; the provider takes the promise and buffers until it arrives.
+    // loads, so the provider takes a promise.
     let handOverPort!: (port: MessagePort) => void;
     const portProvider = createMessagePortProvider(
       new Promise<MessagePort>((resolve) => {
@@ -333,14 +270,11 @@ async function init(): Promise<void> {
         sandbox: PRODUCT_SANDBOX,
       });
     } catch (cause) {
-      // `createIframeHost` rejects a non-http(s) product URL synchronously.
-      // The placeholder is still in the page, so a test locating the frame
-      // gets an empty product rather than a missing element, and this error
-      // names the real cause.
+      // Thrown synchronously for a non-http(s) product URL. The placeholder is
+      // still in the page, so a test locating the frame finds an element.
       throw new Error(`could not embed the product at ${config.productUrl}`, { cause });
     }
-    // Only now is the placeholder redundant — and it holds the id until it is
-    // gone, so the page never carries two `#product-frame` elements.
+    // Removed only now, so the page never carries two `#product-frame` elements.
     placeholder?.remove();
     host.iframe.id = 'product-frame';
     iframeHost = host;
@@ -348,17 +282,11 @@ async function init(): Promise<void> {
     let unbridge = bridgeProviders(portProvider, provider, productIsTalking);
 
     /**
-     * Re-mint the session for `names` and resume routing.
-     *
-     * `names` is a roster of switch targets, resolved against the configured
-     * accounts (see `resolveAccountName`); the FIRST is the active identity.
-     * The SSO session has exactly one identity, so only that one signs — a
-     * request naming any other account is refused by the core.
+     * Re-mint the session for `names` and resume routing. The FIRST name is the
+     * active identity and the only one that signs.
      *
      * The iframe is deliberately left alone: its `MessagePort` was transferred
-     * once, at load, and reloading it would strand the channel. So the session
-     * is dropped and re-installed under the new signer and the product
-     * provider is replaced over the same port.
+     * once, at load, so reloading it would strand the channel.
      */
     async function setAccounts(names: string[]): Promise<void> {
       if (names.length === 0) throw new Error('setAccounts requires at least one account');
@@ -370,17 +298,13 @@ async function init(): Promise<void> {
       session = mintSession(deriveFromUri(accounts[0].uri));
       responder = createSsoResponder({ store, session, resolveAccount });
 
-      // No unwind for a failed switch: `resetSessionState()` drops the core's
-      // session and the core reports that through `authStateChanged`, so a
-      // switch that then fails to activate leaves `getChainStatus()` reading
-      // `'disconnected'` without this function saying so.
+      // No unwind: if activation then fails, the core has already reported the
+      // drop and `getChainStatus()` reads `'disconnected'`.
       await runtime.resetSessionState();
       await runtime.activateExternalSession(encodeExternalPairedSession(session));
 
-      // The port provider does not buffer: a frame delivered while nothing
-      // is subscribed is dropped on the floor. The product keeps talking
-      // across the swap, so park its frames for the duration rather than
-      // lose them.
+      // The port provider does not buffer — a frame arriving while nothing is
+      // subscribed is dropped — and the product keeps talking across the swap.
       const parked: Uint8Array[] = [];
       const stopParking = portProvider.subscribe((frame) => {
         productIsTalking();
@@ -392,9 +316,7 @@ async function init(): Promise<void> {
         provider.dispose();
         provider = await runtime.createProvider({ productId, executionKind });
       } finally {
-        // Unsubscribe even when the swap fails. A parking subscriber left
-        // attached would grow `parked` unboundedly and keep reporting the
-        // product as talking while no frame reaches any core.
+        // A parking subscriber left attached would grow `parked` unboundedly.
         stopParking();
       }
 
@@ -402,10 +324,7 @@ async function init(): Promise<void> {
       unbridge = bridgeProviders(portProvider, provider, productIsTalking);
     }
 
-    /**
-     * A stable responder handle over a responder that account switching
-     * replaces, so the signing log survives a switch as it did pre-migration.
-     */
+    /** Stable handle over a responder that account switching replaces, so the log survives. */
     const responderFacade: SsoResponder = {
       getSigningLog: () => [...retiredSigningLog, ...responder.getSigningLog()],
       clearSigningLog: () => {
@@ -442,9 +361,7 @@ async function init(): Promise<void> {
       accounts.map((account) => account.name).join(', '),
     );
   } catch (error) {
-    // A half-booted host must not leave the WASM worker running: the page
-    // stays up after a failed boot, and Playwright would otherwise report a
-    // missing `__TEST_HOST__` against a still-spinning core.
+    // The page stays up after a failed boot, so the WASM worker must not.
     runtime.dispose();
     throw error;
   }

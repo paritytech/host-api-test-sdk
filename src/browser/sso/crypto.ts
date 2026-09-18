@@ -1,7 +1,4 @@
-/**
- * Channel crypto for the SSO session, matching `session_aead_key` in
- * `../host-rust-core/rust/crates/truapi-server/src/host_logic/sso/pairing.rs`.
- */
+/** Channel crypto for the SSO session, matching `session_aead_key` (`sso/pairing.rs`). */
 import { chacha20poly1305 } from '@noble/ciphers/chacha.js';
 import { x25519 } from '@noble/curves/ed25519.js';
 import { hkdf } from '@noble/hashes/hkdf.js';
@@ -10,11 +7,9 @@ import { sha256 } from '@noble/hashes/sha2.js';
 export const AEAD_NONCE_LEN = 12;
 
 /**
- * HKDF-SHA256 over the X25519 shared secret, with empty salt and info.
- *
- * An all-zero (or otherwise small-order) peer key yields a non-contributory
- * exchange. The core rejects that as `invalid X25519 public key`, so this
- * throws the same way rather than deriving a key from a degenerate secret.
+ * HKDF-SHA256 over the X25519 shared secret, empty salt and info. A small-order
+ * peer key gives a non-contributory exchange, which the core rejects as
+ * `invalid X25519 public key` — so this throws rather than deriving from it.
  */
 export function sessionAeadKey(
   encSecret: Uint8Array,

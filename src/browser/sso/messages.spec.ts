@@ -1,4 +1,3 @@
-// src/browser/sso/messages.spec.ts
 import { describe, expect, it } from 'vitest';
 import { REMOTE_MESSAGE_VARIANTS, RemoteMessage, StatementData, VersionedRemoteMessage } from './messages.js';
 
@@ -25,16 +24,9 @@ describe('sso messages', () => {
     expect(REMOTE_MESSAGE_VARIANTS.indexOf('RingVrfSignResponse')).toBe(23);
   });
 
-  // Exhaustive regression guard: the five spot checks above only cover
-  // indices 0, 1, 14, 16, and 23. Everything in between (3-13, 17-22) was
-  // previously pinned by nothing but a human aligning REMOTE_MESSAGE_VARIANTS
-  // and the RemoteMessage Enum's payload map by eye. This enumerates every
-  // one of the 24 `v1::RemoteMessage` variants from
-  // `../host-rust-core/rust/crates/truapi-server/src/host_logic/sso/messages/v1.rs`
-  // against its exact declared (and, for 14-23, explicitly
-  // `#[codec(index = N)]`-pinned) position, so any future reorder or drop of
-  // a single entry fails here instead of silently shifting the wire index of
-  // everything after it.
+  // Every one of the 24 `v1::RemoteMessage` variants against its declared
+  // position (14-23 are `#[codec(index = N)]`-pinned upstream), so a dropped or
+  // reordered entry fails here instead of shifting every later wire index.
   it('pins every RemoteMessage variant to its exact wire index (all 24)', () => {
     const expectedIndexByVariant: Record<(typeof REMOTE_MESSAGE_VARIANTS)[number], number> = {
       Disconnected: 0,
@@ -69,11 +61,8 @@ describe('sso messages', () => {
     }
   });
 
-  // Stronger version of the same guard: rather than checking the array
-  // against itself, this drives the *actual* `RemoteMessage` codec for every
-  // one of the 24 variants and asserts the real encoded wire byte, so it also
-  // catches a bug in how `RemoteMessage`'s key order is derived from
-  // `REMOTE_MESSAGE_VARIANTS` (not just a reorder of the array itself).
+  // The same guard through the real codec, so it also catches a bug in how
+  // `RemoteMessage` derives its key order rather than only an array reorder.
   it('encodes and round-trips every RemoteMessage variant at its exact wire index (all 24)', () => {
     const hex = (byteLen: number, byte = '11') => ('0x' + byte.repeat(byteLen)) as `0x${string}`;
     const productAccountId = (dotNsIdentifier: string) => ({

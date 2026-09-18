@@ -1,11 +1,8 @@
 /**
- * Chain routing.
- *
- * The People genesis is served in-page by the loopback statement store —
- * that is what keeps signing local. Product chains are matched by genesis
- * against the configured networks and opened through
- * `@parity/truapi-provider`, which owns the transport (remote JSON-RPC nodes
- * registered with `addRpcChain`) and hands back a raw string pipe.
+ * Chain routing. The People genesis is served in-page by the loopback statement
+ * store — that is what keeps signing local and networkless. Every other genesis
+ * is matched against the configured networks and opened over real JSON-RPC
+ * through `@parity/truapi-provider`.
  */
 import { type ChainIdentifier, scale } from '@parity/truapi';
 import type { ChainProvider, JsonRpcConnection } from '@parity/truapi-host';
@@ -20,22 +17,16 @@ export interface ChainRuntimeConfig {
   rpcUrl: string;
   name: string;
   /**
-   * This network's protocol role, if known — consumed by
-   * `features.supportedChains()`. `ChainIdentifier` is a fixed enum with
-   * real routing consequences, so leave this `undefined` rather than guess:
-   * an omitted network is left out of that report, not mislabeled.
+   * Protocol role, if known. Leave `undefined` rather than guess — an omitted
+   * network is left out of `supportedChains()` rather than mislabelled.
    */
   chain?: ChainIdentifier;
 }
 
 /**
- * The canonical `0x`-prefixed lower-case spelling of a genesis hash, so string
- * configs and raw bytes compare equal.
- *
- * One helper, used by every genesis comparison in the host: routing here and
- * `features.ts`'s support answers. Two normalisers could disagree on a config
- * hash with stray whitespace, and a hash reported supported by one but
- * unroutable by the other is exactly the bug that invariant hides.
+ * The one genesis normaliser in the host, shared with `features.ts`: a second
+ * one could disagree on stray whitespace and report a hash supported that
+ * routing then cannot open.
  */
 export const normalizeGenesisHash = (value: Uint8Array | string): `0x${string}` => {
   if (typeof value !== 'string') return scale.bytesToHex(value);
@@ -43,12 +34,7 @@ export const normalizeGenesisHash = (value: Uint8Array | string): `0x${string}` 
   return hex.startsWith('0x') ? (hex as `0x${string}`) : `0x${hex}`;
 };
 
-/**
- * Register every configured network as a remote JSON-RPC chain.
- *
- * The provider keys chains by `0x`-prefixed hex, so the normalised hash is
- * prefixed back here rather than trusting whatever spelling the config used.
- */
+/** The provider keys chains by `0x`-prefixed hex, whatever spelling the config used. */
 export function registerRpcChains(
   registrar: Pick<ChainProviderBuilder, 'addRpcChain'>,
   networks: readonly ChainRuntimeConfig[],
@@ -59,9 +45,8 @@ export function registerRpcChains(
 }
 
 /**
- * Run `load` at most once, and hand every later caller the same promise — but
- * forget a rejected one, so a failed wasm fetch is retried on the next connect
- * instead of becoming the page's permanent answer.
+ * Memoise `load`, but forget a rejected promise so a failed wasm fetch is
+ * retried on the next connect instead of becoming the page's permanent answer.
  */
 function once<T>(load: () => Promise<T>): () => Promise<T> {
   let pending: Promise<T> | undefined;
@@ -80,14 +65,10 @@ function once<T>(load: () => Promise<T>): () => Promise<T> {
 /**
  * The provider wasm, instantiated at most once per page.
  *
- * The module's `default` export is wasm-pack's `__wbg_init`, which resolves
- * its payload with `new URL('truapi_provider_bg.wasm', import.meta.url)` —
- * hence the build-time assertion in `build.mjs` that the glue lands in the
- * directory the `.wasm` is copied into. The import itself is dynamic and the
- * result is memoised, so a page that only ever talks to the People loopback
- * never downloads either the glue or the payload, and two concurrent connects
- * share one instantiation instead of racing the glue's own `wasm !== undefined`
- * guard.
+ * `default` is wasm-pack's `__wbg_init`, which resolves its payload relative to
+ * `import.meta.url` — hence the layout assertion in `build.mjs`. The dynamic
+ * import keeps a People-only page from downloading either file, and memoising
+ * stops two concurrent connects racing the glue's own init guard.
  */
 const loadProviderModule = once(async () => {
   const module = await import('@parity/truapi-provider');
@@ -105,12 +86,9 @@ async function openRpcProvider(networks: readonly ChainRuntimeConfig[]) {
 }
 
 /**
- * Pull loop over a provider connection.
- *
- * Draining is not optional: the provider queues frames until they are taken,
- * and once the backlog hits the connection's budget further `send` calls come
- * back as JSON-RPC errors. `undefined` means closed or dead, which ends the
- * iteration the core is running.
+ * Draining is not optional: the provider queues frames until taken, and once
+ * the backlog hits the connection's budget further `send`s fail as JSON-RPC
+ * errors. `undefined` means closed or dead.
  */
 async function* drainResponses(connection: Connection): AsyncGenerator<string> {
   for (;;) {
@@ -135,18 +113,13 @@ export function createChainCallbacks(options: {
       const target = normalizeGenesisHash(genesisHash);
 
       if (target === peopleGenesis) {
-        // Push-to-async-iterator bridge (see passive.ts): the loopback store's
-        // `onResponse` push becomes the `responses()` the core pulls.
-        // `onClose` is what ties the store subscription to the stream's life:
-        // a consumer that `break`s out of `responses()` calls the iterator's
-        // `return()`, which closes the channel — and must take the
-        // subscription with it rather than leave it feeding a dead channel.
+        // `onClose` ties the store subscription to the stream's life: a
+        // consumer that `break`s out of `responses()` closes the channel, and
+        // must take the subscription with it.
         const channel = createPushChannel<string>(() => loopback.close());
         const loopback = store.connect((json) => channel.push(json));
-        // One iterator per connection, not one per `responses()` call: the
-        // channel's `[Symbol.asyncIterator]` mints a fresh iterator over shared
-        // buffers, so two loops would race each other for frames. The RPC route
-        // below gets this from its generator; this route pins it explicitly.
+        // One iterator per connection: the channel mints a fresh one per call
+        // over shared buffers, so two loops would race for frames.
         const iterator = channel.iterable[Symbol.asyncIterator]();
         const responses: AsyncIterable<string> = { [Symbol.asyncIterator]: () => iterator };
 
@@ -158,10 +131,8 @@ export function createChainCallbacks(options: {
             return responses;
           },
           close(): void {
-            // Closing the channel stops any further response reaching it,
-            // resolves a pending `responses()` pull as `done` instead of
-            // hanging it, and runs `onClose` — which unsubscribes from the
-            // store. Closing twice is a no-op on both sides.
+            // Resolves a pending pull as `done` rather than hanging it, and
+            // unsubscribes via `onClose`. Idempotent.
             channel.close();
           },
         };
@@ -172,12 +143,8 @@ export function createChainCallbacks(options: {
         throw new Error(`no chain configured for genesis ${target}`);
       }
 
-      // No bridge on this route: the provider's `Connection` is already the
-      // raw string pipe the core's `JsonRpcConnection` asks for, so neither a
-      // push channel nor a JSON (de)serialisation step is needed.
       const connection = await (await provider()).connect(target);
-      // One drain per connection, not one per `responses()` call: two loops
-      // over the same pipe would race each other for frames.
+      // One drain per connection: two loops over the pipe would race for frames.
       const responses = drainResponses(connection);
 
       return {

@@ -1,8 +1,6 @@
 /**
- * Dev-account keys, derived in-page with no WASM crypto.
- *
- * Addresses are the canonical Substrate dev ones, so tests and funded testnet
- * accounts keep working across the migration.
+ * Dev-account keys, derived in-page with no WASM crypto. Addresses are the
+ * canonical Substrate dev ones, so funded testnet accounts keep working.
  */
 import { HDKD, getPublicKey, secretFromSeed } from '@scure/sr25519';
 import { DEV_MINI_SECRET, ss58Address } from '@polkadot-labs/hdkd-helpers';
@@ -10,10 +8,9 @@ import { scale } from '@parity/truapi';
 
 export interface DevKeypair {
   /**
-   * 64-byte sr25519 secret in `@scure/sr25519`'s representation: the scalar
-   * shifted ed25519-style (multiplied by the cofactor), then the nonce. This
-   * is what every `@scure/sr25519` call here takes — and it is NOT the form
-   * the core reads a raw secret in; see `canonicalSecretKey`.
+   * `@scure/sr25519`'s representation: the scalar multiplied by the cofactor,
+   * then the nonce. NOT the form the core reads a raw secret in — see
+   * `canonicalSecretKey`.
    */
   secretKey: Uint8Array;
   publicKey: Uint8Array;
@@ -21,26 +18,17 @@ export interface DevKeypair {
 }
 
 /**
- * The same secret in schnorrkel's canonical `SecretKey::to_bytes()` form.
+ * The same secret in schnorrkel's canonical `SecretKey::to_bytes()` form —
+ * needed wherever this host hands the core a raw secret.
  *
- * schnorrkel has two 64-byte secret encodings: `to_bytes`/`from_bytes` carry
- * the scalar reduced mod l, while `to_ed25519_bytes`/`from_ed25519_bytes`
- * carry it multiplied by the cofactor. `@scure/sr25519` uses the latter;
- * `SecretKey::from_bytes` rejects it, because the shifted scalar is ~8x l and
- * fails the canonicity check.
- *
- * That matters wherever this host hands the core a raw secret. The core is not
- * uniform about it: `Sr25519Signer::from_secret_bytes`
- * (`host_logic/extrinsic.rs`) tries `from_bytes` and falls back to
- * `from_ed25519_bytes`, but `validate_auto_signing_key`
+ * `@scure/sr25519` emits the cofactor-multiplied scalar, which
+ * `SecretKey::from_bytes` rejects as non-canonical; `validate_auto_signing_key`
  * (`runtime/pairing_host.rs`) and `derive_product_keypair_from_subtree_secret`
- * (`host_logic/product_account.rs`) accept ONLY the canonical form — an
- * ed25519-shifted secret comes back as "AutoSigning capability contains an
- * invalid subtree secret". The canonical form is accepted everywhere, and
- * both forms name the same scalar, so the keys and signatures are identical.
+ * take only the canonical one, and a shifted secret surfaces as "AutoSigning
+ * capability contains an invalid subtree secret". Both forms name the same
+ * scalar, so keys and signatures are unchanged.
  *
- * This is the inverse of schnorrkel's `divide_scalar_bytes_by_cofactor`: a
- * little-endian shift right by 3, leaving the nonce untouched.
+ * Inverse of schnorrkel's `divide_scalar_bytes_by_cofactor`.
  */
 export function canonicalSecretKey(secretKey: Uint8Array): Uint8Array {
   if (secretKey.length !== 64) {
@@ -85,28 +73,18 @@ export function deriveDev(...junctions: string[]): DevKeypair {
 }
 
 /**
- * Witness bytes for a soft derivation's child nonce.
- *
- * `HDKD.secretSoft` takes this as its `random` argument and folds it into the
- * child's NONCE only — the child's scalar, and therefore its public key and
- * address, come from the transcript alone. schnorrkel's own `derived_key`
- * randomises that nonce; this host pins it to zero so a derived account is
- * reproducible across runs. Nothing is weakened by it: the nonce is one of
- * three witness inputs (the parent nonce and the parent secret are the other
- * two), and `@scure/sr25519`'s `sign` draws fresh randomness per signature
- * regardless.
+ * Folded into the child's NONCE only — the scalar, public key and address come
+ * from the transcript alone. schnorrkel randomises this; pinned to zero here so
+ * a derived account is reproducible across runs, which costs nothing because
+ * `sign` draws fresh randomness per signature anyway.
  */
 const SOFT_DERIVATION_WITNESS = new Uint8Array(32);
 
 /**
- * Soft-derive a child keypair at a 32-byte chain code.
- *
- * The counterpart of schnorrkel's `derived_key_simple(ChainCode(cc), [])`,
- * which is what the core calls for a product account
- * (`host_logic/product_account.rs`). Soft means the child public key is also
- * derivable from the parent PUBLIC key alone — which is exactly why the core
- * can derive product accounts itself from a subtree public key, and why this
- * host must use the same junction when it signs for one.
+ * Counterpart of schnorrkel's `derived_key_simple(ChainCode(cc), [])`, which is
+ * what the core calls for a product account (`host_logic/product_account.rs`).
+ * Being soft is why the core can derive from a subtree PUBLIC key alone — and
+ * why this host must use the same junction when it signs.
  */
 export function deriveSoft(parent: DevKeypair, chainCode: Uint8Array): DevKeypair {
   if (chainCode.length !== 32) {
@@ -115,11 +93,7 @@ export function deriveSoft(parent: DevKeypair, chainCode: Uint8Array): DevKeypai
   return fromSecret(HDKD.secretSoft(parent.secretKey, chainCode, SOFT_DERIVATION_WITNESS));
 }
 
-/**
- * Derive from a Substrate URI. Only hard junctions (`//x`) are supported —
- * every path this host builds uses them, and a soft junction would silently
- * produce a different address.
- */
+/** Hard junctions (`//x`) only; a soft junction would silently give a different address. */
 export function deriveFromUri(uri: string): DevKeypair {
   if (uri.includes('/') && !uri.startsWith('//')) {
     throw new Error(`unsupported derivation URI: ${uri}`);
