@@ -11,6 +11,8 @@
  * that direct mutation possible.
  */
 
+import type { AuthState } from '@parity/truapi-host';
+
 /**
  * Controls how the host answers `permissions.remotePermission` and
  * `permissions.devicePermission`. Ported from the pre-migration
@@ -81,6 +83,13 @@ export interface ChatMessageLogEntry {
 }
 
 export interface HostState {
+  /**
+   * The core's last `auth.authStateChanged` report, or `undefined` before the
+   * first one. This host's session state is the core's to report, so it is
+   * recorded verbatim here rather than tracked by hand alongside it.
+   */
+  authState: AuthState | undefined;
+
   permissionBehavior: PermissionBehavior;
   grantedPermissions: Set<string>;
   permissionLog: PermissionLogEntry[];
@@ -117,6 +126,7 @@ export interface HostState {
 
 export function createHostState(): HostState {
   return {
+    authState: undefined,
     permissionBehavior: 'approve-all',
     grantedPermissions: new Set(),
     permissionLog: [],

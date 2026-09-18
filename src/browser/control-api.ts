@@ -88,8 +88,6 @@ export interface ControlApiOptions {
    * arrived from the product over the bridge.
    */
   connectionStatus(): string;
-  /** This host's session: `'connected'` once `activateExternalSession` has resolved. */
-  chainStatus(): string;
   /** Tear down the MessagePort ↔ provider bridge. */
   disposeBridge(): void;
 }
@@ -128,9 +126,12 @@ export function buildControlApi(options: ControlApiOptions): TestHostAPI {
     },
 
     getChainStatus() {
-      // This host's session. The only chain it serves unconditionally is the
-      // in-page loopback People store, which is up as soon as the session is.
-      return options.chainStatus();
+      // This host's session, as the CORE last reported it — the only chain
+      // this host serves unconditionally is the in-page loopback People
+      // store, which is up as soon as the session is. Silence before the
+      // first report is the activation still in flight.
+      if (!state.authState) return 'connecting';
+      return state.authState.tag === 'Connected' ? 'connected' : 'disconnected';
     },
 
     setPermissionBehavior(behavior: PermissionBehavior) {

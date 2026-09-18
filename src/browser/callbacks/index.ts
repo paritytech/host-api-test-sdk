@@ -11,10 +11,11 @@
  * `auth` and `userConfirmation` are wired inline rather than given files of
  * their own, because neither has any behaviour to put in one:
  *
- *  - `auth.authStateChanged` is a permanent no-op. This host has no login —
- *    it mints its own SSO session at boot — so there is no auth state to
- *    report. It exists to satisfy `Required<AuthPresenter>` rather than to
- *    invent session UI a test could not drive.
+ *  - `auth.authStateChanged` records what the core reports into `state`.
+ *    This host has no login UI to drive from it — it mints its own SSO
+ *    session at boot — but the core IS the authority on whether that session
+ *    is up, and `getChainStatus()` answers from this one field rather than
+ *    from a status this host tries to keep in step by hand.
  *  - `userConfirmation.confirmUserAction` always approves. Per-action review
  *    is a human prompt, and a host whose whole purpose is unattended
  *    auto-signing has nobody to ask; approving is the same default-approve
@@ -54,7 +55,9 @@ export function createHostCallbacks(options: CreateHostCallbacksOptions): Requir
     coreStorage: createCoreStorageCallbacks(),
     chain: createChainCallbacks({ store, networks }),
     auth: {
-      authStateChanged: () => {},
+      authStateChanged: (authState) => {
+        state.authState = authState;
+      },
     },
     userConfirmation: {
       confirmUserAction: async () => true,

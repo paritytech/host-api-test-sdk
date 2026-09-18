@@ -294,20 +294,20 @@ async function init(): Promise<void> {
     throw cause;
   });
 
-  // Two independent readouts, deliberately: `productStatus` is the PRODUCT
-  // connection (what the pre-migration `subscribeProductConnectionStatus`
-  // reported, and what the fixture's `waitForConnection` gates on), and
-  // `sessionStatus` is this host's own session activation. Publishing
-  // `__TEST_HOST__` says nothing about either.
+  // `productStatus` is the PRODUCT connection — what the pre-migration
+  // `subscribeProductConnectionStatus` reported, and what the fixture's
+  // `waitForConnection` gates on. It is tracked here because nothing else
+  // knows it: it flips on the first inbound frame over the bridge. The host's
+  // OWN session is a separate readout and is NOT tracked here — the core
+  // reports it through `auth.authStateChanged`, which `state.authState`
+  // records and `getChainStatus()` answers from.
   let productStatus = 'disconnected';
-  let sessionStatus = 'connecting';
   const productIsTalking = () => {
     productStatus = 'connected';
   };
 
   try {
     await runtime.activateExternalSession(encodeExternalPairedSession(session));
-    sessionStatus = 'connected';
 
     const productId = config.productId ?? DEFAULT_PRODUCT_ID;
     const executionKind = config.executionKind ?? DEFAULT_EXECUTION_KIND;
@@ -365,45 +365,41 @@ async function init(): Promise<void> {
       accounts = names.map((name) => resolveAccountName(config.accounts, name));
 
       productStatus = 'disconnected';
-      sessionStatus = 'connecting';
       retiredSigningLog.push(...responder.getSigningLog());
       responder.dispose();
       session = mintSession(deriveFromUri(accounts[0].uri));
       responder = createSsoResponder({ store, session, resolveAccount });
 
+      // No unwind for a failed switch: `resetSessionState()` drops the core's
+      // session and the core reports that through `authStateChanged`, so a
+      // switch that then fails to activate leaves `getChainStatus()` reading
+      // `'disconnected'` without this function saying so.
+      await runtime.resetSessionState();
+      await runtime.activateExternalSession(encodeExternalPairedSession(session));
+
+      // The port provider does not buffer: a frame delivered while nothing
+      // is subscribed is dropped on the floor. The product keeps talking
+      // across the swap, so park its frames for the duration rather than
+      // lose them.
+      const parked: Uint8Array[] = [];
+      const stopParking = portProvider.subscribe((frame) => {
+        productIsTalking();
+        parked.push(frame);
+      });
+      unbridge();
+
       try {
-        await runtime.resetSessionState();
-        await runtime.activateExternalSession(encodeExternalPairedSession(session));
-
-        // The port provider does not buffer: a frame delivered while nothing
-        // is subscribed is dropped on the floor. The product keeps talking
-        // across the swap, so park its frames for the duration rather than
-        // lose them.
-        const parked: Uint8Array[] = [];
-        const stopParking = portProvider.subscribe((frame) => {
-          productIsTalking();
-          parked.push(frame);
-        });
-        unbridge();
-
-        try {
-          provider.dispose();
-          provider = await runtime.createProvider({ productId, executionKind });
-        } finally {
-          // Unsubscribe even when the swap fails. A parking subscriber left
-          // attached would grow `parked` unboundedly and keep reporting the
-          // product as talking while no frame reaches any core.
-          stopParking();
-        }
-
-        for (const frame of parked) provider.postMessage(frame);
-        unbridge = bridgeProviders(portProvider, provider, productIsTalking);
-        sessionStatus = 'connected';
-      } catch (error) {
-        // Never leave a failed switch claiming to be connected.
-        sessionStatus = 'disconnected';
-        throw error;
+        provider.dispose();
+        provider = await runtime.createProvider({ productId, executionKind });
+      } finally {
+        // Unsubscribe even when the swap fails. A parking subscriber left
+        // attached would grow `parked` unboundedly and keep reporting the
+        // product as talking while no frame reaches any core.
+        stopParking();
       }
+
+      for (const frame of parked) provider.postMessage(frame);
+      unbridge = bridgeProviders(portProvider, provider, productIsTalking);
     }
 
     /**
@@ -427,7 +423,6 @@ async function init(): Promise<void> {
       provider: (): TrUApiProductProvider => provider,
       setAccounts,
       connectionStatus: () => productStatus,
-      chainStatus: () => sessionStatus,
       disposeBridge: () => {
         unbridge();
         portProvider.dispose();
