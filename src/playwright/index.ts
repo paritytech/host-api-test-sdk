@@ -9,7 +9,10 @@ export type {
   DevAccountInfo,
   DevAccountName,
   HexString,
+  InitialBehaviors,
+  InitialState,
   SigningLogEntry,
+  UserConfirmationBehavior,
 } from '../types.js';
 export {
   DEFAULT_CHAIN,
