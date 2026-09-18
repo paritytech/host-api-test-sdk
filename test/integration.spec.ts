@@ -456,6 +456,28 @@ test.describe('Navigation', () => {
       await host.close();
     }
   });
+
+  test('a refused navigation surfaces to the product and is still logged', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice'],
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+      await page.evaluate(() => window.__TEST_HOST__.setNavigationBehavior('reject-all'));
+
+      const result = await product.evaluate(() =>
+        window.__TEST_PRODUCT__.navigateTo('polkadot://blocked.dot'),
+      );
+
+      expect(result.ok).toBe(false);
+      const log = await page.evaluate(() => window.__TEST_HOST__.getNavigationLog());
+      expect(log.some((entry) => entry.url.includes('blocked'))).toBe(true);
+    } finally {
+      await host.close();
+    }
+  });
 });
 
 // ── Push notifications ──────────────────────────────────────────────

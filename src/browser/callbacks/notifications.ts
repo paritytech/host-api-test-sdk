@@ -26,6 +26,18 @@ export function createNotificationCallbacks(state: HostState): {
         notification.deeplink ? `(deeplink: ${notification.deeplink})` : '',
         notification.scheduledAt !== undefined ? `(scheduledAt: ${notification.scheduledAt})` : '',
       );
+
+      // `Notifications.pushNotification` declares no error response, so refusal is a thrown
+      // error; the id is still allocated so ids never collide across refusals.
+      const behavior = state.notificationBehavior;
+      const allowed =
+        behavior === 'approve-all'
+          ? true
+          : behavior === 'reject-all'
+            ? false
+            : behavior({ text: notification.text });
+      if (!allowed) throw new Error('Notification refused by the test host');
+
       return { id };
     },
 

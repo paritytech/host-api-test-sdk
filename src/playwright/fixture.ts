@@ -1,7 +1,7 @@
 import type { Page, FrameLocator } from '@playwright/test';
 import { createTestHostServer } from '../server.js';
 import { DEFAULT_CHAIN } from '../networks.js';
-import type { ChatActionInput, ChatBot, ChatMessageLogEntry, ChatRoom, CreateTestHostOptions, DevAccountName, HexString, NavigationLogEntry, NotificationLogEntry, PermissionBehavior, PermissionLogEntry, PreimageEntry, SigningLogEntry, TestHostAPI, Theme, ThemeInput, UserConfirmationLogEntry } from '../types.js';
+import type { ChatActionInput, ChatBot, ChatMessageLogEntry, ChatRoom, CreateTestHostOptions, DevAccountName, HexString, NavigationLogEntry, NotificationLogEntry, PermissionLogEntry, PreimageEntry, SigningLogEntry, TestHostAPI, Theme, ThemeInput, UserConfirmationLogEntry } from '../types.js';
 
 export interface TestHost {
   /** The host page (contains the iframe) */
@@ -30,8 +30,12 @@ export interface TestHost {
   /** Clear the signing log */
   clearSigningLog(): Promise<void>;
 
-  /** Set how the host responds to remote permission requests */
-  setPermissionBehavior(behavior: PermissionBehavior): Promise<void>;
+  /**
+   * Set how the host responds to remote permission requests. The function form
+   * of a behaviour cannot cross `page.evaluate`, so only the two named modes
+   * are accepted here.
+   */
+  setPermissionBehavior(behavior: 'approve-all' | 'reject-all'): Promise<void>;
 
   /** Pre-grant a permission without the product requesting it */
   grantPermission(tag: string): Promise<void>;
@@ -108,6 +112,19 @@ export interface TestHost {
 
   /** Drop the confirmation log. */
   clearUserConfirmationLog(): Promise<void>;
+
+  /**
+   * Set how the host answers `navigateTo`. The function form of a behaviour
+   * cannot cross `page.evaluate`, so only the two named modes are accepted here.
+   */
+  setNavigationBehavior(behavior: 'approve-all' | 'reject-all'): Promise<void>;
+
+  /**
+   * Set how the host answers `pushNotification`. The function form of a
+   * behaviour cannot cross `page.evaluate`, so only the two named modes are
+   * accepted here.
+   */
+  setNotificationBehavior(behavior: 'approve-all' | 'reject-all'): Promise<void>;
 
   /**
    * Wait until the product has actually talked to the host. This is the
@@ -188,7 +205,7 @@ export function createTestHostFixture(defaults: TestHostFixtureOptions) {
           await page.evaluate(() => window.__TEST_HOST__.clearSigningLog());
         },
 
-        async setPermissionBehavior(behavior: PermissionBehavior) {
+        async setPermissionBehavior(behavior: 'approve-all' | 'reject-all') {
           await page.evaluate((b) => window.__TEST_HOST__.setPermissionBehavior(b), behavior);
         },
 
@@ -291,6 +308,14 @@ export function createTestHostFixture(defaults: TestHostFixtureOptions) {
 
         async clearUserConfirmationLog() {
           await page.evaluate(() => window.__TEST_HOST__.clearUserConfirmationLog());
+        },
+
+        async setNavigationBehavior(behavior: 'approve-all' | 'reject-all') {
+          await page.evaluate((b) => window.__TEST_HOST__.setNavigationBehavior(b), behavior);
+        },
+
+        async setNotificationBehavior(behavior: 'approve-all' | 'reject-all') {
+          await page.evaluate((b) => window.__TEST_HOST__.setNotificationBehavior(b), behavior);
         },
 
         async waitForConnection(timeout = 30_000) {

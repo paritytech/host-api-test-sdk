@@ -9,6 +9,16 @@ export function createNavigationCallbacks(state: HostState): { navigateTo(url: s
       }
       state.navigationLog.push({ url, timestamp: Date.now() });
       console.log('[test-host] Navigation requested:', url);
+
+      // `Navigation.navigateTo` declares no error response, so refusal is a thrown error.
+      const behavior = state.navigationBehavior;
+      const allowed =
+        behavior === 'approve-all'
+          ? true
+          : behavior === 'reject-all'
+            ? false
+            : behavior({ url });
+      if (!allowed) throw new Error(`Navigation refused by the test host: ${url}`);
     },
   };
 }

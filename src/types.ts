@@ -186,6 +186,12 @@ export interface UserConfirmationLogEntry {
 /** How the host answers `confirmUserAction`; `'approve-all'` is the default. */
 export type UserConfirmationBehavior = Behavior<{ tag: string; value: unknown }, boolean>;
 
+/** How the host answers `navigateTo`; `'approve-all'` is the default. */
+export type NavigationBehavior = Behavior<{ url: string }, boolean>;
+
+/** How the host answers `pushNotification`; `'approve-all'` is the default. */
+export type NotificationBehavior = Behavior<{ text: string }, boolean>;
+
 /** Shape of window.__TEST_HOST__ — shared between browser bundle and Playwright fixture. */
 export interface TestHostAPI {
   switchAccount(name: string): Promise<void>;
@@ -257,6 +263,10 @@ export interface TestHostAPI {
   getUserConfirmationLog(): UserConfirmationLogEntry[];
   /** Drop the confirmation log. */
   clearUserConfirmationLog(): void;
+  /** Set how the host answers `navigateTo`. */
+  setNavigationBehavior(behavior: NavigationBehavior): void;
+  /** Set how the host answers `pushNotification`. */
+  setNotificationBehavior(behavior: NotificationBehavior): void;
 
   dispose(): void;
 }

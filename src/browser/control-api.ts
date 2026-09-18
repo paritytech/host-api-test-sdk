@@ -11,6 +11,8 @@ import type { SsoResponder } from './sso/responder.js';
 import type {
   ChatActionInput,
   HexString,
+  NavigationBehavior,
+  NotificationBehavior,
   PermissionBehavior,
   TestHostAPI,
   Theme,
@@ -235,6 +237,14 @@ export function buildControlApi(options: ControlApiOptions): TestHostAPI {
 
     clearUserConfirmationLog() {
       state.userConfirmationLog.length = 0;
+    },
+
+    setNavigationBehavior(behavior: NavigationBehavior) {
+      state.navigationBehavior = behavior;
+    },
+
+    setNotificationBehavior(behavior: NotificationBehavior) {
+      state.notificationBehavior = behavior;
     },
 
     dispose() {
