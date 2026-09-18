@@ -30,7 +30,8 @@ export function createNotificationCallbacks(state: HostState): {
 
       // `Notifications.pushNotification` declares no error response, so refusal is a thrown
       // error; the id is still allocated so ids never collide across refusals.
-      if (!decideBehavior(state.notificationBehavior, { text: notification.text })) {
+      const { text, deeplink, scheduledAt } = notification;
+      if (!decideBehavior(state.notificationBehavior, { text, deeplink, scheduledAt })) {
         throw new Error('Notification refused by the test host');
       }
 

@@ -197,19 +197,19 @@ export type ThemeInput = 'light' | 'dark' | Theme;
 
 /**
  * How the host answers one kind of request. `fn` receives the request and
- * returns the answer, so a test can be selective without a matcher language.
+ * approves or refuses it, so a test can be selective without a matcher language.
  */
-export type Behavior<Req, Res> = 'approve-all' | 'reject-all' | ((request: Req) => Res);
+export type Behavior<Req> = 'approve-all' | 'reject-all' | ((request: Req) => boolean);
 
 /** The one reading of a `Behavior`, so the named modes cannot drift between handlers. */
-export function decideBehavior<Req>(behavior: Behavior<Req, boolean>, request: Req): boolean {
+export function decideBehavior<Req>(behavior: Behavior<Req>, request: Req): boolean {
   if (behavior === 'approve-all') return true;
   if (behavior === 'reject-all') return false;
   return behavior(request);
 }
 
 /** How the test host answers remote permission requests; `'approve-all'` is the default. */
-export type PermissionBehavior = Behavior<{ tag: string; value: unknown }, boolean>;
+export type PermissionBehavior = Behavior<{ tag: string; value: unknown }>;
 
 /** One `confirmUserAction` review the host was asked to answer. */
 export interface UserConfirmationLogEntry {
@@ -220,13 +220,18 @@ export interface UserConfirmationLogEntry {
 }
 
 /** How the host answers `confirmUserAction`; `'approve-all'` is the default. */
-export type UserConfirmationBehavior = Behavior<{ tag: string; value: unknown }, boolean>;
+export type UserConfirmationBehavior = Behavior<{ tag: string; value: unknown }>;
 
 /** How the host answers `navigateTo`; `'approve-all'` is the default. */
-export type NavigationBehavior = Behavior<{ url: string }, boolean>;
+export type NavigationBehavior = Behavior<{ url: string }>;
 
 /** How the host answers `pushNotification`; `'approve-all'` is the default. */
-export type NotificationBehavior = Behavior<{ text: string }, boolean>;
+export type NotificationBehavior = Behavior<{
+  text: string;
+  deeplink: string | undefined;
+  /** Future delivery time in epoch-ms, or undefined for immediate. */
+  scheduledAt: bigint | undefined;
+}>;
 
 /** Host state applied before the product's first frame. */
 export interface InitialState {
