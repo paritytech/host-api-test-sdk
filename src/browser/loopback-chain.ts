@@ -1,0 +1,197 @@
+/**
+ * In-memory statement store behind `chain.connect`. The core reaches its paired
+ * peer over People-chain statements, so serving that surface in-page is what
+ * keeps signing local: no node, no network, no allowance to register.
+ */
+import { scale } from '@parity/truapi';
+import {
+  type Statement,
+  type TopicFilterKind,
+  decodeStatement,
+  encodeStatement,
+  matchesTopics,
+} from './sso/statement.js';
+
+interface Subscription {
+  id: string;
+  kind: TopicFilterKind;
+  topics: Uint8Array[];
+  notify: (json: string) => void;
+}
+
+export interface LoopbackConnection {
+  send(request: string): void;
+  close(): void;
+}
+
+export interface LoopbackStore {
+  connect(onResponse: (json: string) => void): LoopbackConnection;
+  /** Deliver a statement to every matching subscriber. */
+  publish(statement: Statement): void;
+  /** Observe statements the core submits. Returns the unsubscribe. */
+  onSubmit(listener: (statement: Statement) => void): () => void;
+}
+
+export function createLoopbackStore(): LoopbackStore {
+  const subscriptions = new Set<Subscription>();
+  const submitListeners = new Set<(statement: Statement) => void>();
+  let nextSubscriptionId = 1;
+
+  /**
+   * Lower-camel keys, as `statement_store_rpc.rs` sends them. `matchAny` is
+   * probed first so an object carrying both keys is never narrowed to
+   * `MatchAll`, which would drop statements the subscriber asked for.
+   */
+  const FILTER_KEYS: ReadonlyArray<readonly [key: string, kind: TopicFilterKind]> = [
+    ['matchAny', 'MatchAny'],
+    ['matchAll', 'MatchAll'],
+  ];
+
+  function parseFilter(raw: unknown): { kind: TopicFilterKind; topics: Uint8Array[] } {
+    const toTopics = (values: unknown[]) => values.map((t) => scale.hexToBytes(String(t)));
+
+    if (Array.isArray(raw)) {
+      return { kind: 'MatchAll', topics: toTopics(raw) };
+    }
+    // `in` throws on a non-object primitive.
+    if (typeof raw !== 'object' || raw === null) {
+      return { kind: 'MatchAll', topics: [] };
+    }
+    const filter = raw as Record<string, unknown>;
+    for (const [key, kind] of FILTER_KEYS) {
+      if (!(key in filter)) continue;
+      const topics = filter[key];
+      return { kind, topics: Array.isArray(topics) ? toTopics(topics) : [] };
+    }
+    // An unreadable filter subscribes to everything, so it is loud (extra
+    // deliveries) rather than a silent black hole.
+    return { kind: 'MatchAll', topics: [] };
+  }
+
+  return {
+    connect(onResponse) {
+      const owned = new Set<Subscription>();
+
+      return {
+        send(request: string) {
+          try {
+            const { id, method, params = [] } = JSON.parse(request) as {
+              id: number | string;
+              method: string;
+              params?: unknown[];
+            };
+            const reply = (result: unknown) =>
+              onResponse(JSON.stringify({ jsonrpc: '2.0', id, result }));
+
+            switch (method) {
+              case 'statement_submit': {
+                const statement = decodeStatement(scale.hexToBytes(String(params[0])));
+                // The core reads `.status` off this object and accepts only
+                // `new`/`known`; a bare `"new"` string is rejected as
+                // `statement_submit not accepted`.
+                reply({ status: 'new' });
+                for (const listener of submitListeners) {
+                  try {
+                    listener(statement);
+                  } catch (error) {
+                    // Swallowed so one listener cannot starve the rest, but
+                    // never silently: the SSO responder is a listener, and a
+                    // throw here is a reply the core waits for forever.
+                    console.error('[loopback-chain] statement_submit listener threw:', error);
+                  }
+                }
+                return;
+              }
+              case 'statement_subscribeStatement': {
+                const { kind, topics } = parseFilter(params[0]);
+                const subscriptionId = `sub-${nextSubscriptionId++}`;
+                const subscription: Subscription = {
+                  id: subscriptionId,
+                  kind,
+                  topics,
+                  notify: onResponse,
+                };
+                subscriptions.add(subscription);
+                owned.add(subscription);
+                reply(subscriptionId);
+                return;
+              }
+              case 'statement_unsubscribeStatement': {
+                const target = String(params[0]);
+                for (const subscription of owned) {
+                  if (subscription.id !== target) continue;
+                  subscriptions.delete(subscription);
+                  owned.delete(subscription);
+                }
+                reply(true);
+                return;
+              }
+              default:
+                onResponse(
+                  JSON.stringify({
+                    jsonrpc: '2.0',
+                    id,
+                    error: { code: -32601, message: `unsupported method: ${method}` },
+                  }),
+                );
+            }
+          } catch (error) {
+            let id: number | string = 'unknown';
+            try {
+              const parsed = JSON.parse(request) as { id?: number | string };
+              if (parsed.id !== undefined) id = parsed.id;
+            } catch {
+              // Unparseable request: no id to echo.
+            }
+            onResponse(
+              JSON.stringify({
+                jsonrpc: '2.0',
+                id,
+                error: {
+                  code: -32603,
+                  message: error instanceof Error ? error.message : String(error),
+                },
+              }),
+            );
+          }
+        },
+        close() {
+          for (const subscription of owned) subscriptions.delete(subscription);
+          owned.clear();
+        },
+      };
+    },
+
+    publish(statement) {
+      // `parse_new_statements_result` demands this exact envelope — a bare hex
+      // string is rejected as `malformed statement-store frame`. `remaining` is
+      // a server backlog this store never has, and the core keys on
+      // `params.subscription`, ignoring the method name.
+      const result = {
+        event: 'newStatements',
+        data: { statements: [scale.bytesToHex(encodeStatement(statement))], remaining: 0 },
+      };
+      for (const subscription of subscriptions) {
+        if (!matchesTopics(statement, subscription.kind, subscription.topics)) continue;
+        try {
+          subscription.notify(
+            JSON.stringify({
+              jsonrpc: '2.0',
+              method: 'statement_statement',
+              params: { subscription: subscription.id, result },
+            }),
+          );
+        } catch (error) {
+          // Logged, not silent: a subscriber that throws is a statement
+          // nobody received.
+          console.error('[loopback-chain] statement subscriber threw:', error);
+        }
+      }
+    },
+
+    onSubmit(listener) {
+      submitListeners.add(listener);
+      return () => submitListeners.delete(listener);
+    },
+  };
+}

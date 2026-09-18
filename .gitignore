@@ -2,8 +2,8 @@ node_modules/
 dist/
 *.tgz
 .DS_Store
+.idea
 test/test-product-bundle.js
-test/test-product-truapi-bundle.js
 test/test-results/
 test-results/
 
@@ -16,3 +16,6 @@ test-results/
 AGENTS.md
 consumers.md
 scripts/
+
+# SDD scratch workspace (subagent-driven-development)
+.superpowers/

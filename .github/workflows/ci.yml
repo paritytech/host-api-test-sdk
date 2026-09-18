@@ -21,6 +21,13 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # First gate on purpose: the unit suite needs no build and no browser, so
+      # it is the fastest signal there is — and it carries the drift guards
+      # (SSO session-blob length, the 24 wire variants, the schnorrkel vectors)
+      # that nothing else in CI would catch.
+      - name: Unit tests
+        run: pnpm run test:unit
+
       - name: Build browser bundle
         run: pnpm run build:bundle
 

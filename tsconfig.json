@@ -14,5 +14,8 @@
     "forceConsistentCasingInFileNames": true
   },
   "include": ["src/**/*.ts"],
+  // `src/browser/**` is bundled into `dist/host/` by esbuild and must not be
+  // emitted here as a second, unbundled copy of the same code. It is still type
+  // checked: `tsconfig.browser.json` covers it, and `pnpm typecheck` runs both.
   "exclude": ["src/browser/**"]
 }

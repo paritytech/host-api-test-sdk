@@ -1,7 +1,7 @@
 import type { Page, FrameLocator } from '@playwright/test';
 import { createTestHostServer } from '../server.js';
 import { DEFAULT_CHAIN } from '../networks.js';
-import type { ChatBot, ChatMessageLogEntry, ChatRoom, CreateTestHostOptions, DevAccountName, HexString, LoginBehavior, NavigationLogEntry, NotificationLogEntry, PaymentLogEntry, PaymentTopUpBehavior, PermissionBehavior, PermissionLogEntry, PreimageEntry, SigningLogEntry, StatementSubmissionLogEntry, TestHostAPI, Theme, ThemeInput } from '../types.js';
+import type { ChatActionInput, ChatBot, ChatMessageLogEntry, ChatRoom, CreateTestHostOptions, DevAccountName, HexString, NavigationLogEntry, NotificationLogEntry, PermissionBehavior, PermissionLogEntry, PreimageEntry, SigningLogEntry, TestHostAPI, Theme, ThemeInput } from '../types.js';
 
 export interface TestHost {
   /** The host page (contains the iframe) */
@@ -10,11 +10,19 @@ export interface TestHost {
   /** FrameLocator for the embedded product iframe */
   productFrame(): FrameLocator;
 
-  /** Dispose container and recreate with a single account (iframe reloads) */
-  switchAccount(name: DevAccountName): Promise<void>;
+  /**
+   * Re-mint the host session under one account, matched case-insensitively
+   * against the configured `accounts` (an unknown dev name falls back to
+   * `'bob'` → `//Bob`). The product iframe is NOT reloaded and the product is
+   * not told — reload the page yourself if it must re-initialise.
+   */
+  switchAccount(name: DevAccountName | (string & {})): Promise<void>;
 
-  /** Dispose container and recreate with multiple accounts (iframe reloads) */
-  setAccounts(names: DevAccountName[]): Promise<void>;
+  /**
+   * Replace the whole roster. The FIRST name becomes the active identity and is
+   * the only account that signs; the rest are later `switchAccount` targets.
+   */
+  setAccounts(names: Array<DevAccountName | (string & {})>): Promise<void>;
 
   /** All auto-signed payloads since last clear */
   getSigningLog(): Promise<SigningLogEntry[]>;
@@ -33,9 +41,6 @@ export interface TestHost {
 
   /** List currently granted permissions */
   getGrantedPermissions(): Promise<string[]>;
-
-  /** Enable or disable permission enforcement on signing (default: enabled) */
-  setEnforcePermissions(enforce: boolean): Promise<void>;
 
   /** Get the log of all permission requests and their outcomes */
   getPermissionLog(): Promise<PermissionLogEntry[]>;
@@ -67,8 +72,8 @@ export interface TestHost {
   /** Clear all chat state (rooms, bots, messages, subscribers) */
   clearChatState(): Promise<void>;
 
-  /** Inject an incoming chat action (peer message) into the product */
-  injectChatAction(action: { roomId: string; peer: string; payload: unknown }): Promise<void>;
+  /** Inject an incoming chat action into the product; rejects if it could not be delivered. */
+  injectChatAction(action: ChatActionInput): Promise<void>;
 
   /** List preimages known to the test host (submitted + seeded) */
   getPreimages(): Promise<PreimageEntry[]>;
@@ -79,74 +84,46 @@ export interface TestHost {
   /** Clear all preimages */
   clearPreimages(): Promise<void>;
 
-  /** Get the log of statements submitted by the product */
-  getSubmittedStatements(): Promise<StatementSubmissionLogEntry[]>;
-
-  /** Inject a statement into the store; delivers to matching subscribers */
-  injectStatement(statement: unknown): Promise<void>;
-
-  /** Clear all statements */
-  clearStatements(): Promise<void>;
-
-  /**
-   * Get the current theme as the upstream struct (`{ name, variant }`).
-   * Use `theme.variant` for the light/dark sub-mode (`'Light' | 'Dark'`).
-   */
+  /** Get the current theme; `theme.variant` is the light/dark sub-mode. */
   getTheme(): Promise<Theme>;
 
-  /**
-   * Set the theme and notify subscribers.
-   *
-   * Accepts `'light' | 'dark'` (mapped to the host's `Default` theme with
-   * the matching variant) or the full `{ name, variant }` struct.
-   */
+  /** Set the theme and notify subscribers. `'light' | 'dark'` map to the host's `Default` theme. */
   setTheme(theme: ThemeInput): Promise<void>;
 
-  /** Set how the host responds to login requests */
-  setLoginBehavior(behavior: LoginBehavior): Promise<void>;
-
-  /** Whether the product is currently authenticated */
-  getIsAuthenticated(): Promise<boolean>;
-
-  /** Simulate user disconnect (unauthenticated state) */
-  simulateDisconnect(): Promise<void>;
-
-  /** Simulate user reconnect (authenticated state) */
-  simulateReconnect(): Promise<void>;
-
-  /** Set the mock payment balance */
-  setPaymentBalance(amount: bigint): Promise<void>;
-
-  /** Get the log of payment operations */
-  getPaymentLog(): Promise<PaymentLogEntry[]>;
-
-  /** Clear the payment log */
-  clearPaymentLog(): Promise<void>;
+  /**
+   * Wait until the product has actually talked to the host. This is the
+   * readiness gate — `window.__TEST_HOST__` says nothing about the product.
+   */
+  waitForConnection(timeout?: number): Promise<void>;
 
   /**
-   * Set how the host responds to `paymentTopUp` (default `'ok'`). Use
-   * `{ type: 'partial', credited }` to drive products through the RFC-0021
-   * `PartialPayment` error path; the balance is bumped by `credited` and the
-   * call rejects with `PaymentTopUpErr.PartialPayment({ credited })`.
+   * The product connection. Prefer `waitForConnection()` as a gate; read this
+   * when a test needs to assert the product went quiet.
    */
-  setPaymentTopUpBehavior(behavior: PaymentTopUpBehavior): Promise<void>;
+  getConnectionStatus(): Promise<string>;
 
-  /** Manually set a payment's status and notify subscribers */
-  simulatePaymentStatus(paymentId: string, status: { tag: string; value?: string }): Promise<void>;
-
-  /** Wait until the product-sdk has connected to the host container */
-  waitForConnection(timeout?: number): Promise<void>;
+  /**
+   * The host's own session, which is what carries local signing: a switch that
+   * leaves this `'disconnected'` means no signature will ever come back.
+   */
+  getChainStatus(): Promise<string>;
 }
 
 export interface TestHostFixtureOptions {
   /** URL of the product to test */
   productUrl: string;
-  /** Initial accounts — dev names or custom { name, uri } (default: ['alice']) */
+  /**
+   * The account roster (default `['alice']`). The FIRST entry is the active
+   * identity and the only account that signs.
+   */
   accounts?: CreateTestHostOptions['accounts'];
   /** Networks the host can route (default: [PASEO_ASSET_HUB]) */
   networks?: CreateTestHostOptions['networks'];
-  /** Map product account requests to specific accounts (see CreateTestHostOptions.productAccounts) */
+  /** Map a product's account subtree to a specific account, keyed by the bare
+   * product id (see `CreateTestHostOptions.productAccounts`) */
   productAccounts?: CreateTestHostOptions['productAccounts'];
+  /** Default `'App'`; set `'Worker'` to exercise chat, which the core serves for no other kind. */
+  executionKind?: CreateTestHostOptions['executionKind'];
 }
 
 export function createTestHostFixture(defaults: TestHostFixtureOptions) {
@@ -157,11 +134,13 @@ export function createTestHostFixture(defaults: TestHostFixtureOptions) {
         accounts: defaults.accounts ?? ['alice'],
         networks: defaults.networks ?? [DEFAULT_CHAIN],
         productAccounts: defaults.productAccounts,
+        executionKind: defaults.executionKind,
       });
 
       await page.goto(server.url);
 
-      // Wait for browser runtime to finish async init (cryptoWaitReady + container setup)
+      // The control plane is published last, so this gates on the HOST being
+      // up. The product is a separate gate — `waitForConnection()`.
       await page.waitForFunction(() => !!window.__TEST_HOST__, { timeout: 30_000 });
 
       const testHost: TestHost = {
@@ -171,15 +150,15 @@ export function createTestHostFixture(defaults: TestHostFixtureOptions) {
           return page.frameLocator('#product-frame');
         },
 
-        async switchAccount(name: DevAccountName) {
+        // `page.evaluate` awaits the host's own promise, which resolves once
+        // the session is active and the provider replaced. Nothing further to
+        // wait on: the iframe is deliberately never reloaded.
+        async switchAccount(name: DevAccountName | (string & {})) {
           await page.evaluate((n) => window.__TEST_HOST__.switchAccount(n), name);
-          // Wait for iframe to reload
-          await page.frameLocator('#product-frame').locator('body').waitFor({ state: 'attached' });
         },
 
-        async setAccounts(names: DevAccountName[]) {
+        async setAccounts(names: Array<DevAccountName | (string & {})>) {
           await page.evaluate((n) => window.__TEST_HOST__.setAccounts(n), names);
-          await page.frameLocator('#product-frame').locator('body').waitFor({ state: 'attached' });
         },
 
         async getSigningLog() {
@@ -204,10 +183,6 @@ export function createTestHostFixture(defaults: TestHostFixtureOptions) {
 
         async getGrantedPermissions() {
           return page.evaluate(() => window.__TEST_HOST__.getGrantedPermissions());
-        },
-
-        async setEnforcePermissions(enforce: boolean) {
-          await page.evaluate((e) => window.__TEST_HOST__.setEnforcePermissions(e), enforce);
         },
 
         async getPermissionLog() {
@@ -250,7 +225,9 @@ export function createTestHostFixture(defaults: TestHostFixtureOptions) {
           await page.evaluate(() => window.__TEST_HOST__.clearChatState());
         },
 
-        async injectChatAction(action: { roomId: string; peer: string; payload: unknown }) {
+        async injectChatAction(action: ChatActionInput) {
+          // Returning the host's promise makes a delivery failure surface here
+          // rather than in the page console.
           await page.evaluate((a) => window.__TEST_HOST__.injectChatAction(a), action);
         },
 
@@ -269,18 +246,6 @@ export function createTestHostFixture(defaults: TestHostFixtureOptions) {
           await page.evaluate(() => window.__TEST_HOST__.clearPreimages());
         },
 
-        async getSubmittedStatements() {
-          return page.evaluate(() => window.__TEST_HOST__.getSubmittedStatements());
-        },
-
-        async injectStatement(statement: unknown) {
-          await page.evaluate((s) => window.__TEST_HOST__.injectStatement(s), statement);
-        },
-
-        async clearStatements() {
-          await page.evaluate(() => window.__TEST_HOST__.clearStatements());
-        },
-
         async getTheme() {
           return page.evaluate(() => window.__TEST_HOST__.getTheme());
         },
@@ -289,75 +254,30 @@ export function createTestHostFixture(defaults: TestHostFixtureOptions) {
           await page.evaluate((t) => window.__TEST_HOST__.setTheme(t), theme);
         },
 
-        async setLoginBehavior(behavior: LoginBehavior) {
-          await page.evaluate((b) => window.__TEST_HOST__.setLoginBehavior(b), behavior);
-        },
-
-        async getIsAuthenticated() {
-          return page.evaluate(() => window.__TEST_HOST__.getIsAuthenticated());
-        },
-
-        async simulateDisconnect() {
-          await page.evaluate(() => window.__TEST_HOST__.simulateDisconnect());
-        },
-
-        async simulateReconnect() {
-          await page.evaluate(() => window.__TEST_HOST__.simulateReconnect());
-        },
-
-        async setPaymentBalance(amount: bigint) {
-          // BigInt can't be serialized by Playwright evaluate, pass as string
-          await page.evaluate((a) => window.__TEST_HOST__.setPaymentBalance(BigInt(a)), amount.toString());
-        },
-
-        async getPaymentLog() {
-          return page.evaluate(() => window.__TEST_HOST__.getPaymentLog());
-        },
-
-        async clearPaymentLog() {
-          await page.evaluate(() => window.__TEST_HOST__.clearPaymentLog());
-        },
-
-        async setPaymentTopUpBehavior(behavior: PaymentTopUpBehavior) {
-          // BigInt isn't structured-cloneable across page.evaluate; serialize partial.credited.
-          const wire =
-            typeof behavior === 'string' || behavior.type !== 'partial'
-              ? behavior
-              : { type: 'partial' as const, credited: behavior.credited.toString() };
-          await page.evaluate((b) => {
-            const hydrated =
-              typeof b === 'string' || b.type !== 'partial'
-                ? b
-                : { type: 'partial' as const, credited: BigInt(b.credited) };
-            window.__TEST_HOST__.setPaymentTopUpBehavior(hydrated);
-          }, wire);
-        },
-
-        async simulatePaymentStatus(paymentId: string, status: { tag: string; value?: string }) {
-          await page.evaluate(
-            ([id, s]) => window.__TEST_HOST__.simulatePaymentStatus(id, s),
-            [paymentId, status] as const,
-          );
-        },
-
         async waitForConnection(timeout = 30_000) {
           await page.waitForFunction(
             () => window.__TEST_HOST__?.getConnectionStatus() === 'connected',
             { timeout },
           );
         },
+
+        async getConnectionStatus() {
+          return page.evaluate(() => window.__TEST_HOST__.getConnectionStatus());
+        },
+
+        async getChainStatus() {
+          return page.evaluate(() => window.__TEST_HOST__.getChainStatus());
+        },
       };
 
       await use(testHost);
 
-      // Cleanup
       await page.evaluate(() => window.__TEST_HOST__?.dispose());
       await server.close();
     },
   };
 }
 
-// Augment Window type for Playwright evaluate calls
 declare global {
   interface Window {
     __TEST_HOST__: TestHostAPI;

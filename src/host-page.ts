@@ -1,25 +1,13 @@
-import { readFileSync } from 'node:fs';
-import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { DEV_ACCOUNTS } from './accounts.js';
-import type { Account, NetworkConfig } from './types.js';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-
-let bundleCache: string | null = null;
-
-function getBundleScript(): string {
-  if (!bundleCache) {
-    bundleCache = readFileSync(join(__dirname, 'host-bundle.js'), 'utf-8');
-  }
-  return bundleCache;
-}
+import type { Account, NetworkConfig, ProductExecutionKind } from './types.js';
 
 interface HostPageConfig {
   productUrl: string;
   accounts: Account[];
   networks: NetworkConfig[];
   productAccounts?: Record<string, Account>;
+  /** Omitted means the browser runtime's own default, `'App'`. */
+  executionKind?: ProductExecutionKind;
 }
 
 function resolveAccount(entry: Account): { name: string; uri: string } {
@@ -35,11 +23,19 @@ export function generateHostPage(config: HostPageConfig): string {
 
   const accountConfigs = accounts.map(resolveAccount);
 
-  // Resolve productAccounts map values to { name, uri }
   let productAccountConfigs: Record<string, { name: string; uri: string }> | undefined;
   if (config.productAccounts) {
     productAccountConfigs = {};
     for (const [key, value] of Object.entries(config.productAccounts)) {
+      // A per-index key cannot move an address — the core never asks the host
+      // for an indexed account — so it is refused rather than silently ignored.
+      if (key.includes('/')) {
+        throw new Error(
+          `productAccounts keys are product identifiers, not "dotnsId/index": ` +
+            `use "${key.split('/')[0]}" to move the whole product subtree. ` +
+            `The core derives every indexed account from that subtree itself.`,
+        );
+      }
       productAccountConfigs[key] = resolveAccount(value);
     }
   }
@@ -51,13 +47,14 @@ export function generateHostPage(config: HostPageConfig): string {
       genesisHash: n.genesisHash,
       rpcUrl: n.rpcUrl,
       name: n.name,
+      ...(n.chain && { chain: n.chain }),
     })),
     ...(productAccountConfigs && { productAccounts: productAccountConfigs }),
+    // The browser runtime owns the default, so it is not repeated here.
+    ...(config.executionKind && { executionKind: config.executionKind }),
   });
 
-  const bundleScript = getBundleScript();
-
-  // Escape closing script tags to prevent breaking out of inline script
+  // Otherwise the product URL could break out of the inline script.
   const safeConfigJson = configJson.replace(/<\//g, '<\\/');
 
   return `<!DOCTYPE html>
@@ -74,7 +71,7 @@ export function generateHostPage(config: HostPageConfig): string {
 <body>
   <iframe id="product-frame" sandbox="allow-scripts allow-same-origin allow-forms allow-popups" allow="clipboard-read; clipboard-write"></iframe>
   <script>window.__TEST_HOST_CONFIG__ = ${safeConfigJson};</script>
-  <script>${bundleScript}</script>
+  <script type="module" src="/host-runtime.js"></script>
 </body>
 </html>`;
 }

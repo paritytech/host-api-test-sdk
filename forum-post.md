@@ -775,3 +775,153 @@ One thing worth calling out: before this release the pins were wrong but *consis
 - Upgrade to `0.12.1`. If you use the built-in network configs, that is the whole change — the correct hashes come with the upgrade.
 - If you hard-coded any of the three old hashes in your own `NetworkConfig` or in test assertions, update them. Better still, read them off the exported config (`PASEO_ASSET_HUB.genesisHash`) so the next reset costs you nothing.
 - These chains reset periodically. Treat a genesis literal in your own repo as something that will go stale, not as a constant.
+
+# host-api-test-sdk 0.13.0
+
+This is the big one. The test host no longer speaks the old `@novasamatech/host-container` protocol — it **runs the TrUAPI core itself**, `truapi-server` compiled to WebAssembly in a Web Worker, exactly the core a real host runs. Everything below the public API changed; most of what you write in a test did not.
+
+**You need to move your product with it:** `@parity/truapi` `0.17`, booting through `@parity/truapi/sandbox`. There is no compatibility path — the old protocol is gone, not deprecated.
+
+## What still works unchanged
+
+- `createTestHostFixture` / `createTestHostServer` and the shape of their options — two of them changed meaning, and both have their own section below: `productAccounts` keys, and what `accounts` beyond the first one does
+- Dev accounts and their addresses — `//Alice` is still `5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY`
+- The signing log, the permission log, navigation, notifications, preimages, theme, chat state
+- Auto-signing with no prompts, which is the whole point of the package
+
+```ts
+import { test as base, expect } from "@playwright/test";
+import {
+  createTestHostFixture,
+  PASEO_ASSET_HUB,
+} from "@parity/host-api-test-sdk/playwright";
+
+const { testHost } = createTestHostFixture({
+  productUrl: "http://localhost:3000",
+  accounts: ["alice"],
+  networks: [PASEO_ASSET_HUB],
+});
+
+export const test = base.extend({ testHost });
+export { expect };
+
+test("signs without a prompt", async ({ testHost }) => {
+  await testHost.waitForConnection();
+  await testHost.productFrame().getByRole("button", { name: "Send" }).click();
+
+  const log = await testHost.getSigningLog();
+  expect(log).toHaveLength(1);
+});
+```
+
+## Signing is a round trip now
+
+The core never signs. It encrypts each signing request to its paired signer and publishes it as a statement on the People chain; a real host forwards that to your phone, and you tap approve.
+
+There is no phone here and, deliberately, no network: the People chain is a **loopback statement store inside the page**, and the host mints both halves of the SSO session at boot and answers as the peer. That is what keeps "no Docker, no network, no prompts" true while running the genuine protocol.
+
+For your tests this means one thing: a signature is asynchronous. Await the product's own promise before reading `getSigningLog()`.
+
+## Product accounts: keyed by product, not by index
+
+The core stopped asking the host which account a product's index `n` is. It asks once for the product's **hard subtree** and then derives every account from it itself, as one soft junction over the subtree public key.
+
+So the host's only say is *which keypair the subtree is*, and `productAccounts` follows:
+
+```diff
+ createTestHostFixture({
+   productUrl: "http://localhost:3000",
+   accounts: ["bob"],
+   productAccounts: {
+-    "myapp.dot/0": "charlie",
+-    "myapp.dot/2": "dave",
++    "myapp.dot": "charlie",   // moves EVERY index of myapp.dot
+   },
+ });
+```
+
+A per-index key is now an error rather than a silent no-op, and it tells you what to write instead.
+
+**Product-account addresses have moved** as a consequence — index `n` under a subtree is now its soft child at `index_bytes(n)`, not the hard junction `…/n`. Root dev accounts have not moved. If a test pins a product-account address, re-read it from the host once and update the literal.
+
+This also fixes a genuine bug in the 0.13 pre-release: the host was reporting one key and signing with another, so a product's own signature did not verify against its own address. It now signs with the same derivation the core reports — checked against schnorrkel's own test vector, and there is an E2E test that takes the address the core hands the product, signs, and verifies against it.
+
+## Chat needs `executionKind: 'Worker'`
+
+The core decides what a connection may reach from the *kind* of executable the host says it is running, and Chat is the strictest one: `chat_platform_for` denies every Chat entry point unless the kind is `Worker`. An iframe-embedded product is an `App`, which is what this host declares by default — so until now every chat call came back `Denied`.
+
+There is now an option for it, on both entry points:
+
+```ts
+// Playwright fixture
+const { testHost } = createTestHostFixture({
+  productUrl: "http://localhost:3000",
+  executionKind: "Worker", // only for tests that drive chat
+});
+
+// or directly
+const host = await createTestHostServer({
+  productUrl: "http://localhost:3000",
+  executionKind: "Worker",
+});
+```
+
+It takes `'App'` (the default), `'Widget'` or `'Worker'`, and the type is exported as `ProductExecutionKind`. Leave it alone unless you are testing chat: `App` is what an iframe-embedded product actually is, and declaring every product headless just to unlock one modality would misreport what the host is running.
+
+With it set, the whole chat surface works — `chatCreateRoom`, `chatRegisterBot`, `chatPostMessage`, the room subscription, and `injectChatAction` from the host side:
+
+```ts
+await product.evaluate(() =>
+  client.chat.createRoom({ roomId: "r1", name: "Room 1", icon: "" }),
+);
+expect(await testHost.getChatRooms()).toHaveLength(1);
+```
+
+One thing to know while you are there: a chat `icon` is validated by the core, not passed through. It must be empty, an `https` URL, or an inline `data:` image of an allowed type — anything else (a placeholder like `"icon-data"`, say) is refused with *"icon carries a scheme that cannot be rendered"*.
+
+`injectChatAction` is also asynchronous now, and takes the protocol's own action type (`ChatActionInput`, exported from the package root). `await` it — it rejects if the action could not be delivered.
+
+## `accounts` is a roster, and only the first one signs
+
+This one is a clarification and a bug fix in the same place.
+
+The SSO session carries exactly **one** identity, so the first entry in `accounts` is the account that signs; the rest are targets you can switch to later. That was already the behaviour — it just was not what the docs implied, and `getLegacyAccounts()` returning `[]` no matter what you configured made it look like the roster was ignored entirely. It is not ignored, but nothing beyond the first entry is active until you switch to it, and a legacy-account request naming any *other* account is refused by the core.
+
+The bug: `switchAccount(name)` used to synthesise `//Name` from the name you passed, ignoring the roster. So a custom account could never actually be switched to —
+
+```ts
+createTestHostFixture({
+  productUrl: "http://localhost:3000",
+  accounts: ["alice", { name: "Derived", uri: "//Alice//custom" }],
+});
+
+// Before: signed as //Derived, silently — the configured URI was ignored.
+// Now: signs as //Alice//custom, the URI you configured.
+await testHost.switchAccount("Derived");
+```
+
+Names are matched against the roster case-insensitively. A dev name the roster does not carry still falls back to the bare derivation, so `switchAccount("charlie")` gives you `//Charlie` whether or not Charlie was listed at boot.
+
+## Controls that are gone
+
+The host used to simulate several things the core now owns, or that the new stack has no equivalent for. Grep your tests for these; each one is a compile error or a `TypeError`, not a silent change in behaviour:
+
+- **Statement store**: `getSubmittedStatements`, `injectStatement`, `clearStatements`
+- **Login**: `setLoginBehavior`, `getIsAuthenticated`, `simulateDisconnect`, `simulateReconnect`
+- **Payments**: `setPaymentBalance`, `getPaymentLog`, `clearPaymentLog`, `setPaymentTopUpBehavior`, `simulatePaymentStatus`
+- **`setEnforcePermissions`** — this one was already doing nothing. Signing is not gated by the host (real hosts do not gate it either), and `ChainSubmit` is enforced by the core at `transaction_broadcast`, after signing. A method that silently does nothing is worse than an absent one, so it is absent.
+
+Removed types: `LoginBehavior`, `PaymentLogEntry`, `PaymentTopUpBehavior`, `StatementSubmissionLogEntry`.
+
+## Smaller things
+
+- **`getChainStatus()`** joins `getConnectionStatus()`: the first is the *host's* session, the second is the *product's* connection. Signing rides on the session, so if a switch leaves it `'disconnected'`, no signature is coming.
+- **`NetworkConfig.chain`** declares a network's protocol role (`'Relay' | 'AssetHub' | 'People' | 'Bulletin'`) for `supportedChains()`. Omit it and the network is simply left out of that report instead of being labelled by guesswork — it is still routable by genesis hash.
+- **`accounts[].uri` is hard junctions only.** Keys are derived in the page with `@scure/sr25519`; there is no keyring any more. `'//Alice//custom'` is fine; a mnemonic or hex seed now throws.
+- **`featureSupported` now agrees with `supportedChains()` about the People chain.** The host always advertises its in-page People loopback, but the feature probe only ever matched the configured `networks` — which never contain the People genesis, because that chain is served in the page. Asking whether the one chain every signature travels over was supported got you `false`.
+- **Three bugs in the loopback store** that between them blocked every signature are fixed: the `statement_submit` reply shape, the `newStatements` subscription envelope, and the topic-filter key spelling (which had been quietly turning every filter into a firehose). Also the AutoSigning grant, which was refused as an "invalid subtree secret" because schnorrkel has two 64-byte secret encodings and this host was handing over the wrong one.
+
+## If you maintain a host-playground
+
+`../host-playground` still pins `0.12.1` and the old bootstrap. It needs its own pass against 0.13.0: the truapi 0.17 sandbox bootstrap, the `productAccounts` key change, and any assertion pinning a product-account address.
+

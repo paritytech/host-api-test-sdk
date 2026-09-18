@@ -1,61 +1,120 @@
 /**
- * Integration test: verifies that product accounts work end-to-end
- * through the real Spektr protocol (host-container ↔ product-sdk).
+ * End-to-end tests for the migrated host: a real product, in a real iframe,
+ * talking to the WASM core in its Web Worker over the protocol.
  *
- * A minimal product (test-product.ts) runs in the iframe, calls
- * getProductAccount("test-product", 0) via product-sdk, and writes
- * the returned public key to the DOM. These tests read it back
- * and compare against known dev keypairs.
+ * The product (`test-product.ts`) boots through `@parity/truapi/sandbox` and
+ * exposes every call under `window.__TEST_PRODUCT__`; the host exposes its
+ * control plane under `window.__TEST_HOST__`. Nothing here touches the
+ * network: chain traffic is either the in-page loopback People store (which
+ * carries signing) or nothing at all.
+ *
+ * Signing is no longer a synchronous in-page callback — it is a round trip
+ * from the core, out over the SSO channel as a statement, and back — so every
+ * signing assertion awaits the answer rather than reading it off a log.
  */
 
 import { test, expect } from '@playwright/test';
-import { Keyring } from '@polkadot/keyring';
-import { cryptoWaitReady, sr25519Verify } from '@polkadot/util-crypto';
+import type { Frame, Page } from '@playwright/test';
 import { compactFromU8a, hexToU8a, u8aToHex } from '@polkadot/util';
+import { verify } from '@scure/sr25519';
 import { createTestHostServer, PASEO_ASSET_HUB } from '../dist/index.js';
-import { loadHost, serveProduct } from './support';
+// Type-only: brings in the `window.__TEST_HOST__` declaration the fixture
+// publishes, so the control-plane calls below are checked against it.
+import type {} from '../dist/playwright/index.js';
+// The SDK's own derivation, so expected keys come from one source of truth
+// rather than a second keyring implementation in the tests.
+import { deriveDev, deriveFromUri, deriveSoft } from '../src/browser/dev-accounts.js';
+// `index_bytes(n)` — the soft chain code the CORE derives a product account
+// at. Imported rather than restated so the two cannot drift apart.
+import { indexBytes } from '../src/browser/product-accounts.js';
+// The synthetic genesis of the in-page People loopback — the one chain this
+// host always serves. Imported rather than restated so it cannot drift.
+import { PEOPLE_GENESIS_HASH } from '../src/browser/constants.js';
+import { loadHost, serveProduct } from './support.js';
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
+/** Narrow a product call's outcome, failing the test with the host's reason. */
+function expectOk<R extends object>(
+  outcome: ({ ok: true } & R) | { ok: false; error: string },
+): R {
+  if (!outcome.ok) throw new Error(`product call failed: ${outcome.error}`);
+  return outcome;
+}
+
 /** Get the product iframe as a Frame (supports evaluate, unlike FrameLocator). */
-function getProductFrame(page: import('@playwright/test').Page, productUrl: string) {
-  const frame = page.frames().find(f => f.url().startsWith(productUrl));
+function getProductFrame(page: Page, productUrl: string): Frame {
+  const frame = page.frames().find((candidate) => candidate.url().startsWith(productUrl));
   if (!frame) throw new Error('Product frame not found');
   return frame;
 }
 
-/** Load host, wait for product to be ready, return the evaluable product frame. */
-async function loadHostAndProduct(page: import('@playwright/test').Page, hostUrl: string, productUrl: string) {
+/**
+ * Load the host, wait until the product has actually spoken to it, and return
+ * the evaluable product frame.
+ *
+ * The gate is the host's own product-connection readout plus the product
+ * publishing its test surface — not a signed account fetch, which is a full
+ * SSO round trip and is the subject of its own tests.
+ */
+async function loadHostAndProduct(page: Page, hostUrl: string, productUrl: string): Promise<Frame> {
   const frameLocator = await loadHost(page, hostUrl);
-  // Wait for root-keys to be ready (product fully initialized)
-  await expect(frameLocator.locator('#root-keys[data-ready="true"]')).toBeVisible({ timeout: 15_000 });
+  await page.waitForFunction(
+    () => window.__TEST_HOST__.getConnectionStatus() === 'connected',
+    { timeout: 30_000 },
+  );
+  await expect(frameLocator.locator('#status[data-ready="true"]')).toBeAttached({ timeout: 30_000 });
   return getProductFrame(page, productUrl);
 }
 
-/** Read the public key hex that the test product received from the host. */
-async function getProductPublicKey(page: import('@playwright/test').Page, hostUrl: string): Promise<string> {
+/** Read the product account key the test product received from the host. */
+async function getProductPublicKey(page: Page, hostUrl: string): Promise<string> {
   const frame = await loadHost(page, hostUrl);
-  const pkLocator = frame.locator('#product-key[data-ready="true"]');
-  await expect(pkLocator).toBeVisible({ timeout: 15_000 });
-  return (await pkLocator.textContent())!;
+  const key = frame.locator('#product-key[data-ready="true"]');
+  await expect(key).toBeAttached({ timeout: 30_000 });
+  return (await key.textContent())!;
 }
 
-/** Read the root (non-product) account public keys from the test product. */
-async function getRootPublicKeys(page: import('@playwright/test').Page, hostUrl: string): Promise<string[]> {
-  const frame = await loadHost(page, hostUrl);
-  const rootLocator = frame.locator('#root-keys[data-ready="true"]');
-  await expect(rootLocator).toBeVisible({ timeout: 15_000 });
-  return JSON.parse((await rootLocator.textContent())!);
+/** The same key, off a product frame that is already loaded. */
+async function readProductKey(product: Frame): Promise<string> {
+  const key = product.locator('#product-key[data-ready="true"]');
+  await expect(key).toBeAttached({ timeout: 30_000 });
+  return (await key.textContent())!;
+}
+
+/** `//Alice` → its 32-byte public key as hex, the way the host derives it. */
+const keyOf = (uri: string) => u8aToHex(deriveFromUri(uri).publicKey);
+
+/** The bytes a watermarked raw-signing request actually signs. */
+const watermarked = (payload: Uint8Array): Uint8Array =>
+  new Uint8Array([
+    ...new TextEncoder().encode('<Bytes>'),
+    ...payload,
+    ...new TextEncoder().encode('</Bytes>'),
+  ]);
+
+/** Split a signed v4 extrinsic into the parts the assertions below check. */
+function decodeSignedExtrinsic(signedHex: string) {
+  const wire = hexToU8a(signedHex);
+  const [offset, innerLength] = compactFromU8a(wire);
+  const bytes = wire.slice(offset);
+  return {
+    bytes,
+    innerLength: innerLength.toNumber(),
+    version: bytes[0],
+    addressType: bytes[1],
+    signer: bytes.slice(2, 34),
+    signatureType: bytes[34],
+    signature: bytes.slice(35, 99),
+    callData: bytes.slice(99, 101),
+  };
 }
 
 // ── Setup ───────────────────────────────────────────────────────────
 
 let productServer: Awaited<ReturnType<typeof serveProduct>>;
-let keyring: Keyring;
 
 test.beforeAll(async () => {
-  await cryptoWaitReady();
-  keyring = new Keyring({ type: 'sr25519', ss58Format: 42 });
   productServer = await serveProduct('test-product.html', 'test-product-bundle.js');
 });
 
@@ -66,41 +125,74 @@ test.afterAll(async () => {
 // ── Tests ───────────────────────────────────────────────────────────
 
 test.describe('Product account derivation', () => {
+  /**
+   * The host does not answer for an indexed product account, and cannot: the
+   * core asks once for the product's HARD SUBTREE (`ProductSubtreeRequest`)
+   * and then derives every account under it ITSELF, as one soft junction over
+   * that subtree public key —
+   * `derive_product_public_key(subtree, index_bytes(n))`
+   * (`truapi-server/src/host_logic/product_account.rs`, reached from
+   * `runtime.rs::product_account_public_key`).
+   *
+   * So the host's one lever is WHICH keypair is the subtree, and its job is to
+   * sign with the same soft derivation. That is the property the first test
+   * below checks end to end: a signature the product obtains verifies against
+   * the address the CORE reported to it.
+   */
 
-  test('by default, product account is derived (production behavior)', async ({ page }) => {
+  /** The account the core derives for `dotnsId` index `n` under one subtree. */
+  const productAccount = (subtreeUri: string, index: number) =>
+    deriveSoft(deriveFromUri(subtreeUri), indexBytes(index));
+
+  test('a product signs with the very key the core reported to it', async ({ page }) => {
     const host = await createTestHostServer({
       productUrl: productServer.url,
       accounts: ['bob'],
     });
 
     try {
-      const bobBaseKey = u8aToHex(keyring.addFromUri('//Bob').publicKey);
-      // The product calls getProductAccount("test-product", 0),
-      // so the derived path is //Bob//test-product.dot/0
-      const bobDerivedKey = u8aToHex(keyring.addFromUri('//Bob//test-product.dot/0').publicKey);
-      const productKey = await getProductPublicKey(page, host.url);
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
 
-      expect(productKey).toBe(bobDerivedKey);
-      expect(productKey).not.toBe(bobBaseKey);
+      // The product calls getAccount("test-product.dot", 0). With no mapping
+      // the subtree is //Bob//test-product.dot and the account is that subtree
+      // soft-derived at index_bytes(0).
+      const reported = await readProductKey(product);
+      expect(reported).toBe(u8aToHex(productAccount('//Bob//test-product.dot', 0).publicKey));
+      expect(reported).not.toBe(keyOf('//Bob'));
+      // The subtree root itself is a different account from index 0.
+      expect(reported).not.toBe(keyOf('//Bob//test-product.dot'));
+
+      // The regression this suite exists for: before the host signed with the
+      // soft derivation, it hard-derived //Bob//test-product.dot/0 instead, so
+      // this verify() failed against the product's own address.
+      const payload = `0x${'5a'.repeat(16)}`;
+      const signed = expectOk(
+        await product.evaluate(
+          (p) => window.__TEST_PRODUCT__.signRawProduct('test-product.dot', 0, p),
+          payload,
+        ),
+      );
+      expect(
+        verify(watermarked(hexToU8a(payload)), hexToU8a(signed.signature), hexToU8a(reported)),
+      ).toBe(true);
     } finally {
       await host.close();
     }
   });
 
-  test('productAccounts maps a product account to a specific dev account', async ({ page }) => {
+  test('productAccounts moves a product subtree to a specific dev account', async ({ page }) => {
     const host = await createTestHostServer({
       productUrl: productServer.url,
       accounts: ['bob'],
-      productAccounts: {
-        'test-product.dot/0': 'bob',
-      },
+      // Keyed by the bare product id: the mapping replaces the SUBTREE, and
+      // every indexed account under it moves with it.
+      productAccounts: { 'test-product.dot': 'alice' },
     });
 
     try {
-      const bobBaseKey = u8aToHex(keyring.addFromUri('//Bob').publicKey);
-      const productKey = await getProductPublicKey(page, host.url);
-
-      expect(productKey).toBe(bobBaseKey);
+      expect(await getProductPublicKey(page, host.url)).toBe(
+        u8aToHex(productAccount('//Alice', 0).publicKey),
+      );
     } finally {
       await host.close();
     }
@@ -110,74 +202,53 @@ test.describe('Product account derivation', () => {
     const host = await createTestHostServer({
       productUrl: productServer.url,
       accounts: ['bob'],
-      productAccounts: {
-        'test-product.dot/0': { name: 'Charlie', uri: '//Charlie' },
-      },
+      productAccounts: { 'test-product.dot': { name: 'Charlie', uri: '//Charlie' } },
     });
 
     try {
-      const charlieKey = u8aToHex(keyring.addFromUri('//Charlie').publicKey);
-      const productKey = await getProductPublicKey(page, host.url);
-
-      expect(productKey).toBe(charlieKey);
+      expect(await getProductPublicKey(page, host.url)).toBe(
+        u8aToHex(productAccount('//Charlie', 0).publicKey),
+      );
     } finally {
       await host.close();
     }
   });
 
-  test('unmapped product accounts fall back to derivation', async ({ page }) => {
+  test('unmapped products fall back to the derived subtree', async ({ page }) => {
     const host = await createTestHostServer({
       productUrl: productServer.url,
       accounts: ['bob'],
-      productAccounts: {
-        'other-app/0': 'alice', // different key, won't match
-      },
+      productAccounts: { 'other-app.dot': 'alice' }, // different product, won't match
     });
 
     try {
-      // "test-product.dot/0" is NOT in productAccounts, so it derives
-      const bobDerivedKey = u8aToHex(keyring.addFromUri('//Bob//test-product.dot/0').publicKey);
-      const productKey = await getProductPublicKey(page, host.url);
-
-      expect(productKey).toBe(bobDerivedKey);
+      expect(await getProductPublicKey(page, host.url)).toBe(
+        u8aToHex(productAccount('//Bob//test-product.dot', 0).publicKey),
+      );
     } finally {
       await host.close();
     }
   });
 });
 
-test.describe('Root (non-product) accounts', () => {
+test.describe('Legacy (non-product) accounts', () => {
 
-  test('dev account names resolve to known public keys', async ({ page }) => {
+  test('the core does not enumerate legacy accounts', async ({ page }) => {
     const host = await createTestHostServer({
       productUrl: productServer.url,
       accounts: ['alice', 'bob'],
     });
 
     try {
-      const aliceKey = u8aToHex(keyring.addFromUri('//Alice').publicKey);
-      const bobKey = u8aToHex(keyring.addFromUri('//Bob').publicKey);
-      const rootKeys = await getRootPublicKeys(page, host.url);
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
 
-      expect(rootKeys).toEqual([aliceKey, bobKey]);
-    } finally {
-      await host.close();
-    }
-  });
-
-  test('custom URI accounts are included in root accounts', async ({ page }) => {
-    const customUri = '//Alice//custom/derivation';
-    const host = await createTestHostServer({
-      productUrl: productServer.url,
-      accounts: ['bob', { name: 'Custom', uri: customUri }],
-    });
-
-    try {
-      const bobKey = u8aToHex(keyring.addFromUri('//Bob').publicKey);
-      const customKey = u8aToHex(keyring.addFromUri(customUri).publicKey);
-      const rootKeys = await getRootPublicKeys(page, host.url);
-
-      expect(rootKeys).toEqual([bobKey, customKey]);
+      // Legacy accounts are addressable by id but never listed — the core
+      // answers with an empty vector whatever the host holds. A product that
+      // wants one must already know which account it means.
+      const result = expectOk(
+        await product.evaluate(() => window.__TEST_PRODUCT__.getLegacyAccounts()),
+      );
+      expect(result.keys).toEqual([]);
     } finally {
       await host.close();
     }
@@ -188,25 +259,6 @@ test.describe('Root (non-product) accounts', () => {
 
 test.describe('Permission handling', () => {
 
-  test('signing works without explicit permission request', async ({ page }) => {
-    const host = await createTestHostServer({
-      productUrl: productServer.url,
-      accounts: ['alice'],
-    });
-
-    try {
-      const product = await loadHostAndProduct(page, host.url, productServer.url);
-
-      // In v0.7, signing doesn't require ChainSubmit — that permission
-      // is enforced by the container at transaction_broadcast level.
-      const result = await product.evaluate(() => window.__TEST_PRODUCT__.trySignRaw());
-      expect(result.ok).toBe(true);
-      expect(result.signature).toBeTruthy();
-    } finally {
-      await host.close();
-    }
-  });
-
   test('ChainSubmit permission request is logged', async ({ page }) => {
     const host = await createTestHostServer({
       productUrl: productServer.url,
@@ -216,12 +268,13 @@ test.describe('Permission handling', () => {
     try {
       const product = await loadHostAndProduct(page, host.url, productServer.url);
 
-      const permResult = await product.evaluate(() => window.__TEST_PRODUCT__.requestChainSubmit());
-      expect(permResult.ok).toBe(true);
-      expect(permResult.approved).toBe(true);
+      const permission = expectOk(
+        await product.evaluate(() => window.__TEST_PRODUCT__.requestChainSubmit()),
+      );
+      expect(permission.approved).toBe(true);
 
       const log = await page.evaluate(() => window.__TEST_HOST__.getPermissionLog());
-      expect(log.some((e: any) => e.tag === 'ChainSubmit' && e.approved)).toBe(true);
+      expect(log.some((entry) => entry.tag === 'ChainSubmit' && entry.approved)).toBe(true);
     } finally {
       await host.close();
     }
@@ -238,12 +291,13 @@ test.describe('Permission handling', () => {
 
       await page.evaluate(() => window.__TEST_HOST__.setPermissionBehavior('reject-all'));
 
-      const permResult = await product.evaluate(() => window.__TEST_PRODUCT__.requestChainSubmit());
-      expect(permResult.ok).toBe(true);
-      expect(permResult.approved).toBe(false);
+      const permission = expectOk(
+        await product.evaluate(() => window.__TEST_PRODUCT__.requestChainSubmit()),
+      );
+      expect(permission.approved).toBe(false);
 
       const log = await page.evaluate(() => window.__TEST_HOST__.getPermissionLog());
-      expect(log.some((e: any) => e.tag === 'ChainSubmit' && !e.approved)).toBe(true);
+      expect(log.some((entry) => entry.tag === 'ChainSubmit' && !entry.approved)).toBe(true);
     } finally {
       await host.close();
     }
@@ -263,14 +317,14 @@ test.describe('Device permissions', () => {
     try {
       const product = await loadHostAndProduct(page, host.url, productServer.url);
 
-      const result = await product.evaluate(() => window.__TEST_PRODUCT__.requestDevicePermission('Camera'));
-      expect(result.ok).toBe(true);
+      const result = expectOk(
+        await product.evaluate(() => window.__TEST_PRODUCT__.requestDevicePermission('Camera')),
+      );
+      expect(result.approved).toBe(true);
 
-      // Verify it was logged
       const log = await page.evaluate(() => window.__TEST_HOST__.getPermissionLog());
-      expect(log.some((e: any) => e.tag === 'Camera' && e.approved)).toBe(true);
+      expect(log.some((entry) => entry.tag === 'Camera' && entry.approved)).toBe(true);
 
-      // Verify it's in granted set
       const granted = await page.evaluate(() => window.__TEST_HOST__.getGrantedPermissions());
       expect(granted).toContain('Camera');
     } finally {
@@ -289,11 +343,13 @@ test.describe('Device permissions', () => {
 
       await page.evaluate(() => window.__TEST_HOST__.setPermissionBehavior('reject-all'));
 
-      const result = await product.evaluate(() => window.__TEST_PRODUCT__.requestDevicePermission('Microphone'));
-      expect(result.ok).toBe(true); // request completed, check approved field
+      const result = expectOk(
+        await product.evaluate(() => window.__TEST_PRODUCT__.requestDevicePermission('Microphone')),
+      );
+      expect(result.approved).toBe(false);
 
       const log = await page.evaluate(() => window.__TEST_HOST__.getPermissionLog());
-      expect(log.some((e: any) => e.tag === 'Microphone' && !e.approved)).toBe(true);
+      expect(log.some((entry) => entry.tag === 'Microphone' && !entry.approved)).toBe(true);
 
       const granted = await page.evaluate(() => window.__TEST_HOST__.getGrantedPermissions());
       expect(granted).not.toContain('Microphone');
@@ -302,7 +358,7 @@ test.describe('Device permissions', () => {
     }
   });
 
-  test('Remote permission is tracked', async ({ page }) => {
+  test('Remote permission is tracked with the requested domains', async ({ page }) => {
     const host = await createTestHostServer({
       productUrl: productServer.url,
       accounts: ['alice'],
@@ -311,13 +367,15 @@ test.describe('Device permissions', () => {
     try {
       const product = await loadHostAndProduct(page, host.url, productServer.url);
 
-      const result = await product.evaluate(() =>
-        window.__TEST_PRODUCT__.requestRemote('https://example.com')
+      const result = expectOk(
+        await product.evaluate(() => window.__TEST_PRODUCT__.requestRemote('example.com')),
       );
-      expect(result.ok).toBe(true);
+      expect(result.approved).toBe(true);
 
       const log = await page.evaluate(() => window.__TEST_HOST__.getPermissionLog());
-      expect(log.some((e: any) => e.tag === 'Remote' && e.approved)).toBe(true);
+      const remote = log.find((entry) => entry.tag === 'Remote');
+      expect(remote?.approved).toBe(true);
+      expect(remote?.value).toEqual({ domains: ['example.com'] });
     } finally {
       await host.close();
     }
@@ -337,19 +395,20 @@ test.describe('Navigation', () => {
     try {
       const product = await loadHostAndProduct(page, host.url, productServer.url);
 
-      // Log should be empty initially
       const initial = await page.evaluate(() => window.__TEST_HOST__.getNavigationLog());
       expect(initial).toEqual([]);
 
-      // Product requests navigation
-      const result = await product.evaluate(() =>
-        window.__TEST_PRODUCT__.navigateTo('polkadot://example.dot/settings'),
+      expectOk(
+        await product.evaluate(() =>
+          window.__TEST_PRODUCT__.navigateTo('polkadot://example.dot/settings'),
+        ),
       );
-      expect(result.ok).toBe(true);
 
       const log = await page.evaluate(() => window.__TEST_HOST__.getNavigationLog());
       expect(log).toHaveLength(1);
-      expect(log[0].url).toBe('polkadot://example.dot/settings');
+      // The core resolves the dotNS scheme before handing the URL to the host,
+      // so what the host records is the https form, not what the product typed.
+      expect(log[0].url).toBe('https://example.dot/settings');
       expect(typeof log[0].timestamp).toBe('number');
     } finally {
       await host.close();
@@ -365,15 +424,14 @@ test.describe('Navigation', () => {
     try {
       const product = await loadHostAndProduct(page, host.url, productServer.url);
 
-      await product.evaluate(() => window.__TEST_PRODUCT__.navigateTo('https://example.com'));
       await product.evaluate(() => window.__TEST_PRODUCT__.navigateTo('polkadot://foo.dot'));
       await product.evaluate(() => window.__TEST_PRODUCT__.navigateTo('polkadot://bar.dot/page'));
 
       const log = await page.evaluate(() => window.__TEST_HOST__.getNavigationLog());
-      expect(log.map((e: any) => e.url)).toEqual([
-        'https://example.com',
-        'polkadot://foo.dot',
-        'polkadot://bar.dot/page',
+      // dotNS-resolved, in the order the product asked for them.
+      expect(log.map((entry) => entry.url)).toEqual([
+        'https://foo.dot',
+        'https://bar.dot/page',
       ]);
     } finally {
       await host.close();
@@ -389,7 +447,7 @@ test.describe('Navigation', () => {
     try {
       const product = await loadHostAndProduct(page, host.url, productServer.url);
 
-      await product.evaluate(() => window.__TEST_PRODUCT__.navigateTo('https://a.com'));
+      await product.evaluate(() => window.__TEST_PRODUCT__.navigateTo('polkadot://a.dot'));
       await page.evaluate(() => window.__TEST_HOST__.clearNavigationLog());
 
       const log = await page.evaluate(() => window.__TEST_HOST__.getNavigationLog());
@@ -413,10 +471,11 @@ test.describe('Push notifications', () => {
     try {
       const product = await loadHostAndProduct(page, host.url, productServer.url);
 
-      const result = await product.evaluate(() =>
-        window.__TEST_PRODUCT__.pushNotification('You have a new message'),
+      expectOk(
+        await product.evaluate(() =>
+          window.__TEST_PRODUCT__.pushNotification('You have a new message'),
+        ),
       );
-      expect(result.ok).toBe(true);
 
       const log = await page.evaluate(() => window.__TEST_HOST__.getNotificationLog());
       expect(log).toHaveLength(1);
@@ -436,13 +495,11 @@ test.describe('Push notifications', () => {
     try {
       const product = await loadHostAndProduct(page, host.url, productServer.url);
 
-      const result = await product.evaluate(() =>
-        window.__TEST_PRODUCT__.pushNotification(
-          'Tap to view',
-          'polkadot://myapp.dot/message/42',
+      expectOk(
+        await product.evaluate(() =>
+          window.__TEST_PRODUCT__.pushNotification('Tap to view', 'polkadot://myapp.dot/message/42'),
         ),
       );
-      expect(result.ok).toBe(true);
 
       const log = await page.evaluate(() => window.__TEST_HOST__.getNotificationLog());
       expect(log).toHaveLength(1);
@@ -482,22 +539,24 @@ test.describe('Push notifications', () => {
     try {
       const product = await loadHostAndProduct(page, host.url, productServer.url);
 
-      const result = await product.evaluate(() =>
-        window.__TEST_PRODUCT__.pushNotification('later', undefined, Date.now() + 60_000),
+      const scheduled = expectOk(
+        await product.evaluate(() =>
+          window.__TEST_PRODUCT__.pushNotification('later', undefined, Date.now() + 60_000),
+        ),
       );
-      expect(result.ok).toBe(true);
-      expect(typeof result.notificationId).toBe('number');
+      expect(typeof scheduled.notificationId).toBe('number');
 
       const before = await page.evaluate(() => window.__TEST_HOST__.getNotificationLog());
       expect(before).toHaveLength(1);
       expect(before[0].cancelled).toBe(false);
       expect(typeof before[0].scheduledAt).toBe('bigint');
 
-      const cancel = await product.evaluate((id: number) =>
-        window.__TEST_PRODUCT__.pushNotificationCancel(id),
-        result.notificationId!,
+      expectOk(
+        await product.evaluate(
+          (id) => window.__TEST_PRODUCT__.pushNotificationCancel(id),
+          scheduled.notificationId,
+        ),
       );
-      expect(cancel.ok).toBe(true);
 
       const after = await page.evaluate(() => window.__TEST_HOST__.getNotificationLog());
       expect(after[0].cancelled).toBe(true);
@@ -511,7 +570,7 @@ test.describe('Push notifications', () => {
 
 test.describe('Account alias', () => {
 
-  test('accountGetAlias returns deterministic context and alias', async ({ page }) => {
+  test('getAccountAlias returns a deterministic context and alias', async ({ page }) => {
     const host = await createTestHostServer({
       productUrl: productServer.url,
       accounts: ['alice'],
@@ -520,22 +579,17 @@ test.describe('Account alias', () => {
     try {
       const product = await loadHostAndProduct(page, host.url, productServer.url);
 
-      // Same account returns the same alias across calls
-      const a = await product.evaluate(() =>
-        window.__TEST_PRODUCT__.getAccountAlias('test-product.dot', 0),
+      const first = expectOk(
+        await product.evaluate(() => window.__TEST_PRODUCT__.getAccountAlias('test-product.dot', 0)),
       );
-      const b = await product.evaluate(() =>
-        window.__TEST_PRODUCT__.getAccountAlias('test-product.dot', 0),
+      const second = expectOk(
+        await product.evaluate(() => window.__TEST_PRODUCT__.getAccountAlias('test-product.dot', 0)),
       );
 
-      expect(a.ok).toBe(true);
-      expect(b.ok).toBe(true);
-      expect(a.context).toBe(b.context);
-      expect(a.alias).toBe(b.alias);
-
-      // Context and alias are 32-byte hex (0x + 64 hex chars)
-      expect(a.context).toMatch(/^0x[0-9a-f]{64}$/);
-      expect(a.alias).toMatch(/^0x[0-9a-f]{64}$/);
+      expect(first.context).toBe(second.context);
+      expect(first.alias).toBe(second.alias);
+      expect(first.context).toMatch(/^0x[0-9a-f]{64}$/);
+      expect(first.alias).toMatch(/^0x[0-9a-f]{64}$/);
     } finally {
       await host.close();
     }
@@ -550,16 +604,14 @@ test.describe('Account alias', () => {
     try {
       const product = await loadHostAndProduct(page, host.url, productServer.url);
 
-      const a = await product.evaluate(() =>
-        window.__TEST_PRODUCT__.getAccountAlias('test-product.dot', 0),
+      const first = expectOk(
+        await product.evaluate(() => window.__TEST_PRODUCT__.getAccountAlias('test-product.dot', 0)),
       );
-      const b = await product.evaluate(() =>
-        window.__TEST_PRODUCT__.getAccountAlias('test-product.dot', 1),
+      const second = expectOk(
+        await product.evaluate(() => window.__TEST_PRODUCT__.getAccountAlias('test-product.dot', 1)),
       );
 
-      expect(a.ok).toBe(true);
-      expect(b.ok).toBe(true);
-      expect(a.alias).not.toBe(b.alias);
+      expect(first.alias).not.toBe(second.alias);
     } finally {
       await host.close();
     }
@@ -574,27 +626,41 @@ test.describe('Chat', () => {
     const host = await createTestHostServer({
       productUrl: productServer.url,
       accounts: ['alice'],
+      // Chat is Worker-only in the core: every Chat entry point is denied
+      // unless the connection's execution kind is `Worker`
+      // (`truapi-server/src/runtime/chat.rs`).
+      executionKind: 'Worker',
     });
 
     try {
       const product = await loadHostAndProduct(page, host.url, productServer.url);
 
-      const first = await product.evaluate(() =>
-        window.__TEST_PRODUCT__.chatCreateRoom({ roomId: 'r1', name: 'Room 1', icon: 'icon-data' }),
+      // `validate_chat_icon` (`truapi-platform/src/lib.rs`) takes an empty
+      // string, an `https` URL, or an inline image data URL, and nothing else.
+      // Only the URL is parsed — nothing is fetched, so this stays offline.
+      const icon = 'https://example.com/room.png';
+      const first = expectOk(
+        await product.evaluate(
+          (i) => window.__TEST_PRODUCT__.chatCreateRoom({ roomId: 'r1', name: 'Room 1', icon: i }),
+          icon,
+        ),
       );
-      expect(first.ok).toBe(true);
       expect(first.status).toBe('New');
 
-      const second = await product.evaluate(() =>
-        window.__TEST_PRODUCT__.chatCreateRoom({ roomId: 'r1', name: 'Room 1', icon: 'icon-data' }),
+      const second = expectOk(
+        await product.evaluate(
+          (i) => window.__TEST_PRODUCT__.chatCreateRoom({ roomId: 'r1', name: 'Room 1', icon: i }),
+          icon,
+        ),
       );
-      expect(second.ok).toBe(true);
       expect(second.status).toBe('Exists');
 
       const rooms = await page.evaluate(() => window.__TEST_HOST__.getChatRooms());
       expect(rooms).toHaveLength(1);
       expect(rooms[0].roomId).toBe('r1');
       expect(rooms[0].name).toBe('Room 1');
+      // The host records the resolved icon the core validated, not the raw input.
+      expect(rooms[0].icon).toBe(icon);
       expect(rooms[0].participatingAs).toBe('RoomHost');
     } finally {
       await host.close();
@@ -605,109 +671,152 @@ test.describe('Chat', () => {
     const host = await createTestHostServer({
       productUrl: productServer.url,
       accounts: ['alice'],
+      // Chat is Worker-only in the core: every Chat entry point is denied
+      // unless the connection's execution kind is `Worker`
+      // (`truapi-server/src/runtime/chat.rs`).
+      executionKind: 'Worker',
     });
 
     try {
       const product = await loadHostAndProduct(page, host.url, productServer.url);
 
-      const first = await product.evaluate(() =>
-        window.__TEST_PRODUCT__.chatRegisterBot({ botId: 'b1', name: 'MyBot', icon: 'icon' }),
+      // See the icon note in `chatCreateRoom` above.
+      const icon = 'https://example.com/bot.png';
+      const first = expectOk(
+        await product.evaluate(
+          (i) => window.__TEST_PRODUCT__.chatRegisterBot({ botId: 'b1', name: 'MyBot', icon: i }),
+          icon,
+        ),
       );
       expect(first.status).toBe('New');
 
-      const second = await product.evaluate(() =>
-        window.__TEST_PRODUCT__.chatRegisterBot({ botId: 'b1', name: 'MyBot', icon: 'icon' }),
+      const second = expectOk(
+        await product.evaluate(
+          (i) => window.__TEST_PRODUCT__.chatRegisterBot({ botId: 'b1', name: 'MyBot', icon: i }),
+          icon,
+        ),
       );
       expect(second.status).toBe('Exists');
 
       const bots = await page.evaluate(() => window.__TEST_HOST__.getChatBots());
       expect(bots).toHaveLength(1);
       expect(bots[0].botId).toBe('b1');
+      expect(bots[0].icon).toBe(icon);
     } finally {
       await host.close();
     }
   });
 
-  test('chatPostMessage fails if room does not exist', async ({ page }) => {
+  test('chatPostMessage fails if the room does not exist', async ({ page }) => {
     const host = await createTestHostServer({
       productUrl: productServer.url,
       accounts: ['alice'],
+      // Chat is Worker-only in the core: every Chat entry point is denied
+      // unless the connection's execution kind is `Worker`
+      // (`truapi-server/src/runtime/chat.rs`).
+      executionKind: 'Worker',
     });
 
     try {
       const product = await loadHostAndProduct(page, host.url, productServer.url);
+
+      // A room the product does own, so this test fails on a posting refusal
+      // rather than passing because chat is unavailable altogether.
+      expectOk(
+        await product.evaluate(() =>
+          window.__TEST_PRODUCT__.chatCreateRoom({ roomId: 'owned', name: 'Owned', icon: '' }),
+        ),
+      );
 
       const result = await product.evaluate(() =>
         window.__TEST_PRODUCT__.chatPostTextMessage('no-such-room', 'hello'),
       );
       expect(result.ok).toBe(false);
+
+      const log = await page.evaluate(() => window.__TEST_HOST__.getChatMessageLog());
+      expect(log).toEqual([]);
     } finally {
       await host.close();
     }
   });
 
-  test('chatPostMessage succeeds when room exists and is logged', async ({ page }) => {
+  test('chatPostMessage succeeds when the room exists and is logged', async ({ page }) => {
     const host = await createTestHostServer({
       productUrl: productServer.url,
       accounts: ['alice'],
+      // Chat is Worker-only in the core: every Chat entry point is denied
+      // unless the connection's execution kind is `Worker`
+      // (`truapi-server/src/runtime/chat.rs`).
+      executionKind: 'Worker',
     });
 
     try {
       const product = await loadHostAndProduct(page, host.url, productServer.url);
 
-      await product.evaluate(() =>
-        window.__TEST_PRODUCT__.chatCreateRoom({ roomId: 'room-a', name: 'A', icon: '' }),
+      expectOk(
+        await product.evaluate(() =>
+          window.__TEST_PRODUCT__.chatCreateRoom({ roomId: 'room-a', name: 'A', icon: '' }),
+        ),
       );
 
-      const r1 = await product.evaluate(() =>
-        window.__TEST_PRODUCT__.chatPostTextMessage('room-a', 'hello'),
+      const first = expectOk(
+        await product.evaluate(() => window.__TEST_PRODUCT__.chatPostTextMessage('room-a', 'hello')),
       );
-      const r2 = await product.evaluate(() =>
-        window.__TEST_PRODUCT__.chatPostTextMessage('room-a', 'world'),
+      const second = expectOk(
+        await product.evaluate(() => window.__TEST_PRODUCT__.chatPostTextMessage('room-a', 'world')),
       );
-
-      expect(r1.ok).toBe(true);
-      expect(r1.messageId).toBeTruthy();
-      expect(r2.ok).toBe(true);
-      expect(r2.messageId).not.toBe(r1.messageId);
+      expect(first.messageId).toBeTruthy();
+      expect(second.messageId).not.toBe(first.messageId);
 
       const log = await page.evaluate(() => window.__TEST_HOST__.getChatMessageLog());
       expect(log).toHaveLength(2);
       expect(log[0].roomId).toBe('room-a');
-      expect(log[0].payload).toEqual({ tag: 'Text', value: 'hello' });
-      expect(log[1].payload).toEqual({ tag: 'Text', value: 'world' });
+      expect(log[0].payload).toEqual({ tag: 'Text', value: { text: 'hello' } });
+      expect(log[1].payload).toEqual({ tag: 'Text', value: { text: 'world' } });
     } finally {
       await host.close();
     }
   });
 
-  test('chatListSubscribe receives current rooms and new room creation', async ({ page }) => {
+  test('chat room subscription replays the current rooms and new ones', async ({ page }) => {
     const host = await createTestHostServer({
       productUrl: productServer.url,
       accounts: ['alice'],
+      // Chat is Worker-only in the core: every Chat entry point is denied
+      // unless the connection's execution kind is `Worker`
+      // (`truapi-server/src/runtime/chat.rs`).
+      executionKind: 'Worker',
     });
 
     try {
       const product = await loadHostAndProduct(page, host.url, productServer.url);
 
-      // Create a room first
-      await product.evaluate(() =>
-        window.__TEST_PRODUCT__.chatCreateRoom({ roomId: 'pre', name: 'Pre', icon: '' }),
+      expectOk(
+        await product.evaluate(() =>
+          window.__TEST_PRODUCT__.chatCreateRoom({ roomId: 'pre', name: 'Pre', icon: '' }),
+        ),
       );
 
-      // Subscribe — should immediately receive the existing room
       await product.evaluate(() => {
-        (window as any).__chatListReceived = [];
-        (window as any).__chatListSub = (window as any).hostApi?.chatListSubscribe;
-        // Use the product-sdk hostApi directly for this subscription test
+        window.__CHAT_ROOMS_SUB__ = window.__TEST_PRODUCT__.subscribeChatRooms();
       });
 
-      // Alternative: use __TEST_PRODUCT__ if we wired it up; simpler approach — create a room
-      // after subscribing via the live subscribe path. We'll just verify the rooms show up
-      // in the host's list, which is the contract.
+      // The room that existed before the subscription is replayed on subscribe.
+      await expect
+        .poll(() => product.evaluate(() => window.__TEST_PRODUCT__.getReceivedChatRooms()))
+        .toContainEqual(['pre']);
 
-      const rooms = await page.evaluate(() => window.__TEST_HOST__.getChatRooms());
-      expect(rooms.map((r: any) => r.roomId)).toContain('pre');
+      expectOk(
+        await product.evaluate(() =>
+          window.__TEST_PRODUCT__.chatCreateRoom({ roomId: 'post', name: 'Post', icon: '' }),
+        ),
+      );
+
+      await expect
+        .poll(() => product.evaluate(() => window.__TEST_PRODUCT__.getReceivedChatRooms()))
+        .toContainEqual(['pre', 'post']);
+
+      await product.evaluate(() => window.__CHAT_ROOMS_SUB__.unsubscribe());
     } finally {
       await host.close();
     }
@@ -717,38 +826,38 @@ test.describe('Chat', () => {
     const host = await createTestHostServer({
       productUrl: productServer.url,
       accounts: ['alice'],
+      // Chat is Worker-only in the core: every Chat entry point is denied
+      // unless the connection's execution kind is `Worker`
+      // (`truapi-server/src/runtime/chat.rs`).
+      executionKind: 'Worker',
     });
 
     try {
       const product = await loadHostAndProduct(page, host.url, productServer.url);
 
-      // Product subscribes to chat actions
       await product.evaluate(() => {
-        (window as any).__chatSub = window.__TEST_PRODUCT__.subscribeChatActions();
+        window.__CHAT_ACTIONS_SUB__ = window.__TEST_PRODUCT__.subscribeChatActions();
       });
 
-      // Host injects an action
-      await page.evaluate(() => {
+      await page.evaluate(() =>
         window.__TEST_HOST__.injectChatAction({
           roomId: 'room-x',
           peer: 'peer-1',
-          payload: {
-            tag: 'MessagePosted',
-            value: { tag: 'Text', value: 'hi from peer' },
+          payload: { tag: 'MessagePosted', value: { tag: 'Text', value: { text: 'hi from peer' } } },
+        }),
+      );
+
+      await expect
+        .poll(() => product.evaluate(() => window.__TEST_PRODUCT__.getReceivedChatActions()))
+        .toEqual([
+          {
+            roomId: 'room-x',
+            peer: 'peer-1',
+            payload: { tag: 'MessagePosted', value: { tag: 'Text', value: { text: 'hi from peer' } } },
           },
-        });
-      });
+        ]);
 
-      // Small wait for async delivery
-      await page.waitForTimeout(50);
-
-      const received = await product.evaluate(() => window.__TEST_PRODUCT__.getReceivedChatActions());
-      expect(received).toHaveLength(1);
-      expect((received[0] as any).roomId).toBe('room-x');
-      expect((received[0] as any).peer).toBe('peer-1');
-
-      // Cleanup
-      await product.evaluate(() => (window as any).__chatSub.unsubscribe());
+      await product.evaluate(() => window.__CHAT_ACTIONS_SUB__.unsubscribe());
     } finally {
       await host.close();
     }
@@ -758,29 +867,35 @@ test.describe('Chat', () => {
     const host = await createTestHostServer({
       productUrl: productServer.url,
       accounts: ['alice'],
+      // Chat is Worker-only in the core: every Chat entry point is denied
+      // unless the connection's execution kind is `Worker`
+      // (`truapi-server/src/runtime/chat.rs`).
+      executionKind: 'Worker',
     });
 
     try {
       const product = await loadHostAndProduct(page, host.url, productServer.url);
 
-      await product.evaluate(() =>
-        window.__TEST_PRODUCT__.chatCreateRoom({ roomId: 'r1', name: 'R1', icon: '' }),
+      expectOk(
+        await product.evaluate(() =>
+          window.__TEST_PRODUCT__.chatCreateRoom({ roomId: 'r1', name: 'R1', icon: '' }),
+        ),
       );
-      await product.evaluate(() =>
-        window.__TEST_PRODUCT__.chatRegisterBot({ botId: 'b1', name: 'B1', icon: '' }),
+      expectOk(
+        await product.evaluate(() =>
+          window.__TEST_PRODUCT__.chatRegisterBot({ botId: 'b1', name: 'B1', icon: '' }),
+        ),
       );
-      await product.evaluate(() =>
-        window.__TEST_PRODUCT__.chatPostTextMessage('r1', 'm'),
-      );
+      expectOk(await product.evaluate(() => window.__TEST_PRODUCT__.chatPostTextMessage('r1', 'm')));
+
+      // Non-empty before the wipe, so the assertions below are not vacuous.
+      expect(await page.evaluate(() => window.__TEST_HOST__.getChatRooms())).toHaveLength(1);
 
       await page.evaluate(() => window.__TEST_HOST__.clearChatState());
 
-      const rooms = await page.evaluate(() => window.__TEST_HOST__.getChatRooms());
-      const bots = await page.evaluate(() => window.__TEST_HOST__.getChatBots());
-      const log = await page.evaluate(() => window.__TEST_HOST__.getChatMessageLog());
-      expect(rooms).toEqual([]);
-      expect(bots).toEqual([]);
-      expect(log).toEqual([]);
+      expect(await page.evaluate(() => window.__TEST_HOST__.getChatRooms())).toEqual([]);
+      expect(await page.evaluate(() => window.__TEST_HOST__.getChatBots())).toEqual([]);
+      expect(await page.evaluate(() => window.__TEST_HOST__.getChatMessageLog())).toEqual([]);
     } finally {
       await host.close();
     }
@@ -791,7 +906,7 @@ test.describe('Chat', () => {
 
 test.describe('Preimage', () => {
 
-  test('preimageSubmit stores the value and returns its key', async ({ page }) => {
+  test('preimageLookup returns a seeded value', async ({ page }) => {
     const host = await createTestHostServer({
       productUrl: productServer.url,
       accounts: ['alice'],
@@ -800,46 +915,20 @@ test.describe('Preimage', () => {
     try {
       const product = await loadHostAndProduct(page, host.url, productServer.url);
 
-      const result = await product.evaluate(() =>
-        window.__TEST_PRODUCT__.preimageSubmit([1, 2, 3, 4]),
+      const key = await page.evaluate(() =>
+        window.__TEST_HOST__.seedPreimage(new Uint8Array([42, 42, 42])),
       );
-      expect(result.ok).toBe(true);
-      expect(result.key).toMatch(/^0x[0-9a-f]{64}$/);
 
-      const preimages = await page.evaluate(() => window.__TEST_HOST__.getPreimages());
-      expect(preimages).toHaveLength(1);
-      expect(preimages[0].key).toBe(result.key);
-      expect(preimages[0].fromProduct).toBe(true);
-    } finally {
-      await host.close();
-    }
-  });
-
-  test('preimageLookup returns seeded value', async ({ page }) => {
-    const host = await createTestHostServer({
-      productUrl: productServer.url,
-      accounts: ['alice'],
-    });
-
-    try {
-      const product = await loadHostAndProduct(page, host.url, productServer.url);
-
-      // Seed a preimage from the test side
-      const key = await page.evaluate(() => {
-        return window.__TEST_HOST__.seedPreimage(new Uint8Array([42, 42, 42]));
-      });
-
-      // Product looks it up
-      const result = await product.evaluate((k: string) =>
-        window.__TEST_PRODUCT__.preimageLookup(k), key);
-      expect(result.ok).toBe(true);
+      const result = expectOk(
+        await product.evaluate((k) => window.__TEST_PRODUCT__.preimageLookup(k), key),
+      );
       expect(result.value).toEqual([42, 42, 42]);
     } finally {
       await host.close();
     }
   });
 
-  test('preimageLookup returns null for unknown key', async ({ page }) => {
+  test('preimageLookup returns null for an unknown key', async ({ page }) => {
     const host = await createTestHostServer({
       productUrl: productServer.url,
       accounts: ['alice'],
@@ -848,150 +937,41 @@ test.describe('Preimage', () => {
     try {
       const product = await loadHostAndProduct(page, host.url, productServer.url);
 
-      const unknownKey = '0x' + '00'.repeat(32);
-      const result = await product.evaluate((k: string) =>
-        window.__TEST_PRODUCT__.preimageLookup(k), unknownKey);
-      expect(result.ok).toBe(true);
+      const result = expectOk(
+        await product.evaluate(
+          (k) => window.__TEST_PRODUCT__.preimageLookup(k),
+          `0x${'00'.repeat(32)}`,
+        ),
+      );
       expect(result.value).toBeNull();
     } finally {
       await host.close();
     }
   });
-});
 
-// ── Statement store ─────────────────────────────────────────────────
-
-test.describe('Statement store', () => {
-
-  test('statementStoreSubmit records submissions', async ({ page }) => {
+  test('a seeded preimage is reported as not coming from the product', async ({ page }) => {
     const host = await createTestHostServer({
       productUrl: productServer.url,
       accounts: ['alice'],
     });
 
     try {
-      const product = await loadHostAndProduct(page, host.url, productServer.url);
+      await loadHostAndProduct(page, host.url, productServer.url);
 
-      const topic = '0x' + 'aa'.repeat(32);
-      const data = '0xdeadbeef';
-      const result = await product.evaluate(
-        ([t, d]) => window.__TEST_PRODUCT__.statementSubmit([t], d),
-        [topic, data] as const,
+      const key = await page.evaluate(() =>
+        window.__TEST_HOST__.seedPreimage(new Uint8Array([1, 2, 3, 4])),
       );
-      expect(result.ok).toBe(true);
 
-      const submitted = await page.evaluate(() =>
-        window.__TEST_HOST__.getSubmittedStatements(),
-      );
-      expect(submitted).toHaveLength(1);
-    } finally {
-      await host.close();
-    }
-  });
+      const preimages = await page.evaluate(() => window.__TEST_HOST__.getPreimages());
+      expect(preimages).toHaveLength(1);
+      expect(preimages[0].key).toBe(key);
+      // There is no host-side preimage submit any more: the product's submit
+      // goes out over the chain route, so everything this host knows about was
+      // seeded by the test.
+      expect(preimages[0].fromProduct).toBe(false);
 
-  test('statementStoreSubmit delivers to active subscribers', async ({ page }) => {
-    const host = await createTestHostServer({
-      productUrl: productServer.url,
-      accounts: ['alice'],
-    });
-
-    try {
-      const product = await loadHostAndProduct(page, host.url, productServer.url);
-
-      const topic = '0x' + 'bb'.repeat(32);
-
-      // Product subscribes to statements (no topic filter — match all)
-      await product.evaluate(() => {
-        (window as any).__stmtSub = window.__TEST_PRODUCT__.statementSubscribe([]);
-      });
-
-      // Product submits a statement on topic — should round-trip back via subscription
-      const result = await product.evaluate((t: string) =>
-        window.__TEST_PRODUCT__.statementSubmit([t], '0xdeadbeef'),
-        topic,
-      );
-      expect(result.ok).toBe(true);
-
-      await page.waitForTimeout(100);
-
-      const received = await product.evaluate(() =>
-        window.__TEST_PRODUCT__.getReceivedStatements(),
-      );
-      expect(received).toHaveLength(1);
-
-      // Host also has the submitted statement in its log
-      const submitted = await page.evaluate(() =>
-        window.__TEST_HOST__.getSubmittedStatements(),
-      );
-      expect(submitted).toHaveLength(1);
-
-      await product.evaluate(() => (window as any).__stmtSub.unsubscribe());
-    } finally {
-      await host.close();
-    }
-  });
-
-  test('topic filter: subscriber with non-matching topic receives nothing', async ({ page }) => {
-    const host = await createTestHostServer({
-      productUrl: productServer.url,
-      accounts: ['alice'],
-    });
-
-    try {
-      const product = await loadHostAndProduct(page, host.url, productServer.url);
-
-      const subscribedTopic = '0x' + 'bb'.repeat(32);
-      const otherTopic = '0x' + 'cc'.repeat(32);
-
-      await product.evaluate((t: string) => {
-        (window as any).__stmtSub = window.__TEST_PRODUCT__.statementSubscribe([t]);
-      }, subscribedTopic);
-
-      // Submit on a different topic — should NOT match the subscriber's filter
-      const result = await product.evaluate((t: string) =>
-        window.__TEST_PRODUCT__.statementSubmit([t], '0x01'),
-        otherTopic,
-      );
-      expect(result.ok).toBe(true);
-
-      await page.waitForTimeout(100);
-
-      const received = await product.evaluate(() =>
-        window.__TEST_PRODUCT__.getReceivedStatements(),
-      );
-      expect(received).toHaveLength(0);
-
-      await product.evaluate(() => (window as any).__stmtSub.unsubscribe());
-    } finally {
-      await host.close();
-    }
-  });
-});
-
-// ── Container recreation resets state ───────────────────────────────
-
-test.describe('Container recreation resets logs', () => {
-
-  test('permission grants do not leak across setAccounts', async ({ page }) => {
-    const host = await createTestHostServer({
-      productUrl: productServer.url,
-      accounts: ['alice'],
-    });
-
-    try {
-      const product = await loadHostAndProduct(page, host.url, productServer.url);
-
-      // Grant permission, verify it's set
-      await page.evaluate(() => window.__TEST_HOST__.grantPermission('ChainSubmit'));
-      const granted = await page.evaluate(() => window.__TEST_HOST__.getGrantedPermissions());
-      expect(granted).toContain('ChainSubmit');
-
-      // Switch accounts — container recreates, grants should clear
-      await page.evaluate(() => window.__TEST_HOST__.setAccounts(['bob']));
-      await loadHostAndProduct(page, host.url, productServer.url); // wait for product to reconnect
-
-      const grantedAfter = await page.evaluate(() => window.__TEST_HOST__.getGrantedPermissions());
-      expect(grantedAfter).not.toContain('ChainSubmit');
+      await page.evaluate(() => window.__TEST_HOST__.clearPreimages());
+      expect(await page.evaluate(() => window.__TEST_HOST__.getPreimages())).toEqual([]);
     } finally {
       await host.close();
     }
@@ -1002,7 +982,7 @@ test.describe('Container recreation resets logs', () => {
 
 test.describe('Theme', () => {
 
-  test('theme subscribe delivers current theme', async ({ page }) => {
+  test('theme subscribe delivers the current theme and later changes', async ({ page }) => {
     const host = await createTestHostServer({
       productUrl: productServer.url,
       accounts: ['alice'],
@@ -1012,22 +992,22 @@ test.describe('Theme', () => {
       const product = await loadHostAndProduct(page, host.url, productServer.url);
 
       await product.evaluate(() => {
-        (window as any).__themeSub = window.__TEST_PRODUCT__.subscribeTheme();
+        window.__THEME_SUB__ = window.__TEST_PRODUCT__.subscribeTheme();
       });
-      await page.waitForTimeout(100);
 
-      const themes = await product.evaluate(() => window.__TEST_PRODUCT__.getReceivedThemes()) as Array<{ name: { tag: string; value?: string }; variant: 'Light' | 'Dark' }>;
-      expect(themes.length).toBeGreaterThanOrEqual(1);
-      expect(themes[0]).toEqual({ name: { tag: 'Default', value: undefined }, variant: 'Light' });
+      await expect
+        .poll(() => product.evaluate(() => window.__TEST_PRODUCT__.getReceivedThemes()))
+        .toEqual([{ name: { tag: 'Default', value: undefined }, variant: 'Light' }]);
 
-      // Host changes theme using the shorthand
       await page.evaluate(() => window.__TEST_HOST__.setTheme('dark'));
-      await page.waitForTimeout(100);
 
-      const updated = await product.evaluate(() => window.__TEST_PRODUCT__.getReceivedThemes()) as Array<{ name: { tag: string; value?: string }; variant: 'Light' | 'Dark' }>;
-      expect(updated.at(-1)).toEqual({ name: { tag: 'Default', value: undefined }, variant: 'Dark' });
+      await expect
+        .poll(async () =>
+          (await product.evaluate(() => window.__TEST_PRODUCT__.getReceivedThemes())).at(-1),
+        )
+        .toEqual({ name: { tag: 'Default', value: undefined }, variant: 'Dark' });
 
-      await product.evaluate(() => (window as any).__themeSub.unsubscribe());
+      await product.evaluate(() => window.__THEME_SUB__.unsubscribe());
     } finally {
       await host.close();
     }
@@ -1043,27 +1023,24 @@ test.describe('Theme', () => {
       const product = await loadHostAndProduct(page, host.url, productServer.url);
 
       // Drive a non-default theme from the host before the product subscribes.
-      await page.evaluate(() => window.__TEST_HOST__.setTheme({
-        name: { tag: 'Custom', value: 'midnight' },
-        variant: 'Dark',
-      }));
+      await page.evaluate(() =>
+        window.__TEST_HOST__.setTheme({ name: { tag: 'Custom', value: 'midnight' }, variant: 'Dark' }),
+      );
 
       await product.evaluate(() => {
-        (window as any).__themeSub = window.__TEST_PRODUCT__.subscribeTheme();
-      });
-      await page.waitForTimeout(100);
-
-      const themes = await product.evaluate(() => window.__TEST_PRODUCT__.getReceivedThemes()) as Array<{ name: { tag: string; value?: string }; variant: 'Light' | 'Dark' }>;
-      expect(themes.at(-1)).toEqual({
-        name: { tag: 'Custom', value: 'midnight' },
-        variant: 'Dark',
+        window.__THEME_SUB__ = window.__TEST_PRODUCT__.subscribeTheme();
       });
 
-      // getTheme also returns the struct on the host side.
+      await expect
+        .poll(async () =>
+          (await product.evaluate(() => window.__TEST_PRODUCT__.getReceivedThemes())).at(-1),
+        )
+        .toEqual({ name: { tag: 'Custom', value: 'midnight' }, variant: 'Dark' });
+
       const current = await page.evaluate(() => window.__TEST_HOST__.getTheme());
       expect(current).toEqual({ name: { tag: 'Custom', value: 'midnight' }, variant: 'Dark' });
 
-      await product.evaluate(() => (window as any).__themeSub.unsubscribe());
+      await product.evaluate(() => window.__THEME_SUB__.unsubscribe());
     } finally {
       await host.close();
     }
@@ -1074,7 +1051,7 @@ test.describe('Theme', () => {
 
 test.describe('Entropy', () => {
 
-  test('deriveEntropy returns 32-byte deterministic result', async ({ page }) => {
+  test('deriveEntropy returns a 32-byte deterministic result', async ({ page }) => {
     const host = await createTestHostServer({
       productUrl: productServer.url,
       accounts: ['alice'],
@@ -1083,115 +1060,59 @@ test.describe('Entropy', () => {
     try {
       const product = await loadHostAndProduct(page, host.url, productServer.url);
 
-      const keyHex = '0x' + '01'.repeat(16); // 16-byte key
-      const a = await product.evaluate((k: string) =>
-        window.__TEST_PRODUCT__.deriveEntropy(k), keyHex);
-      expect(a.ok).toBe(true);
-      expect(a.entropyHex).toMatch(/^0x[0-9a-f]{64}$/); // 32 bytes
+      const context = `0x${'01'.repeat(16)}`;
+      const first = expectOk(
+        await product.evaluate((c) => window.__TEST_PRODUCT__.deriveEntropy(c), context),
+      );
+      expect(first.entropyHex).toMatch(/^0x[0-9a-f]{64}$/);
 
-      // Same key → same result (deterministic)
-      const b = await product.evaluate((k: string) =>
-        window.__TEST_PRODUCT__.deriveEntropy(k), keyHex);
-      expect(b.entropyHex).toBe(a.entropyHex);
+      const again = expectOk(
+        await product.evaluate((c) => window.__TEST_PRODUCT__.deriveEntropy(c), context),
+      );
+      expect(again.entropyHex).toBe(first.entropyHex);
 
-      // Different key → different result
-      const c = await product.evaluate((k: string) =>
-        window.__TEST_PRODUCT__.deriveEntropy(k), '0x' + '02'.repeat(16));
-      expect(c.ok).toBe(true);
-      expect(c.entropyHex).not.toBe(a.entropyHex);
-    } finally {
-      await host.close();
-    }
-  });
-});
-
-// ── Login / getUserId ──────────────────────────────────────────────
-
-test.describe('Login and user identity', () => {
-
-  test('requestLogin succeeds on a fresh page and flips getIsAuthenticated() to true', async ({ page }) => {
-    const host = await createTestHostServer({
-      productUrl: productServer.url,
-      accounts: ['alice'],
-    });
-
-    try {
-      const product = await loadHostAndProduct(page, host.url, productServer.url);
-
-      expect(await page.evaluate(() => window.__TEST_HOST__.getIsAuthenticated())).toBe(false);
-
-      const result = await product.evaluate(() =>
-        window.__TEST_PRODUCT__.requestLogin('test'));
-      expect(result.ok).toBe(true);
-      expect(result.loginResult).toBe('success');
-
-      expect(await page.evaluate(() => window.__TEST_HOST__.getIsAuthenticated())).toBe(true);
+      const other = expectOk(
+        await product.evaluate(
+          (c) => window.__TEST_PRODUCT__.deriveEntropy(c),
+          `0x${'02'.repeat(16)}`,
+        ),
+      );
+      expect(other.entropyHex).not.toBe(first.entropyHex);
     } finally {
       await host.close();
     }
   });
 
-  test('requestLogin returns alreadyConnected when already authenticated', async ({ page }) => {
-    const host = await createTestHostServer({
+  test('entropy is bound to the session identity, not the page', async ({ page }) => {
+    const context = `0x${'03'.repeat(16)}`;
+
+    const aliceHost = await createTestHostServer({
       productUrl: productServer.url,
       accounts: ['alice'],
     });
-
+    let underAlice: string;
     try {
-      const product = await loadHostAndProduct(page, host.url, productServer.url);
-
-      // Pre-authenticate
-      await page.evaluate(() => window.__TEST_HOST__.simulateReconnect());
-
-      const result = await product.evaluate(() =>
-        window.__TEST_PRODUCT__.requestLogin('test'));
-      expect(result.ok).toBe(true);
-      expect(result.loginResult).toBe('alreadyConnected');
+      const product = await loadHostAndProduct(page, aliceHost.url, productServer.url);
+      underAlice = expectOk(
+        await product.evaluate((c) => window.__TEST_PRODUCT__.deriveEntropy(c), context),
+      ).entropyHex;
     } finally {
-      await host.close();
+      await aliceHost.close();
     }
-  });
 
-  test('rejected login leaves getIsAuthenticated() false (regression for #25)', async ({ page }) => {
-    const host = await createTestHostServer({
+    const bobHost = await createTestHostServer({
       productUrl: productServer.url,
-      accounts: ['alice'],
+      accounts: ['bob'],
     });
-
     try {
-      const product = await loadHostAndProduct(page, host.url, productServer.url);
-
-      await page.evaluate(() => window.__TEST_HOST__.setLoginBehavior('reject'));
-
-      const result = await product.evaluate(() =>
-        window.__TEST_PRODUCT__.requestLogin('please'));
-      expect(result.ok).toBe(true);
-      expect(result.loginResult).toBe('rejected');
-
-      expect(await page.evaluate(() => window.__TEST_HOST__.getIsAuthenticated())).toBe(false);
+      const product = await loadHostAndProduct(page, bobHost.url, productServer.url);
+      const underBob = expectOk(
+        await product.evaluate((c) => window.__TEST_PRODUCT__.deriveEntropy(c), context),
+      ).entropyHex;
+      // Each session mints its own root entropy source from the signer's key.
+      expect(underBob).not.toBe(underAlice);
     } finally {
-      await host.close();
-    }
-  });
-
-  test('getUserId returns primaryUsername', async ({ page }) => {
-    const host = await createTestHostServer({
-      productUrl: productServer.url,
-      accounts: ['alice'],
-    });
-
-    try {
-      const product = await loadHostAndProduct(page, host.url, productServer.url);
-
-      // getUserId requires an authenticated session
-      await page.evaluate(() => window.__TEST_HOST__.simulateReconnect());
-
-      const result = await product.evaluate(() =>
-        window.__TEST_PRODUCT__.getUserId());
-      expect(result.ok).toBe(true);
-      expect(result.primaryUsername).toBe('Alice');
-    } finally {
-      await host.close();
+      await bobHost.close();
     }
   });
 });
@@ -1200,7 +1121,7 @@ test.describe('Login and user identity', () => {
 
 test.describe('Resource allocation', () => {
 
-  test('all resources are allocated', async ({ page }) => {
+  test('every requested resource is allocated', async ({ page }) => {
     const host = await createTestHostServer({
       productUrl: productServer.url,
       accounts: ['alice'],
@@ -1209,17 +1130,17 @@ test.describe('Resource allocation', () => {
     try {
       const product = await loadHostAndProduct(page, host.url, productServer.url);
 
-      const result = await product.evaluate(() =>
-        window.__TEST_PRODUCT__.requestResourceAllocation([
-          { tag: 'StatementStoreAllowance', value: undefined },
-          { tag: 'BulletinAllowance', value: undefined },
-          // RFC-0022: the allowance is scoped to an account selector, not a bare index.
-          { tag: 'SmartContractAllowance', value: { tag: 'Index', value: 0 } },
-          { tag: 'AutoSigning', value: undefined },
-        ]));
-      expect(result.ok).toBe(true);
-      expect(result.outcomes).toHaveLength(4);
-      expect(result.outcomes!.every(o => o.tag === 'Allocated')).toBe(true);
+      const result = expectOk(
+        await product.evaluate(() =>
+          window.__TEST_PRODUCT__.requestResourceAllocation([
+            { tag: 'StatementStoreAllowance', value: undefined },
+            { tag: 'BulletinAllowance', value: undefined },
+            { tag: 'SmartContractAllowance', value: { tag: 'Index', value: 0 } },
+            { tag: 'AutoSigning', value: undefined },
+          ]),
+        ),
+      );
+      expect(result.outcomes).toEqual(['Allocated', 'Allocated', 'Allocated', 'Allocated']);
     } finally {
       await host.close();
     }
@@ -1230,7 +1151,7 @@ test.describe('Resource allocation', () => {
 
 test.describe('Feature check', () => {
 
-  test('chain feature returns true for configured genesis', async ({ page }) => {
+  test('chain feature returns true for a configured genesis', async ({ page }) => {
     const host = await createTestHostServer({
       productUrl: productServer.url,
       accounts: ['alice'],
@@ -1241,17 +1162,19 @@ test.describe('Feature check', () => {
 
       // Default chain is PASEO_ASSET_HUB. Read the genesis from the config
       // rather than repeating the literal, so a chain reset only needs one edit.
-      const result = await product.evaluate((genesis: string) =>
-        window.__TEST_PRODUCT__.featureSupported('Chain', genesis),
-        PASEO_ASSET_HUB.genesisHash);
-      expect(result.ok).toBe(true);
+      const result = expectOk(
+        await product.evaluate(
+          (genesis) => window.__TEST_PRODUCT__.featureSupported(genesis),
+          PASEO_ASSET_HUB.genesisHash,
+        ),
+      );
       expect(result.supported).toBe(true);
     } finally {
       await host.close();
     }
   });
 
-  test('chain feature returns false for unknown genesis', async ({ page }) => {
+  test('chain feature returns false for an unknown genesis', async ({ page }) => {
     const host = await createTestHostServer({
       productUrl: productServer.url,
       accounts: ['alice'],
@@ -1260,10 +1183,38 @@ test.describe('Feature check', () => {
     try {
       const product = await loadHostAndProduct(page, host.url, productServer.url);
 
-      const result = await product.evaluate(() =>
-        window.__TEST_PRODUCT__.featureSupported('Chain', '0x' + '00'.repeat(32)));
-      expect(result.ok).toBe(true);
+      const result = expectOk(
+        await product.evaluate(
+          (genesis) => window.__TEST_PRODUCT__.featureSupported(genesis),
+          `0x${'00'.repeat(32)}`,
+        ),
+      );
       expect(result.supported).toBe(false);
+    } finally {
+      await host.close();
+    }
+  });
+
+  test('chain feature returns true for the People chain the host advertises', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice'],
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+
+      // The People loopback is served in-page and is never in `networks`, so
+      // the host used to advertise it through `supportedChains()` and then
+      // deny it here — about the one chain it genuinely serves, and the one
+      // every signature travels over.
+      const result = expectOk(
+        await product.evaluate(
+          (genesis) => window.__TEST_PRODUCT__.featureSupported(genesis),
+          u8aToHex(PEOPLE_GENESIS_HASH),
+        ),
+      );
+      expect(result.supported).toBe(true);
     } finally {
       await host.close();
     }
@@ -1283,58 +1234,147 @@ test.describe('Local storage', () => {
     try {
       const product = await loadHostAndProduct(page, host.url, productServer.url);
 
-      // Write
-      const w = await product.evaluate(() =>
-        window.__TEST_PRODUCT__.localStorageWrite('test-key', 'hello'));
-      expect(w.ok).toBe(true);
+      expectOk(
+        await product.evaluate(() => window.__TEST_PRODUCT__.localStorageWrite('test-key', 'hello')),
+      );
 
-      // Read back
-      const r = await product.evaluate(() =>
-        window.__TEST_PRODUCT__.localStorageRead('test-key'));
-      expect(r.ok).toBe(true);
-      expect(r.value).toBe('hello');
+      const read = expectOk(
+        await product.evaluate(() => window.__TEST_PRODUCT__.localStorageRead('test-key')),
+      );
+      expect(read.value).toBe('hello');
 
-      // Clear
-      const c = await product.evaluate(() =>
-        window.__TEST_PRODUCT__.localStorageClear('test-key'));
-      expect(c.ok).toBe(true);
+      expectOk(
+        await product.evaluate(() => window.__TEST_PRODUCT__.localStorageClear('test-key')),
+      );
 
-      // Read again — should be null
-      const r2 = await product.evaluate(() =>
-        window.__TEST_PRODUCT__.localStorageRead('test-key'));
-      expect(r2.ok).toBe(true);
-      expect(r2.value).toBeNull();
+      const afterClear = expectOk(
+        await product.evaluate(() => window.__TEST_PRODUCT__.localStorageRead('test-key')),
+      );
+      expect(afterClear.value).toBeNull();
     } finally {
       await host.close();
     }
   });
 });
 
-// ── Statement store proof ──────────────────────────────────────────
+// ── Signing ────────────────────────────────────────────────────────
 
-test.describe('Statement store proof', () => {
+test.describe('Sign raw', () => {
 
-  test('createProof returns a valid proof', async ({ page }) => {
+  test('signs a raw payload locally with no network', async ({ page }) => {
     const host = await createTestHostServer({
       productUrl: productServer.url,
       accounts: ['alice'],
-      productAccounts: { 'test-product.dot/0': 'alice' },
     });
 
     try {
       const product = await loadHostAndProduct(page, host.url, productServer.url);
 
-      const result = await product.evaluate(() =>
-        window.__TEST_PRODUCT__.statementCreateProof('test-product.dot', 0, '0xdeadbeef'));
-      expect(result.ok).toBe(true);
-      expect(result.proof).toBeTruthy();
+      const payload = `0x${'11'.repeat(16)}`;
+      // The signature is a round trip through the worker and back over the SSO
+      // channel, so it is awaited rather than read off a synchronous call.
+      const result = expectOk(
+        await product.evaluate(
+          (p) => window.__TEST_PRODUCT__.signRawProduct('test-product.dot', 0, p),
+          payload,
+        ),
+      );
+      expect(result.signature).toMatch(/^0x[0-9a-f]{128}$/);
+
+      // The signer is the product's subtree soft-derived at index_bytes(0) —
+      // the same key the core reports for this handle. `Product account
+      // derivation` above checks that equality against the reported address
+      // itself; this pins the derivation path.
+      const signer = deriveSoft(deriveFromUri('//Alice//test-product.dot'), indexBytes(0))
+        .publicKey;
+      expect(
+        verify(watermarked(hexToU8a(payload)), hexToU8a(result.signature), signer),
+      ).toBe(true);
+
+      const log = await page.evaluate(() => window.__TEST_HOST__.getSigningLog());
+      expect(log).toHaveLength(1);
+      expect(log[0].type).toBe('raw');
+    } finally {
+      await host.close();
+    }
+  });
+
+  test('signs for the session identity when named as a legacy account', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice'],
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+
+      const payload = `0x${'22'.repeat(8)}`;
+      const alice = deriveDev('Alice');
+      const result = expectOk(
+        await product.evaluate(
+          ({ signer, p }) => window.__TEST_PRODUCT__.signRawLegacy(signer, p),
+          { signer: u8aToHex(alice.publicKey), p: payload },
+        ),
+      );
+      expect(verify(watermarked(hexToU8a(payload)), hexToU8a(result.signature), alice.publicKey)).toBe(
+        true,
+      );
+    } finally {
+      await host.close();
+    }
+  });
+
+  test('refuses a legacy account the session does not hold', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      // One paired identity per session: the session is minted for the FIRST
+      // account, so a request naming Bob is refused by design.
+      accounts: ['alice', 'bob'],
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+
+      const result = await product.evaluate(
+        (signer) => window.__TEST_PRODUCT__.signRawLegacy(signer, '0x2222'),
+        u8aToHex(deriveDev('Bob').publicKey),
+      );
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      // The core refuses before the request ever leaves for the wallet:
+      // `classify_legacy_address_signer` checks the named account against the
+      // active session and answers with `LEGACY_ACCOUNT_UNAVAILABLE_REASON`
+      // (`truapi-server/src/runtime.rs`). The responder's own guard is a
+      // backstop that is never reached on this path.
+      expect(result.error).toContain('Account is not available in the active session');
+    } finally {
+      await host.close();
+    }
+  });
+
+  test('clearSigningLog empties the log', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice'],
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+
+      expectOk(
+        await product.evaluate(() =>
+          window.__TEST_PRODUCT__.signRawProduct('test-product.dot', 0, '0x1234'),
+        ),
+      );
+      expect(await page.evaluate(() => window.__TEST_HOST__.getSigningLog())).toHaveLength(1);
+
+      await page.evaluate(() => window.__TEST_HOST__.clearSigningLog());
+      expect(await page.evaluate(() => window.__TEST_HOST__.getSigningLog())).toEqual([]);
     } finally {
       await host.close();
     }
   });
 });
-
-// ── Create transaction ─────────────────────────────────────────────
 
 test.describe('Create transaction', () => {
 
@@ -1347,40 +1387,35 @@ test.describe('Create transaction', () => {
     try {
       const product = await loadHostAndProduct(page, host.url, productServer.url);
 
-      const result = await product.evaluate(() =>
-        window.__TEST_PRODUCT__.createTransaction('test-product.dot', 0));
-      expect(result.ok).toBe(true);
-      expect(result.signedHex).toBeDefined();
+      const result = expectOk(
+        await product.evaluate(() =>
+          window.__TEST_PRODUCT__.createTransaction('test-product.dot', 0),
+        ),
+      );
 
-      // test-product sends callData = [0, 0], no extensions
       // wire layout: [compact len][0x84][0x00 + 32B pubkey][0x01 + 64B sig][0 extras][2B callData]
-      const wire = hexToU8a(result.signedHex!);
-      const [offset, innerLen] = compactFromU8a(wire); // [bytesUsed, BN value]
-      const bytes = wire.slice(offset);
-      expect(bytes.length).toBe(innerLen.toNumber());
-      expect(bytes.length).toBe(1 + 1 + 32 + 1 + 64 + 2);
-      expect(bytes[0]).toBe(0x84);   // v4 + signed bit
-      expect(bytes[1]).toBe(0x00);   // MultiAddress::Id
-      expect(bytes[34]).toBe(0x01);  // MultiSignature::Sr25519
-
-      const pubkey = bytes.slice(2, 34);
-      const signature = bytes.slice(35, 99);
-      const callData = bytes.slice(99, 101);
-      expect(Array.from(callData)).toEqual([0, 0]);
+      const tx = decodeSignedExtrinsic(result.signedHex);
+      expect(tx.bytes.length).toBe(tx.innerLength);
+      expect(tx.bytes.length).toBe(1 + 1 + 32 + 1 + 64 + 2);
+      expect(tx.version).toBe(0x84); // v4 + signed bit
+      expect(tx.addressType).toBe(0x00); // MultiAddress::Id
+      expect(tx.signatureType).toBe(0x01); // MultiSignature::Sr25519
+      expect(Array.from(tx.callData)).toEqual([0, 0]);
+      expect(u8aToHex(tx.signer)).toBe(
+        u8aToHex(deriveSoft(deriveFromUri('//Alice//test-product.dot'), indexBytes(0)).publicKey),
+      );
 
       // signing payload = callData || extras || additionalSigned; here just callData
-      expect(sr25519Verify(callData, signature, pubkey)).toBe(true);
+      expect(verify(tx.callData, tx.signature, tx.signer)).toBe(true);
+
+      const log = await page.evaluate(() => window.__TEST_HOST__.getSigningLog());
+      expect(log.map((entry) => entry.type)).toEqual(['createTransaction']);
     } finally {
       await host.close();
     }
   });
-});
 
-// ── Create transaction (legacy account) ───────────────────────────
-
-test.describe('Create transaction with legacy account', () => {
-
-  test('returns a valid v4 signed extrinsic signed by the legacy account', async ({ page }) => {
+  test('createTransactionWithLegacyAccount signs with the session identity', async ({ page }) => {
     const host = await createTestHostServer({
       productUrl: productServer.url,
       accounts: ['bob'],
@@ -1388,292 +1423,31 @@ test.describe('Create transaction with legacy account', () => {
 
     try {
       const product = await loadHostAndProduct(page, host.url, productServer.url);
-      const keyring = new Keyring({ type: 'sr25519' });
-      const bobPubKey = u8aToHex(keyring.addFromUri('//Bob').publicKey);
+      const bob = deriveDev('Bob');
 
-      const result = await product.evaluate((pk: string) =>
-        window.__TEST_PRODUCT__.createTransactionLegacy(pk), bobPubKey);
-      expect(result.ok).toBe(true);
-      expect(result.signedHex).toBeDefined();
-
-      // Same layout as the product-account flow, but signer == bob's pubkey
-      const wire = hexToU8a(result.signedHex!);
-      const [offset, innerLen] = compactFromU8a(wire);
-      const bytes = wire.slice(offset);
-      expect(bytes.length).toBe(innerLen.toNumber());
-      expect(bytes[0]).toBe(0x84);
-      expect(bytes[1]).toBe(0x00);
-      expect(bytes[34]).toBe(0x01);
-
-      const signerPubkey = bytes.slice(2, 34);
-      expect(u8aToHex(signerPubkey)).toBe(bobPubKey);
-
-      const signature = bytes.slice(35, 99);
-      const callData = bytes.slice(99, 101);
-      expect(sr25519Verify(callData, signature, signerPubkey)).toBe(true);
-    } finally {
-      await host.close();
-    }
-  });
-});
-
-// ── Payments (RFC-0006) ───────────────────────────────────────────
-
-test.describe('Payments', () => {
-
-  test('topUp + requestPayment are recorded; balance decreases', async ({ page }) => {
-    const host = await createTestHostServer({
-      productUrl: productServer.url,
-      accounts: ['alice'],
-    });
-
-    try {
-      const product = await loadHostAndProduct(page, host.url, productServer.url);
-
-      const dest = '0x' + 'aa'.repeat(32);
-      const result = await product.evaluate((d: string) =>
-        window.__TEST_PRODUCT__.paymentSmoke(d), dest);
-      expect(result.ok).toBe(true);
-      expect(result.paymentId).toMatch(/^pay-\d+$/);
-
-      const log = await page.evaluate(() => window.__TEST_HOST__.getPaymentLog());
-      expect(log).toHaveLength(2);
-      expect(log[0].type).toBe('top-up');
-      expect(log[0].amount).toBe(1000n);
-      expect(log[1].type).toBe('request');
-      expect(log[1].amount).toBe(500n);
-      expect(log[1].paymentId).toBe(result.paymentId);
-      // Default (no purse selector) → purse is undefined in the log.
-      expect(log[0].purse).toBeUndefined();
-      expect(log[1].purse).toBeUndefined();
-    } finally {
-      await host.close();
-    }
-  });
-
-  test('purse selector is recorded on top-up and request', async ({ page }) => {
-    const host = await createTestHostServer({
-      productUrl: productServer.url,
-      accounts: ['alice'],
-    });
-
-    try {
-      const product = await loadHostAndProduct(page, host.url, productServer.url);
-
-      const dest = '0x' + 'bb'.repeat(32);
-      const result = await product.evaluate(
-        ({ d, p }: { d: string; p: number }) => window.__TEST_PRODUCT__.paymentSmokeWithPurse(d, p),
-        { d: dest, p: 7 },
+      const result = expectOk(
+        await product.evaluate(
+          (signer) => window.__TEST_PRODUCT__.createTransactionLegacy(signer),
+          u8aToHex(bob.publicKey),
+        ),
       );
-      expect(result.ok).toBe(true);
 
-      const log = await page.evaluate(() => window.__TEST_HOST__.getPaymentLog());
-      expect(log).toHaveLength(2);
-      expect(log[0].type).toBe('top-up');
-      expect(log[0].purse).toBe(7);
-      expect(log[1].type).toBe('request');
-      expect(log[1].purse).toBe(7);
-    } finally {
-      await host.close();
-    }
-  });
-
-  // RFC-0021 coins top-up source. `keys` must be 64-byte sr25519 secret keys
-  // (codec changed from 32-byte ed25519 in upstream 0.8.4).
-  test('coins top-up source round-trips through paymentLog', async ({ page }) => {
-    const host = await createTestHostServer({
-      productUrl: productServer.url,
-      accounts: ['alice'],
-    });
-
-    try {
-      const product = await loadHostAndProduct(page, host.url, productServer.url);
-
-      const k1 = '0x' + '11'.repeat(64);
-      const k2 = '0x' + '22'.repeat(64);
-      const result = await product.evaluate(
-        ({ amount, keys }: { amount: string; keys: string[] }) =>
-          window.__TEST_PRODUCT__.paymentTopUpCoins(amount, keys),
-        { amount: '750', keys: [k1, k2] },
-      );
-      expect(result.ok).toBe(true);
-
-      const log = await page.evaluate(() => window.__TEST_HOST__.getPaymentLog());
-      expect(log).toHaveLength(1);
-      expect(log[0].type).toBe('top-up');
-      expect(log[0].amount).toBe(750n);
-      const source = log[0].source as { tag: string; value: Uint8Array[] };
-      expect(source.tag).toBe('Coins');
-      expect(source.value).toHaveLength(2);
-      expect(source.value[0]).toHaveLength(64);
-      expect(source.value[1]).toHaveLength(64);
-    } finally {
-      await host.close();
-    }
-  });
-
-  // RFC-0021 PartialPayment error path. The host credits `credited` and rejects
-  // with PaymentTopUpErr.PartialPayment({ credited }) so the product can reconcile.
-  test('PartialPayment behavior credits partially and rejects with credited amount', async ({ page }) => {
-    const host = await createTestHostServer({
-      productUrl: productServer.url,
-      accounts: ['alice'],
-    });
-
-    try {
-      const product = await loadHostAndProduct(page, host.url, productServer.url);
-
-      // Drive the host into partial-credit mode for the next topUp.
-      await page.evaluate(() => {
-        window.__TEST_HOST__.setPaymentTopUpBehavior({ type: 'partial', credited: 200n });
-      });
-
-      const k1 = '0x' + 'ab'.repeat(64);
-      const k2 = '0x' + 'cd'.repeat(64);
-      const result = await product.evaluate(
-        ({ amount, keys }: { amount: string; keys: string[] }) =>
-          window.__TEST_PRODUCT__.paymentTopUpCoins(amount, keys),
-        { amount: '1000', keys: [k1, k2] },
-      );
-      expect(result.ok).toBe(false);
-      expect(result.credited).toBe('200');
-
-      // The attempted top-up is still recorded with the requested amount...
-      const log = await page.evaluate(() => window.__TEST_HOST__.getPaymentLog());
-      expect(log).toHaveLength(1);
-      expect(log[0].amount).toBe(1000n);
-      // ...but only `credited` actually landed in the balance.
-      const balances = await product.evaluate(() => {
-        const sub = window.__TEST_PRODUCT__.subscribeBalance();
-        return new Promise<string[]>((resolve) => {
-          setTimeout(() => {
-            sub.unsubscribe();
-            resolve(window.__TEST_PRODUCT__.getReceivedBalances());
-          }, 100);
-        });
-      });
-      expect(balances).toContain('200');
+      const tx = decodeSignedExtrinsic(result.signedHex);
+      expect(tx.bytes.length).toBe(tx.innerLength);
+      expect(tx.version).toBe(0x84);
+      expect(tx.addressType).toBe(0x00);
+      expect(tx.signatureType).toBe(0x01);
+      expect(u8aToHex(tx.signer)).toBe(u8aToHex(bob.publicKey));
+      expect(verify(tx.callData, tx.signature, bob.publicKey)).toBe(true);
     } finally {
       await host.close();
     }
   });
 });
-
-// ── Sign raw (product account) ────────────────────────────────────
-
-test.describe('Sign raw (product account)', () => {
-
-  test('signRaw signs bytes with the product-account keypair', async ({ page }) => {
-    const host = await createTestHostServer({
-      productUrl: productServer.url,
-      accounts: ['alice'],
-    });
-
-    try {
-      const product = await loadHostAndProduct(page, host.url, productServer.url);
-      const payloadHex = '0x' + '11'.repeat(16);
-      const result = await product.evaluate((p: string) =>
-        window.__TEST_PRODUCT__.signRawProduct('test-product.dot', 0, p), payloadHex);
-      expect(result.ok).toBe(true);
-      expect(result.signature).toMatch(/^0x[0-9a-f]{128}$/); // 64-byte sr25519 sig
-
-      const log = await page.evaluate(() => window.__TEST_HOST__.getSigningLog());
-      expect(log).toHaveLength(1);
-      expect(log[0].type).toBe('raw');
-    } finally {
-      await host.close();
-    }
-  });
-});
-
-// ── Statement store proof (authorized) ────────────────────────────
-
-test.describe('Statement store proof (authorized)', () => {
-
-  test('createProofAuthorized returns valid proof using the host allowance slot', async ({ page }) => {
-    const host = await createTestHostServer({
-      productUrl: productServer.url,
-      accounts: ['alice'],
-    });
-
-    try {
-      const product = await loadHostAndProduct(page, host.url, productServer.url);
-      const result = await product.evaluate(() =>
-        window.__TEST_PRODUCT__.statementCreateProofAuthorized('0xdeadbeef'));
-      expect(result.ok).toBe(true);
-      // proof is enum SignatureProof; one variant carries { signature, signer }
-      const p = result.proof as { tag: string; value: { signature: Uint8Array; signer: Uint8Array } };
-      expect(['Sr25519', 'Ed25519', 'Ecdsa']).toContain(p.tag);
-      expect(p.value.signature.length).toBeGreaterThanOrEqual(64);
-      expect(p.value.signer.length).toBe(32);
-    } finally {
-      await host.close();
-    }
-  });
-});
-
-// ── Payment subscriptions ──────────────────────────────────────────
-
-test.describe('Payment subscriptions', () => {
-
-  test('subscribeBalance delivers updates when setPaymentBalance is called', async ({ page }) => {
-    const host = await createTestHostServer({
-      productUrl: productServer.url,
-      accounts: ['alice'],
-    });
-
-    try {
-      const product = await loadHostAndProduct(page, host.url, productServer.url);
-
-      await product.evaluate(() => window.__TEST_PRODUCT__.subscribeBalance());
-      // Initial value (0) is delivered on subscribe, then update fires the callback
-      await page.evaluate(() => window.__TEST_HOST__.setPaymentBalance(BigInt('7777')));
-      await page.evaluate(() => window.__TEST_HOST__.setPaymentBalance(BigInt('9999')));
-
-      // Settle
-      await page.waitForTimeout(50);
-      const received = await product.evaluate(() => window.__TEST_PRODUCT__.getReceivedBalances());
-      expect(received).toContain('7777');
-      expect(received).toContain('9999');
-    } finally {
-      await host.close();
-    }
-  });
-
-  test('subscribePaymentStatus delivers status updates simulated from the host', async ({ page }) => {
-    const host = await createTestHostServer({
-      productUrl: productServer.url,
-      accounts: ['alice'],
-    });
-
-    try {
-      const product = await loadHostAndProduct(page, host.url, productServer.url);
-
-      // Drive a payment to obtain an id, then subscribe + simulate status
-      const dest = '0x' + 'bb'.repeat(32);
-      const pay = await product.evaluate((d: string) =>
-        window.__TEST_PRODUCT__.paymentSmoke(d), dest);
-      expect(pay.paymentId).toBeDefined();
-
-      await product.evaluate((id: string) =>
-        window.__TEST_PRODUCT__.subscribePaymentStatus(id), pay.paymentId!);
-      await page.evaluate((id: string) =>
-        window.__TEST_HOST__.simulatePaymentStatus(id, { tag: 'Completed', value: undefined }), pay.paymentId!);
-
-      await page.waitForTimeout(50);
-      const received = await product.evaluate(() => window.__TEST_PRODUCT__.getReceivedStatuses());
-      expect(received.some((s) => s.type === 'completed')).toBe(true);
-    } finally {
-      await host.close();
-    }
-  });
-});
-
-// ── Account create proof ───────────────────────────────────────────
 
 test.describe('Account create proof', () => {
 
-  test('accountCreateProof returns proof bytes', async ({ page }) => {
+  test('accountCreateProof returns proof bytes bound to the account', async ({ page }) => {
     const host = await createTestHostServer({
       productUrl: productServer.url,
       accounts: ['alice'],
@@ -1682,13 +1456,195 @@ test.describe('Account create proof', () => {
     try {
       const product = await loadHostAndProduct(page, host.url, productServer.url);
 
-      const result = await product.evaluate(() =>
-        window.__TEST_PRODUCT__.accountCreateProof('test-product.dot', 0));
-      expect(result.ok).toBe(true);
-      expect(result.proofHex).toMatch(/^0x[0-9a-f]+$/);
-      expect(result.proofHex!.length).toBeGreaterThan(10);
+      const result = expectOk(
+        await product.evaluate(() =>
+          window.__TEST_PRODUCT__.accountCreateProof('test-product.dot', 0),
+        ),
+      );
+      expect(result.proofHex).toMatch(/^0x[0-9a-f]{128}$/);
+      // The alias travels with the proof and matches what getAccountAlias reports.
+      const alias = expectOk(
+        await product.evaluate(() => window.__TEST_PRODUCT__.getAccountAlias('test-product.dot', 0)),
+      );
+      expect(result.alias).toBe(alias.alias);
     } finally {
       await host.close();
     }
   });
 });
+
+test.describe('Statement store proof', () => {
+
+  test('createProofAuthorized signs with the allocated allowance slot', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice'],
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+
+      // The authorized path signs with the pre-allocated allowance account, so
+      // the allowance has to exist before the proof is asked for.
+      expectOk(
+        await product.evaluate(() =>
+          window.__TEST_PRODUCT__.requestResourceAllocation([
+            { tag: 'StatementStoreAllowance', value: undefined },
+          ]),
+        ),
+      );
+
+      const result = expectOk(
+        await product.evaluate(() =>
+          window.__TEST_PRODUCT__.statementCreateProofAuthorized('0xdeadbeef'),
+        ),
+      );
+      expect(result.proof.tag).toBe('Sr25519');
+      if (result.proof.tag === 'OnChain') return;
+      expect(result.proof.value.signature).toMatch(/^0x[0-9a-f]{128}$/);
+      expect(result.proof.value.signer).toMatch(/^0x[0-9a-f]{64}$/);
+    } finally {
+      await host.close();
+    }
+  });
+});
+
+// ── Session and connection state ───────────────────────────────────
+
+test.describe('Session and connection state', () => {
+
+  test('the host session activates and the product reports connected', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice'],
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+
+      // Two independent readouts: the host's own session, and the product's
+      // connection. `waitForConnection` gates on the latter.
+      expect(await page.evaluate(() => window.__TEST_HOST__.getChainStatus())).toBe('connected');
+      expect(await page.evaluate(() => window.__TEST_HOST__.getConnectionStatus())).toBe('connected');
+      expect(await product.evaluate(() => window.__TEST_PRODUCT__.connectionStatus())).toBe(
+        'connected',
+      );
+    } finally {
+      await host.close();
+    }
+  });
+
+  test('an account switch re-mints the session under the new signer', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice'],
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+
+      const payload = `0x${'33'.repeat(8)}`;
+      const underAlice = expectOk(
+        await product.evaluate(
+          (p) => window.__TEST_PRODUCT__.signRawProduct('test-product.dot', 0, p),
+          payload,
+        ),
+      );
+
+      await page.evaluate(() => window.__TEST_HOST__.switchAccount('bob'));
+      await page.waitForFunction(() => window.__TEST_HOST__.getChainStatus() === 'connected', {
+        timeout: 30_000,
+      });
+
+      // The iframe is deliberately NOT reloaded — its MessagePort is
+      // transferred exactly once — so the same product instance keeps talking
+      // over the same channel, now against Bob's session.
+      const underBob = expectOk(
+        await product.evaluate(
+          (p) => window.__TEST_PRODUCT__.signRawProduct('test-product.dot', 0, p),
+          payload,
+        ),
+      );
+
+      expect(underBob.signature).not.toBe(underAlice.signature);
+      const signed = watermarked(hexToU8a(payload));
+      expect(
+        verify(
+          signed,
+          hexToU8a(underAlice.signature),
+          deriveSoft(deriveFromUri('//Alice//test-product.dot'), indexBytes(0)).publicKey,
+        ),
+      ).toBe(true);
+      expect(
+        verify(
+          signed,
+          hexToU8a(underBob.signature),
+          deriveSoft(deriveFromUri('//Bob//test-product.dot'), indexBytes(0)).publicKey,
+        ),
+      ).toBe(true);
+
+      // The signing log survives the switch: both signatures are on it.
+      const log = await page.evaluate(() => window.__TEST_HOST__.getSigningLog());
+      expect(log.map((entry) => entry.type)).toEqual(['raw', 'raw']);
+    } finally {
+      await host.close();
+    }
+  });
+
+  test('switching to a custom account signs with its configured URI', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      // The roster: Alice is the active identity, `Derived` is a switch target
+      // whose URI is not derivable from its name.
+      accounts: ['alice', { name: 'Derived', uri: '//Alice//custom' }],
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+
+      await page.evaluate(() => window.__TEST_HOST__.switchAccount('Derived'));
+      await page.waitForFunction(() => window.__TEST_HOST__.getChainStatus() === 'connected', {
+        timeout: 30_000,
+      });
+
+      const payload = `0x${'44'.repeat(8)}`;
+      const signed = expectOk(
+        await product.evaluate(
+          (p) => window.__TEST_PRODUCT__.signRawProduct('test-product.dot', 0, p),
+          payload,
+        ),
+      );
+
+      // The name is resolved against the configured roster, so the signer is
+      // the subtree under `//Alice//custom` — NOT the `//Derived` the display
+      // name alone would have produced.
+      expect(
+        verify(
+          watermarked(hexToU8a(payload)),
+          hexToU8a(signed.signature),
+          deriveSoft(
+            deriveFromUri('//Alice//custom//test-product.dot'),
+            indexBytes(0),
+          ).publicKey,
+        ),
+      ).toBe(true);
+      expect(
+        verify(
+          watermarked(hexToU8a(payload)),
+          hexToU8a(signed.signature),
+          deriveSoft(deriveFromUri('//Derived//test-product.dot'), indexBytes(0)).publicKey,
+        ),
+      ).toBe(false);
+    } finally {
+      await host.close();
+    }
+  });
+});
+
+declare global {
+  interface Window {
+    __CHAT_ROOMS_SUB__: { unsubscribe(): void };
+    __CHAT_ACTIONS_SUB__: { unsubscribe(): void };
+    __THEME_SUB__: { unsubscribe(): void };
+  }
+}

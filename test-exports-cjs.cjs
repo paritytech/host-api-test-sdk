@@ -62,20 +62,48 @@ describe('CJS require("@parity/host-api-test-sdk")', () => {
       assert.ok(html.includes('http://localhost:3001'), 'has product URL');
       assert.ok(html.includes('Alice'), 'has Alice account');
       assert.ok(html.includes('Bob'), 'has Bob account');
-      assert.ok(html.includes('__TEST_HOST__'), 'has test-host API');
-      assert.ok(html.length > 10000, 'has bundle script (page > 10KB)');
       assert.ok(
-        html.includes('Permission') && html.includes('approved'),
-        'has permission handler in bundle',
+        html.includes('<script type="module" src="/host-runtime.js">'),
+        'loads the runtime as a module',
       );
-      assert.ok(
-        html.includes('Navigation requested'),
-        'has navigation handler in bundle',
+      // Chrome 130+ blocks clipboard delegation to cross-origin iframes unless
+      // the top-level page carries this header, so a refactor that drops it
+      // must fail here rather than in a product's clipboard test.
+      assert.match(
+        res.headers.get('permissions-policy') ?? '',
+        /clipboard-write/,
+        'keeps the clipboard Permissions-Policy on the host page',
       );
-      assert.ok(
-        html.includes('[test-host] Notification'),
-        'has notification handler in bundle',
-      );
+
+      // The page is a shell now: the runtime, the core worker and the wasm the
+      // core instantiates are separate assets, so a page that looks right is
+      // not enough — every asset it pulls in has to be served, and served with
+      // a content type the browser accepts.
+      const runtime = await fetch(`${server.url}/host-runtime.js`);
+      assert.strictEqual(runtime.status, 200, 'serves the host runtime chunk');
+      assert.match(runtime.headers.get('content-type'), /javascript/, 'runtime is a JS module');
+      const runtimeSource = await runtime.text();
+      assert.ok(runtimeSource.includes('__TEST_HOST__'), 'runtime publishes the test-host API');
+      assert.ok(runtimeSource.includes('worker-runtime.js'), 'runtime points at the worker chunk');
+
+      const worker = await fetch(`${server.url}/worker-runtime.js`);
+      assert.strictEqual(worker.status, 200, 'serves the core worker chunk');
+      await worker.body.cancel();
+
+      const wasm = await fetch(`${server.url}/truapi_server_bg.wasm`);
+      assert.strictEqual(wasm.status, 200, 'serves the core wasm');
+      assert.strictEqual(wasm.headers.get('content-type'), 'application/wasm', 'wasm mime type');
+      await wasm.body.cancel();
+
+      const missing = await fetch(`${server.url}/does-not-exist.js`);
+      assert.strictEqual(missing.status, 404, 'a missing asset 404s');
+      await missing.body.cancel();
+
+      // Percent-encoded so the traversal survives URL normalisation and actually
+      // reaches the server's own guard.
+      const escaping = await fetch(`${server.url}/%2e%2e%2fpackage.json`);
+      assert.strictEqual(escaping.status, 403, 'a traversing path is refused');
+      await escaping.body.cancel();
     });
   });
 
@@ -87,10 +115,12 @@ describe('CJS require("@parity/host-api-test-sdk")', () => {
     });
 
     it('passes productAccounts to host config when set', async () => {
+      // Keys are bare product identifiers: the entry replaces a product's
+      // account SUBTREE, which is the only granularity the core leaves a host.
       serverWithMap = await sdk.createTestHostServer({
         productUrl: 'http://localhost:3001',
         accounts: ['bob'],
-        productAccounts: { 'myapp.dot/0': 'bob', 'myapp.dot/2': 'charlie' },
+        productAccounts: { 'myapp.dot': 'bob', 'other.dot': 'charlie' },
       });
 
       const res = await fetch(serverWithMap.url);
@@ -100,8 +130,20 @@ describe('CJS require("@parity/host-api-test-sdk")', () => {
       assert.ok(match, 'config found in page');
       const config = JSON.parse(match[1]);
       assert.ok(config.productAccounts, 'productAccounts present');
-      assert.strictEqual(config.productAccounts['myapp.dot/0'].uri, '//Bob');
-      assert.strictEqual(config.productAccounts['myapp.dot/2'].uri, '//Charlie');
+      assert.strictEqual(config.productAccounts['myapp.dot'].uri, '//Bob');
+      assert.strictEqual(config.productAccounts['other.dot'].uri, '//Charlie');
+
+      // A pre-0.13 per-index key cannot be honoured and must not be accepted
+      // silently: the core derives indexed accounts itself.
+      await assert.rejects(
+        () =>
+          sdk.createTestHostServer({
+            productUrl: 'http://localhost:3001',
+            accounts: ['bob'],
+            productAccounts: { 'myapp.dot/0': 'bob' },
+          }),
+        /product identifiers, not "dotnsId\/index"/,
+      );
     });
 
     it('omits productAccounts from config when not set', async () => {

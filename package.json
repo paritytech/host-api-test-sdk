@@ -1,6 +1,6 @@
 {
   "name": "@parity/host-api-test-sdk",
-  "version": "0.12.1",
+  "version": "0.13.0",
   "description": "Lightweight test host for Spektr product E2E testing — embeds dapps with auto-signing dev accounts, no Docker needed",
   "license": "MIT",
   "repository": {
@@ -31,7 +31,11 @@
     "clean": "rm -rf dist",
     "test": "node --test test-exports-esm.mjs test-exports-cjs.cjs",
     "test:integration": "node test/build-test-product.mjs && pnpm exec playwright test --config test/playwright.config.ts",
-    "typecheck": "tsc --noEmit"
+    "test:unit": "vitest run",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.browser.json"
+  },
+  "dependencies": {
+    "@parity/truapi": "0.17.0"
   },
   "peerDependencies": {
     "@playwright/test": ">=1.0.0"
@@ -41,22 +45,23 @@
       "optional": true
     }
   },
-  "dependencies": {
-    "@novasamatech/host-api": "^0.9.1"
-  },
   "devDependencies": {
-    "@novasamatech/host-api-wrapper": "^0.9.1",
-    "@novasamatech/host-container": "^0.9.1",
-    "@parity/truapi": "^0.6.0",
-    "@polkadot/keyring": "^14.0.0",
+    "@noble/ciphers": "2.4.0",
+    "@noble/curves": "2.4.0",
+    "@noble/hashes": "2.4.0",
+    "@parity/truapi-host": "0.17.0",
+    "@parity/truapi-provider": "0.2.0",
+    "@polkadot-labs/hdkd-helpers": "0.0.34",
     "@polkadot/types": "^16.0.0",
     "@polkadot/util": "^14.0.0",
-    "@polkadot/util-crypto": "^14.0.0",
+    "@scure/sr25519": "2.4.0",
     "@types/node": "^20",
     "esbuild": "^0.25.0",
     "neverthrow": "^8.0.0",
-    "polkadot-api": "^2.0.0",
-    "typescript": "^5"
+    "polkadot-api": "3.1.0",
+    "scale-ts": "1.6.1",
+    "typescript": "^5",
+    "vitest": "5.0.1"
   },
   "packageManager": "pnpm@10.28.2+sha512.41872f037ad22f7348e3b1debbaf7e867cfd448f2726d9cf74c08f19507c31d2c8e7a11525b983febc2df640b5438dee6023ebb1f84ed43cc2d654d2bc326264"
 }
