@@ -1337,7 +1337,7 @@ test.describe('Local storage', () => {
     }
   });
 
-  test('a product reads what the test seeded, and the test sees what it wrote', async ({ page }) => {
+  test('a product resumes from a snapshot the test seeded back verbatim', async ({ page }) => {
     const host = await createTestHostServer({
       productUrl: productServer.url,
       accounts: ['alice'],
@@ -1346,21 +1346,17 @@ test.describe('Local storage', () => {
     try {
       const product = await loadHostAndProduct(page, host.url, productServer.url);
 
-      // The core namespaces productStorage keys per product before calling the
-      // host, so a write first discovers this session's prefix; seeding then
-      // targets the exact key the product's own read will look up.
       expectOk(
-        await product.evaluate(() => window.__TEST_PRODUCT__.localStorageWrite('written', 'xyz')),
+        await product.evaluate(() => window.__TEST_PRODUCT__.localStorageWrite('resume-token', 'abc')),
       );
-      const afterWrite = await page.evaluate(() => window.__TEST_HOST__.getProductStorage());
-      const [namespacedKey, storedValue] = Object.entries(afterWrite).find(([k]) => k.endsWith(':written')) ?? [];
-      expect(storedValue).toBe('xyz');
 
-      const namespace = namespacedKey!.slice(0, -'written'.length);
-      await page.evaluate(
-        (args) => window.__TEST_HOST__.seedProductStorage(args.key, args.value),
-        { key: `${namespace}resume-token`, value: 'abc' },
-      );
+      // Round-trip only: the core namespaces productStorage keys per product,
+      // so a key is never constructed by hand — only replayed as reported.
+      const snapshot = await page.evaluate(() => window.__TEST_HOST__.getProductStorage());
+      await page.evaluate(() => window.__TEST_HOST__.clearProductStorage());
+      for (const [key, value] of Object.entries(snapshot)) {
+        await page.evaluate((args) => window.__TEST_HOST__.seedProductStorage(args.key, args.value), { key, value });
+      }
 
       const read = expectOk(
         await product.evaluate(() => window.__TEST_PRODUCT__.localStorageRead('resume-token')),

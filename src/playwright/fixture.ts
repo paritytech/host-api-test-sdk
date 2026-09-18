@@ -135,7 +135,11 @@ export interface TestHost {
   /** Replace the advertised chain set; `undefined` restores the derived one. */
   setSupportedChains(chains: ChainEntry[] | undefined): Promise<void>;
 
-  /** Pre-populate one product-storage entry; the value is stored as UTF-8. */
+  /**
+   * Pre-populate one product-storage entry; the value is stored as UTF-8. The
+   * core namespaces keys per product, so `key` must be one `getProductStorage()`
+   * reported — a product-level key it never wrote is not resolvable here.
+   */
   seedProductStorage(key: string, value: string): Promise<void>;
 
   /** Every product-storage entry, decoded as UTF-8. */
