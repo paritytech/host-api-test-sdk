@@ -9,6 +9,7 @@
  */
 import { type ChainIdentifier, scale } from '@parity/truapi';
 import type { ChainProvider, JsonRpcConnection } from '@parity/truapi-host';
+import type { ChainProviderBuilder, Connection } from '@parity/truapi-provider';
 import { PEOPLE_GENESIS_HASH } from '../constants.js';
 import type { LoopbackStore } from '../loopback-chain.js';
 import { createPushChannel } from './passive.js';
@@ -26,37 +27,6 @@ export interface ChainRuntimeConfig {
    */
   chain?: ChainIdentifier;
 }
-
-/**
- * The slice of `@parity/truapi-provider`'s `Connection` this route uses.
- *
- * Declared structurally rather than imported so the unit tests can stand in
- * a fake without instantiating a 5.2 MB wasm; the real class is checked
- * against it where `openRpcProvider` below builds one.
- */
-export interface RpcConnection {
-  /** Queue a JSON-RPC request string. */
-  send(request: string): void;
-  /** The next frame, or `undefined` once the connection is closed or dead. */
-  nextResponse(): Promise<string | undefined>;
-  close(): void;
-}
-
-/** The slice of `@parity/truapi-provider`'s `ChainProviderHandle` this route uses. */
-export interface RpcProviderHandle {
-  /** Open a connection to a chain by `0x`-prefixed genesis hash. */
-  connect(genesisHash: string): Promise<RpcConnection>;
-}
-
-/** The slice of `@parity/truapi-provider`'s `ChainProviderBuilder` this route uses. */
-export interface RpcChainRegistrar {
-  addRpcChain(genesisHash: string, url: string): void;
-}
-
-/** Builds the provider that serves every non-People genesis this host routes. */
-export type RpcProviderLoader = (
-  networks: readonly ChainRuntimeConfig[],
-) => Promise<RpcProviderHandle>;
 
 /**
  * The canonical `0x`-prefixed lower-case spelling of a genesis hash, so string
@@ -80,7 +50,7 @@ export const normalizeGenesisHash = (value: Uint8Array | string): `0x${string}` 
  * prefixed back here rather than trusting whatever spelling the config used.
  */
 export function registerRpcChains(
-  registrar: RpcChainRegistrar,
+  registrar: Pick<ChainProviderBuilder, 'addRpcChain'>,
   networks: readonly ChainRuntimeConfig[],
 ): void {
   for (const network of networks) {
@@ -125,14 +95,14 @@ const loadProviderModule = once(async () => {
   return module;
 });
 
-/** Default `RpcProviderLoader`: the real wasm provider, built from the config. */
-const openRpcProvider: RpcProviderLoader = async (networks) => {
+/** The provider that serves every non-People genesis this host routes. */
+async function openRpcProvider(networks: readonly ChainRuntimeConfig[]) {
   const { ChainProviderBuilder } = await loadProviderModule();
   const builder = new ChainProviderBuilder();
   registerRpcChains(builder, networks);
   // `build()` consumes the builder, so it must not be freed afterwards.
   return builder.build();
-};
+}
 
 /**
  * Pull loop over a provider connection.
@@ -142,7 +112,7 @@ const openRpcProvider: RpcProviderLoader = async (networks) => {
  * back as JSON-RPC errors. `undefined` means closed or dead, which ends the
  * iteration the core is running.
  */
-async function* drainResponses(connection: RpcConnection): AsyncGenerator<string> {
+async function* drainResponses(connection: Connection): AsyncGenerator<string> {
   for (;;) {
     const frame = await connection.nextResponse();
     if (frame === undefined) return;
@@ -153,19 +123,12 @@ async function* drainResponses(connection: RpcConnection): AsyncGenerator<string
 export function createChainCallbacks(options: {
   store: LoopbackStore;
   networks: ChainRuntimeConfig[];
-  /**
-   * Override for the provider behind the configured-network route. Exists so
-   * the unit tests can exercise that route without a wasm instantiation or a
-   * socket; production leaves it unset.
-   */
-  openRpcProvider?: RpcProviderLoader;
 }): ChainProvider {
   const { store, networks } = options;
   const peopleGenesis = normalizeGenesisHash(PEOPLE_GENESIS_HASH);
-  const load = options.openRpcProvider ?? openRpcProvider;
 
   // One provider per host page, built on the first connect that needs it.
-  const provider = once(() => load(networks));
+  const provider = once(() => openRpcProvider(networks));
 
   return {
     async connect(genesisHash: Uint8Array): Promise<JsonRpcConnection> {

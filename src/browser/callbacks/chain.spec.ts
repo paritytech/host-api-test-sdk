@@ -1,9 +1,66 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { PEOPLE_GENESIS_HASH } from '../constants.js';
 import type { LoopbackStore } from '../loopback-chain.js';
 import { createLoopbackStore } from '../loopback-chain.js';
-import type { ChainRuntimeConfig, RpcConnection } from './chain.js';
+import type { ChainRuntimeConfig } from './chain.js';
 import { createChainCallbacks, registerRpcChains } from './chain.js';
+
+/**
+ * A stand-in for `@parity/truapi-provider`: a raw string pipe whose
+ * `nextResponse()` hands out queued frames and then `undefined`, the way the
+ * real `Connection` does once it is closed or dead. No wasm, no socket.
+ *
+ * `vi.hoisted` is what lets a test steer it — `vi.mock` is hoisted above every
+ * import, so the factory can only close over state declared this way.
+ */
+const wasm = vi.hoisted(() => ({
+  /** Frames the next connection hands out, in order. */
+  frames: [] as string[],
+  /** Genesis hashes `connect` was asked for. */
+  asked: [] as string[],
+  /** Requests the last connection was sent. */
+  sent: [] as string[],
+  /** Chains registered on the builder. */
+  registered: [] as Array<[string, string]>,
+  /** How many providers were built. */
+  built: 0,
+  /** Whether the last connection was closed. */
+  closed: false,
+}));
+
+vi.mock('@parity/truapi-provider', () => ({
+  default: async () => {},
+  ChainProviderBuilder: class {
+    addRpcChain(genesisHash: string, url: string) {
+      wasm.registered.push([genesisHash, url]);
+    }
+    build() {
+      wasm.built += 1;
+      return {
+        connect: async (genesisHash: string) => {
+          wasm.asked.push(genesisHash);
+          const queue = [...wasm.frames];
+          return {
+            send: (request: string) => wasm.sent.push(request),
+            nextResponse: async () => queue.shift(),
+            close: () => {
+              wasm.closed = true;
+            },
+          };
+        },
+      };
+    }
+  },
+}));
+
+beforeEach(() => {
+  wasm.frames = [];
+  wasm.asked = [];
+  wasm.sent = [];
+  wasm.registered = [];
+  wasm.built = 0;
+  wasm.closed = false;
+});
 
 /** A store that records how often the connection it handed out was closed. */
 function storeSpy(): { store: LoopbackStore; closes: () => number } {
@@ -93,29 +150,6 @@ describe('configured-network routing', () => {
     rpcUrl: 'wss://previewnet.example/relay',
   };
 
-  /**
-   * A stand-in for `@parity/truapi-provider`'s `Connection`: a raw string pipe
-   * whose `nextResponse()` hands out queued frames and then `undefined`, the
-   * way the real one does once the connection is closed or dead. No wasm, no
-   * socket.
-   */
-  function fakeConnection(frames: string[]): RpcConnection & { sent: string[]; closed: boolean } {
-    const queue = [...frames];
-    return {
-      sent: [],
-      closed: false,
-      send(request: string) {
-        this.sent.push(request);
-      },
-      async nextResponse() {
-        return queue.shift();
-      },
-      close() {
-        this.closed = true;
-      },
-    };
-  }
-
   it('registers every configured network by 0x-prefixed genesis hash', () => {
     const registered: Array<[string, string]> = [];
     registerRpcChains({ addRpcChain: (hash, url) => registered.push([hash, url]) }, [
@@ -132,24 +166,16 @@ describe('configured-network routing', () => {
   });
 
   it('routes a configured genesis to the provider and pipes frames both ways', async () => {
-    const connection = fakeConnection(['{"id":1}', '{"id":2}']);
-    const asked: string[] = [];
-    const provider = createChainCallbacks({
-      store: createLoopbackStore(),
-      networks: [NETWORK],
-      openRpcProvider: async () => ({
-        connect: async (genesisHash) => {
-          asked.push(genesisHash);
-          return connection;
-        },
-      }),
-    });
+    wasm.frames = ['{"id":1}', '{"id":2}'];
+    const provider = createChainCallbacks({ store: createLoopbackStore(), networks: [NETWORK] });
 
     const opened = await provider.connect(Uint8Array.from({ length: 32 }, () => 0xab));
-    expect(asked).toEqual([`0x${'ab'.repeat(32)}`]);
+    expect(wasm.asked).toEqual([`0x${'ab'.repeat(32)}`]);
+    // The provider is built from the configured networks, not from thin air.
+    expect(wasm.registered).toEqual([[`0x${'ab'.repeat(32)}`, 'wss://previewnet.example/relay']]);
 
     opened.send('{"id":1,"method":"chainSpec_v1_genesisHash"}');
-    expect(connection.sent).toEqual(['{"id":1,"method":"chainSpec_v1_genesisHash"}']);
+    expect(wasm.sent).toEqual(['{"id":1,"method":"chainSpec_v1_genesisHash"}']);
 
     // `responses()` is a pull loop over `nextResponse()`, and the queue above
     // runs dry — which is how the provider reports a closed or dead pipe.
@@ -158,27 +184,19 @@ describe('configured-network routing', () => {
     expect(received).toEqual(['{"id":1}', '{"id":2}']);
 
     opened.close();
-    expect(connection.closed).toBe(true);
+    expect(wasm.closed).toBe(true);
   });
 
   it('builds the provider once, on the first connect that needs it', async () => {
-    let built = 0;
-    const provider = createChainCallbacks({
-      store: createLoopbackStore(),
-      networks: [NETWORK],
-      openRpcProvider: async () => {
-        built += 1;
-        return { connect: async () => fakeConnection([]) };
-      },
-    });
+    const provider = createChainCallbacks({ store: createLoopbackStore(), networks: [NETWORK] });
 
     // The People route must not drag the provider in at all.
     (await provider.connect(PEOPLE_GENESIS_HASH)).close();
-    expect(built).toBe(0);
+    expect(wasm.built).toBe(0);
 
     const genesis = Uint8Array.from({ length: 32 }, () => 0xab);
     await provider.connect(genesis);
     await provider.connect(genesis);
-    expect(built).toBe(1);
+    expect(wasm.built).toBe(1);
   });
 });
