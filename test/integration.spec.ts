@@ -1813,6 +1813,54 @@ test.describe('User confirmation', () => {
   });
 });
 
+// ── Initial configuration ─────────────────────────────────────────
+
+test.describe('Initial configuration', () => {
+
+  test('the product boots into the configured condition', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice'],
+      initialState: { locale: 'pt-BR', theme: 'dark' },
+      behaviors: { userConfirmation: 'reject-all' },
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+
+      // Subscribed only after connecting, so the FIRST delivered value is what
+      // the product saw at startup — proving the override reached it before
+      // any `set*` call could, not merely that host state reads back correctly.
+      await product.evaluate(() => {
+        window.__THEME_SUB__ = window.__TEST_PRODUCT__.subscribeTheme();
+        window.__LOCALE_SUB__ = window.__TEST_PRODUCT__.subscribeLocale();
+      });
+
+      await expect
+        .poll(() => product.evaluate(() => window.__TEST_PRODUCT__.getReceivedThemes()))
+        .toEqual([{ name: { tag: 'Default', value: undefined }, variant: 'Dark' }]);
+
+      await expect
+        .poll(() => product.evaluate(() => window.__TEST_PRODUCT__.getReceivedLocales()))
+        .toEqual(['pt-BR']);
+
+      // No `setUserConfirmationBehavior` call in this test: a rejection here
+      // can only come from the initial-config behaviour applied at boot.
+      const result = await product.evaluate(() =>
+        window.__TEST_PRODUCT__.signRawProduct('test-product.dot', 0, '0x00'),
+      );
+      expect(result.ok).toBe(false);
+
+      await product.evaluate(() => {
+        window.__THEME_SUB__.unsubscribe();
+        window.__LOCALE_SUB__.unsubscribe();
+      });
+    } finally {
+      await host.close();
+    }
+  });
+});
+
 declare global {
   interface Window {
     __CHAT_ROOMS_SUB__: { unsubscribe(): void };

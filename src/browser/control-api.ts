@@ -50,7 +50,7 @@ export function buildAllowAttribute(granted: Iterable<string>): string {
 /** Re-`0x`-prefix a stored key without asserting its type. */
 const asHex = (key: string): HexString => `0x${key.startsWith('0x') ? key.slice(2) : key}`;
 
-function normalizeTheme(input: ThemeInput): Theme {
+export function normalizeTheme(input: ThemeInput): Theme {
   if (input === 'light' || input === 'dark') {
     return { name: { tag: 'Default', value: undefined }, variant: input === 'light' ? 'Light' : 'Dark' };
   }

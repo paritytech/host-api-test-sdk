@@ -1,7 +1,7 @@
 import type { Page, FrameLocator } from '@playwright/test';
 import { createTestHostServer } from '../server.js';
 import { DEFAULT_CHAIN } from '../networks.js';
-import type { ChainEntry, ChatActionInput, ChatBot, ChatMessageLogEntry, ChatRoom, CreateTestHostOptions, DevAccountName, DevicePermissionStatus, HexString, HostDevicePermissionRequest, NavigationLogEntry, NotificationLogEntry, PermissionLogEntry, PreimageEntry, SigningLogEntry, TestHostAPI, Theme, ThemeInput, UserConfirmationLogEntry } from '../types.js';
+import type { ChainEntry, ChatActionInput, ChatBot, ChatMessageLogEntry, ChatRoom, CreateTestHostOptions, DevAccountName, DevicePermissionStatus, HexString, HostDevicePermissionRequest, InitialBehaviors, InitialState, NavigationLogEntry, NotificationLogEntry, PermissionLogEntry, PreimageEntry, SigningLogEntry, TestHostAPI, Theme, ThemeInput, UserConfirmationLogEntry } from '../types.js';
 
 export interface TestHost {
   /** The host page (contains the iframe) */
@@ -194,6 +194,10 @@ export interface TestHostFixtureOptions {
   productAccounts?: CreateTestHostOptions['productAccounts'];
   /** Default `'App'`; set `'Worker'` to exercise chat, which the core serves for no other kind. */
   executionKind?: CreateTestHostOptions['executionKind'];
+  /** Host state applied before the product loads. */
+  initialState?: InitialState;
+  /** Decision policies applied before the product loads. */
+  behaviors?: InitialBehaviors;
 }
 
 export function createTestHostFixture(defaults: TestHostFixtureOptions) {
@@ -205,6 +209,8 @@ export function createTestHostFixture(defaults: TestHostFixtureOptions) {
         networks: defaults.networks ?? [DEFAULT_CHAIN],
         productAccounts: defaults.productAccounts,
         executionKind: defaults.executionKind,
+        initialState: defaults.initialState,
+        behaviors: defaults.behaviors,
       });
 
       await page.goto(server.url);

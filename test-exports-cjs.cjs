@@ -121,6 +121,8 @@ describe('CJS require("@parity/host-api-test-sdk")', () => {
         productUrl: 'http://localhost:3001',
         accounts: ['bob'],
         productAccounts: { 'myapp.dot': 'bob', 'other.dot': 'charlie' },
+        initialState: { locale: 'pt-BR' },
+        behaviors: { userConfirmation: 'reject-all' },
       });
 
       const res = await fetch(serverWithMap.url);
@@ -132,6 +134,8 @@ describe('CJS require("@parity/host-api-test-sdk")', () => {
       assert.ok(config.productAccounts, 'productAccounts present');
       assert.strictEqual(config.productAccounts['myapp.dot'].uri, '//Bob');
       assert.strictEqual(config.productAccounts['other.dot'].uri, '//Charlie');
+      assert.strictEqual(config.initialState.locale, 'pt-BR');
+      assert.strictEqual(config.behaviors.userConfirmation, 'reject-all');
 
       // A pre-0.13 per-index key cannot be honoured and must not be accepted
       // silently: the core derives indexed accounts itself.

@@ -17,7 +17,7 @@ import type {
 import type { IframeHost } from '@parity/truapi-host/web';
 import { createIframeHost, createWebWorkerPairingHostRuntime } from '@parity/truapi-host/web';
 
-import { buildAllowAttribute, buildControlApi } from './control-api.js';
+import { buildAllowAttribute, buildControlApi, normalizeTheme } from './control-api.js';
 import type { ChainRuntimeConfig, HostState } from './callbacks/index.js';
 import { createHostCallbacks, createHostState } from './callbacks/index.js';
 import { PEOPLE_GENESIS_HASH, ZERO_HASH } from './constants.js';
@@ -30,7 +30,7 @@ import type { ResponderSession, SigningLogEntry, SsoResponder } from './sso/resp
 import { createSsoResponder } from './sso/responder.js';
 import type { ResolveAccount } from './sso/ring-vrf.js';
 import { encodeExternalPairedSession } from './sso/session-blob.js';
-import type { TestHostAPI } from '../types.js';
+import type { DevicePermissionStatus, InitialBehaviors, InitialState, TestHostAPI } from '../types.js';
 
 interface AccountConfig {
   name: string;
@@ -48,6 +48,51 @@ interface HostConfig {
   networks: ChainRuntimeConfig[];
   /** Maps a bare dotNS product id → { name, uri } for subtree overrides. */
   productAccounts?: Record<string, AccountConfig>;
+  /** Host state applied before `createIframeHost` runs, so the product's first frame already sees it. */
+  initialState?: InitialState;
+  behaviors?: InitialBehaviors;
+}
+
+const DEVICE_PERMISSION_STATUSES: readonly DevicePermissionStatus[] = [
+  'Granted',
+  'Denied',
+  'NotDetermined',
+  'NotApplicable',
+];
+
+/**
+ * The page config crosses a JSON boundary a plain-JS caller can put anything
+ * on, so this is checked at runtime even though `InitialState` already types
+ * the field — a bad value must throw rather than silently misreport.
+ */
+function toDevicePermissionStatus(value: string): DevicePermissionStatus {
+  if ((DEVICE_PERMISSION_STATUSES as readonly string[]).includes(value)) {
+    return value as DevicePermissionStatus;
+  }
+  throw new Error(`invalid device permission status: "${value}"`);
+}
+
+/** Apply the page config's overrides before the product can observe anything. */
+function applyInitialConfig(state: HostState, config: HostConfig): void {
+  const initial = config.initialState;
+  if (initial?.theme) state.theme = normalizeTheme(initial.theme);
+  if (initial?.locale) state.locale = initial.locale;
+  for (const [feature, supported] of Object.entries(initial?.features ?? {})) {
+    state.featureOverrides.set(feature, supported);
+  }
+  for (const [key, value] of Object.entries(initial?.productStorage ?? {})) {
+    state.productStorage.set(key, new TextEncoder().encode(value));
+  }
+  for (const [type, status] of Object.entries(initial?.devicePermissionStatuses ?? {})) {
+    state.devicePermissionStatuses.set(type, toDevicePermissionStatus(status));
+  }
+  for (const tag of initial?.grantedPermissions ?? []) state.grantedPermissions.add(tag);
+
+  const behaviors = config.behaviors;
+  if (behaviors?.permission) state.permissionBehavior = behaviors.permission;
+  if (behaviors?.userConfirmation) state.userConfirmationBehavior = behaviors.userConfirmation;
+  if (behaviors?.navigation) state.navigationBehavior = behaviors.navigation;
+  if (behaviors?.notification) state.notificationBehavior = behaviors.notification;
 }
 
 declare global {
@@ -190,6 +235,7 @@ async function init(): Promise<void> {
 
   const store = createLoopbackStore();
   const state = createHostState();
+  applyInitialConfig(state, config);
 
   /** The accounts in force. Replaced by `setAccounts`. */
   let accounts = config.accounts;

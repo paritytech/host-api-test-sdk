@@ -43,6 +43,8 @@ export async function createTestHostServer(
     networks,
     productAccounts: options.productAccounts,
     executionKind: options.executionKind,
+    initialState: options.initialState,
+    behaviors: options.behaviors,
   });
 
   const server = createServer((req, res) => {

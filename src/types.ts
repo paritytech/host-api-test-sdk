@@ -120,6 +120,10 @@ export interface CreateTestHostOptions {
    * core derives each index from the subtree. Per-index keys throw.
    */
   productAccounts?: Record<string, Account>;
+  /** Host state applied before the product loads. */
+  initialState?: InitialState;
+  /** Decision policies applied before the product loads. */
+  behaviors?: InitialBehaviors;
 }
 
 export interface SigningLogEntry {
@@ -216,6 +220,30 @@ export type NavigationBehavior = Behavior<{ url: string }, boolean>;
 
 /** How the host answers `pushNotification`; `'approve-all'` is the default. */
 export type NotificationBehavior = Behavior<{ text: string }, boolean>;
+
+/** Host state applied before the product's first frame. */
+export interface InitialState {
+  theme?: ThemeInput;
+  locale?: string;
+  /** Feature tag → forced `featureSupported` answer. */
+  features?: Record<string, boolean>;
+  /** Product-storage entries, stored as UTF-8. */
+  productStorage?: Record<string, string>;
+  /** Device-permission type → reported status. */
+  devicePermissionStatuses?: Record<string, DevicePermissionStatus>;
+  grantedPermissions?: string[];
+}
+
+/**
+ * Decision policies applied before the product's first frame. A function
+ * cannot cross into the page config, so only the two named modes are accepted.
+ */
+export interface InitialBehaviors {
+  permission?: 'approve-all' | 'reject-all';
+  userConfirmation?: 'approve-all' | 'reject-all';
+  navigation?: 'approve-all' | 'reject-all';
+  notification?: 'approve-all' | 'reject-all';
+}
 
 /** Shape of window.__TEST_HOST__ — shared between browser bundle and Playwright fixture. */
 export interface TestHostAPI {
