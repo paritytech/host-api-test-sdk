@@ -5,9 +5,7 @@
  *
  * `auth.authStateChanged` is recorded because the core is the authority on
  * whether this host's session is up; `getChainStatus()` answers from it rather
- * than from a status kept in step by hand. `confirmUserAction` always approves:
- * unattended auto-signing has nobody to prompt, and there is deliberately no
- * control to flip it.
+ * than from a status kept in step by hand.
  */
 import type { RequiredHostCallbacks } from '@parity/truapi-host';
 import type { LoopbackStore } from '../loopback-chain.js';
@@ -18,7 +16,9 @@ import { createNavigationCallbacks } from './navigation.js';
 import { createNotificationCallbacks } from './notifications.js';
 import { createLocaleCallbacks, createPreimageCallbacks, createThemeCallbacks } from './passive.js';
 import { createPermissionCallbacks } from './permissions.js';
+import { createPermissionStatusCallbacks } from './permission-status.js';
 import { createCoreStorageCallbacks, createProductStorageCallbacks } from './storage.js';
+import { createUserConfirmationCallbacks } from './user-confirmation.js';
 import type { HostState } from './state.js';
 
 export { createHostState, type HostState } from './state.js';
@@ -37,8 +37,9 @@ export function createHostCallbacks(options: CreateHostCallbacksOptions): Requir
     navigation: createNavigationCallbacks(state),
     notifications: createNotificationCallbacks(state),
     permissions: createPermissionCallbacks(state),
-    features: createFeatureCallbacks(networks),
-    productStorage: createProductStorageCallbacks(),
+    permissionStatus: createPermissionStatusCallbacks(state),
+    features: createFeatureCallbacks(state, networks),
+    productStorage: createProductStorageCallbacks(state),
     coreStorage: createCoreStorageCallbacks(),
     chain: createChainCallbacks({ store, networks }),
     auth: {
@@ -46,9 +47,7 @@ export function createHostCallbacks(options: CreateHostCallbacksOptions): Requir
         state.authState = authState;
       },
     },
-    userConfirmation: {
-      confirmUserAction: async () => true,
-    },
+    userConfirmation: createUserConfirmationCallbacks(state),
     theme: createThemeCallbacks(state),
     locale: createLocaleCallbacks(state),
     preimage: createPreimageCallbacks(state),

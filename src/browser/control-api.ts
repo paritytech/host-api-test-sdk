@@ -6,15 +6,26 @@ import { blake2b } from '@noble/hashes/blake2.js';
 import { scale } from '@parity/truapi';
 import type { TrUApiProductProvider } from '@parity/truapi-host';
 import type { IframeHost, WorkerPairingHostRuntime } from '@parity/truapi-host/web';
+import type { ChainRuntimeConfig } from './callbacks/chain.js';
+import { roomListSnapshot } from './callbacks/chat.js';
+import { derivedChains } from './callbacks/features.js';
 import type { HostState } from './callbacks/index.js';
 import type { SsoResponder } from './sso/responder.js';
 import type {
+  ChainEntry,
   ChatActionInput,
+  ChatBot,
+  ChatRoom,
+  DevicePermissionStatus,
   HexString,
+  HostDevicePermissionRequest,
+  NavigationBehavior,
+  NotificationBehavior,
   PermissionBehavior,
   TestHostAPI,
   Theme,
   ThemeInput,
+  UserConfirmationBehavior,
 } from '../types.js';
 
 /** Matches dot.li's own mapping, and is why `grantPermission` touches the iframe. */
@@ -41,7 +52,7 @@ export function buildAllowAttribute(granted: Iterable<string>): string {
 /** Re-`0x`-prefix a stored key without asserting its type. */
 const asHex = (key: string): HexString => `0x${key.startsWith('0x') ? key.slice(2) : key}`;
 
-function normalizeTheme(input: ThemeInput): Theme {
+export function normalizeTheme(input: ThemeInput): Theme {
   if (input === 'light' || input === 'dark') {
     return { name: { tag: 'Default', value: undefined }, variant: input === 'light' ? 'Light' : 'Dark' };
   }
@@ -50,6 +61,8 @@ function normalizeTheme(input: ThemeInput): Theme {
 
 export interface ControlApiOptions {
   state: HostState;
+  /** The configured networks, so `getSupportedChains()` can report the derived set. */
+  networks: readonly ChainRuntimeConfig[];
   /** A stable facade: account switching replaces the live responder underneath. */
   responder: SsoResponder;
   runtime: WorkerPairingHostRuntime;
@@ -126,6 +139,18 @@ export function buildControlApi(options: ControlApiOptions): TestHostAPI {
       state.permissionLog.length = 0;
     },
 
+    setDevicePermissionStatus(
+      type: HostDevicePermissionRequest,
+      status: DevicePermissionStatus | undefined,
+    ) {
+      if (status === undefined) state.devicePermissionStatuses.delete(type);
+      else state.devicePermissionStatuses.set(type, status);
+    },
+
+    getDevicePermissionStatuses() {
+      return Object.fromEntries(state.devicePermissionStatuses);
+    },
+
     getNavigationLog() {
       return [...state.navigationLog];
     },
@@ -154,7 +179,7 @@ export function buildControlApi(options: ControlApiOptions): TestHostAPI {
       return [...state.chatMessageLog];
     },
 
-    clearChatState() {
+    clearChat() {
       state.chatRooms.clear();
       state.chatBots.clear();
       state.chatMessageLog.length = 0;
@@ -162,6 +187,16 @@ export function buildControlApi(options: ControlApiOptions): TestHostAPI {
       // Subscribers are kept: they are the core's live `subscribeChatRooms`
       // streams, and dropping one stops that product seeing another room.
       for (const notify of state.chatRoomSubscribers) notify([]);
+    },
+
+    seedChatRoom(room: ChatRoom) {
+      state.chatRooms.set(room.roomId, room);
+      const snapshot = roomListSnapshot(state);
+      for (const notify of state.chatRoomSubscribers) notify(snapshot);
+    },
+
+    seedChatBot(bot: ChatBot) {
+      state.chatBots.set(bot.botId, bot);
     },
 
     injectChatAction(action: ChatActionInput): Promise<void> {
@@ -213,6 +248,66 @@ export function buildControlApi(options: ControlApiOptions): TestHostAPI {
     setTheme(theme: ThemeInput) {
       state.theme = normalizeTheme(theme);
       for (const notify of state.themeSubscribers) notify(state.theme);
+    },
+
+    getLocale() {
+      return state.locale;
+    },
+
+    setLocale(languageTag: string) {
+      state.locale = languageTag;
+      for (const notify of state.localeSubscribers) notify(state.locale);
+    },
+
+    setUserConfirmationBehavior(behavior: UserConfirmationBehavior) {
+      state.userConfirmationBehavior = behavior;
+    },
+
+    getUserConfirmationLog() {
+      return [...state.userConfirmationLog];
+    },
+
+    clearUserConfirmationLog() {
+      state.userConfirmationLog.length = 0;
+    },
+
+    setNavigationBehavior(behavior: NavigationBehavior) {
+      state.navigationBehavior = behavior;
+    },
+
+    setNotificationBehavior(behavior: NotificationBehavior) {
+      state.notificationBehavior = behavior;
+    },
+
+    setFeatureSupport(feature: string, supported: boolean | undefined) {
+      if (supported === undefined) state.featureOverrides.delete(feature);
+      else state.featureOverrides.set(feature, supported);
+    },
+
+    getFeatureSupport() {
+      return Object.fromEntries(state.featureOverrides);
+    },
+
+    setSupportedChains(chains: ChainEntry[] | undefined) {
+      state.supportedChainsOverride = chains;
+    },
+
+    getSupportedChains(): ChainEntry[] {
+      return state.supportedChainsOverride ?? derivedChains(options.networks);
+    },
+
+    seedProductStorage(key: string, value: string) {
+      state.productStorage.set(key, new TextEncoder().encode(value));
+    },
+
+    getProductStorage() {
+      const out: Record<string, string> = {};
+      for (const [key, value] of state.productStorage) out[key] = new TextDecoder().decode(value);
+      return out;
+    },
+
+    clearProductStorage() {
+      state.productStorage.clear();
     },
 
     dispose() {

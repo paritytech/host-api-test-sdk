@@ -2,16 +2,24 @@ import type {
   ChainIdentifier,
   ChatActionPayload,
   HostChatActionSubscribeItem,
+  HostDevicePermissionRequest,
 } from '@parity/truapi';
 // Must stay type-only and erased at emit: `@parity/truapi-host` is a
 // devDependency, so a published declaration naming it would not resolve.
-import type { ProductExecutionKind as CoreProductExecutionKind } from '@parity/truapi-host';
+import type {
+  DevicePermissionStatus as CoreDevicePermissionStatus,
+  HostChainEntry,
+  ProductExecutionKind as CoreProductExecutionKind,
+} from '@parity/truapi-host';
 
 /** A `0x`-prefixed hex string. */
 export type HexString = `0x${string}`;
 
 /** A network's protocol role, as `features.supportedChains()` reports it. */
 export type { ChainIdentifier };
+
+/** Which device capability a permission request or status names, e.g. `'Camera'`. */
+export type { HostDevicePermissionRequest };
 
 type Equal<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
 type Expect<T extends true> = T;
@@ -26,6 +34,23 @@ export type ProductExecutionKind = 'App' | 'Widget' | 'Worker';
 /** Compile-time guard: this mirror must equal the core's enum. */
 type _ProductExecutionKindMirrorsCore = Expect<
   Equal<ProductExecutionKind, CoreProductExecutionKind>
+>;
+
+/** One chain `features.supportedChains()` advertises. */
+export interface ChainEntry {
+  identifier: ChainIdentifier;
+  genesisHash: HexString;
+}
+
+/** Compile-time guard: this mirror must equal the core's chain-set entry. */
+type _ChainEntryMirrorsCore = Expect<Equal<ChainEntry, HostChainEntry>>;
+
+/** Current OS status of a device permission, as `permissionStatus.devicePermissionStatus` reports it. */
+export type DevicePermissionStatus = 'Granted' | 'Denied' | 'NotDetermined' | 'NotApplicable';
+
+/** Compile-time guard: this mirror must equal the core's device-permission status. */
+type _DevicePermissionStatusMirrorsCore = Expect<
+  Equal<DevicePermissionStatus, CoreDevicePermissionStatus>
 >;
 
 export interface NetworkConfig {
@@ -95,6 +120,10 @@ export interface CreateTestHostOptions {
    * core derives each index from the subtree. Per-index keys throw.
    */
   productAccounts?: Record<string, Account>;
+  /** Host state applied before the product loads. */
+  initialState?: InitialState;
+  /** Decision policies applied before the product loads. */
+  behaviors?: InitialBehaviors;
 }
 
 export interface SigningLogEntry {
@@ -166,8 +195,69 @@ export type Theme = {
 /** Shorthand inputs accepted by `setTheme` — `'light' | 'dark'` map to `{ name: Default, variant: Light/Dark }`. */
 export type ThemeInput = 'light' | 'dark' | Theme;
 
+/**
+ * How the host answers one kind of request. `fn` receives the request and
+ * approves or refuses it, so a test can be selective without a matcher language.
+ */
+export type Behavior<Req> = 'approve-all' | 'reject-all' | ((request: Req) => boolean);
+
+/** The one reading of a `Behavior`, so the named modes cannot drift between handlers. */
+export function decideBehavior<Req>(behavior: Behavior<Req>, request: Req): boolean {
+  if (behavior === 'approve-all') return true;
+  if (behavior === 'reject-all') return false;
+  return behavior(request);
+}
+
 /** How the test host answers remote permission requests; `'approve-all'` is the default. */
-export type PermissionBehavior = 'approve-all' | 'reject-all' | ((tag: string, value: unknown) => boolean);
+export type PermissionBehavior = Behavior<{ tag: string; value: unknown }>;
+
+/** One `confirmUserAction` review the host was asked to answer. */
+export interface UserConfirmationLogEntry {
+  /** The review's variant tag, e.g. `SignRaw`. */
+  tag: string;
+  approved: boolean;
+  timestamp: number;
+}
+
+/** How the host answers `confirmUserAction`; `'approve-all'` is the default. */
+export type UserConfirmationBehavior = Behavior<{ tag: string; value: unknown }>;
+
+/** How the host answers `navigateTo`; `'approve-all'` is the default. */
+export type NavigationBehavior = Behavior<{ url: string }>;
+
+/** How the host answers `pushNotification`; `'approve-all'` is the default. */
+export type NotificationBehavior = Behavior<{
+  text: string;
+  deeplink: string | undefined;
+  /** Future delivery time in epoch-ms, or undefined for immediate. */
+  scheduledAt: bigint | undefined;
+}>;
+
+/** Host state applied before the product's first frame. */
+export interface InitialState {
+  theme?: ThemeInput;
+  locale?: string;
+  /** Feature tag → forced `featureSupported` answer. */
+  features?: Record<string, boolean>;
+  /** Product-storage entries, stored as UTF-8. */
+  productStorage?: Record<string, string>;
+  /** Device-permission type → reported status. */
+  devicePermissionStatuses?: Record<string, DevicePermissionStatus>;
+  /** Replaces the chain set derived from `networks`. */
+  supportedChains?: ChainEntry[];
+  grantedPermissions?: string[];
+}
+
+/**
+ * Decision policies applied before the product's first frame. A function
+ * cannot cross into the page config, so only the two named modes are accepted.
+ */
+export interface InitialBehaviors {
+  permission?: 'approve-all' | 'reject-all';
+  userConfirmation?: 'approve-all' | 'reject-all';
+  navigation?: 'approve-all' | 'reject-all';
+  notification?: 'approve-all' | 'reject-all';
+}
 
 /** Shape of window.__TEST_HOST__ — shared between browser bundle and Playwright fixture. */
 export interface TestHostAPI {
@@ -199,6 +289,16 @@ export interface TestHostAPI {
   getPermissionLog(): PermissionLogEntry[];
   /** Clear the permission log. */
   clearPermissionLog(): void;
+  /**
+   * Force the OS status `permissionStatus.devicePermissionStatus` reports for
+   * one device permission; `undefined` restores the default status.
+   */
+  setDevicePermissionStatus(
+    type: HostDevicePermissionRequest,
+    status: DevicePermissionStatus | undefined,
+  ): void;
+  /** The forced device-permission statuses currently in effect. */
+  getDevicePermissionStatuses(): Record<string, DevicePermissionStatus>;
   /** Get the log of navigation attempts (hostApi.navigateTo) from the product. */
   getNavigationLog(): NavigationLogEntry[];
   /** Clear the navigation log. */
@@ -214,7 +314,11 @@ export interface TestHostAPI {
   /** Get the log of messages the product has posted to chat rooms. */
   getChatMessageLog(): ChatMessageLogEntry[];
   /** Clear rooms, bots and the message log. Live streams stay open and are pushed the empty list. */
-  clearChatState(): void;
+  clearChat(): void;
+  /** Add a chat room without the product creating it; live subscribers are notified. */
+  seedChatRoom(room: ChatRoom): void;
+  /** Add a chat bot without the product registering it. */
+  seedChatBot(bot: ChatBot): void;
   /**
    * Inject an incoming chat action into the product. Buffered until the product
    * subscribes; rejects if the payload or the connection cannot carry it.
@@ -230,6 +334,38 @@ export interface TestHostAPI {
   getTheme(): Theme;
   /** Set the theme and notify subscribers. */
   setTheme(theme: ThemeInput): void;
+  /** The BCP 47 tag the host reports to products, e.g. `en`, `pt-BR`. */
+  getLocale(): string;
+  /** Replace the reported locale and push it to live subscribers. */
+  setLocale(languageTag: string): void;
+  /** Set how the host answers `confirmUserAction`. */
+  setUserConfirmationBehavior(behavior: UserConfirmationBehavior): void;
+  /** Every review the core asked the host to confirm. */
+  getUserConfirmationLog(): UserConfirmationLogEntry[];
+  /** Drop the confirmation log. */
+  clearUserConfirmationLog(): void;
+  /** Set how the host answers `navigateTo`. */
+  setNavigationBehavior(behavior: NavigationBehavior): void;
+  /** Set how the host answers `pushNotification`. */
+  setNotificationBehavior(behavior: NotificationBehavior): void;
+  /** Force `featureSupported` for one feature tag; `undefined` restores the derived answer. */
+  setFeatureSupport(feature: string, supported: boolean | undefined): void;
+  /** The forced answers currently in effect. */
+  getFeatureSupport(): Record<string, boolean>;
+  /** Replace the advertised chain set; `undefined` restores the derived one. */
+  setSupportedChains(chains: ChainEntry[] | undefined): void;
+  /** The chain set in effect — the override if one is set, the derived one otherwise. */
+  getSupportedChains(): ChainEntry[];
+  /**
+   * Pre-populate one product-storage entry; the value is stored as UTF-8. The
+   * core namespaces keys per product, so `key` must be one `getProductStorage()`
+   * reported — a product-level key it never wrote is not resolvable here.
+   */
+  seedProductStorage(key: string, value: string): void;
+  /** Every product-storage entry, decoded as UTF-8. */
+  getProductStorage(): Record<string, string>;
+  /** Drop every product-storage entry. */
+  clearProductStorage(): void;
 
   dispose(): void;
 }

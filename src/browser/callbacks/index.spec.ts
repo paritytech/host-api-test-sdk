@@ -20,6 +20,14 @@ describe('host callbacks', () => {
     }
   });
 
+  // These two are optional on `RequiredHostCallbacks`, so dropping either one
+  // still typechecks — only a test notices the group going missing.
+  it('supplies the optional groups this host chooses to serve', () => {
+    const callbacks = build();
+    expect(callbacks).toHaveProperty('chat');
+    expect(callbacks).toHaveProperty('permissionStatus');
+  });
+
   it('records navigation attempts instead of navigating', async () => {
     const state = createHostState();
     const callbacks = createHostCallbacks({

@@ -1,5 +1,5 @@
 import { DEV_ACCOUNTS } from './accounts.js';
-import type { Account, NetworkConfig, ProductExecutionKind } from './types.js';
+import type { Account, InitialBehaviors, InitialState, NetworkConfig, ProductExecutionKind } from './types.js';
 
 interface HostPageConfig {
   productUrl: string;
@@ -8,6 +8,8 @@ interface HostPageConfig {
   productAccounts?: Record<string, Account>;
   /** Omitted means the browser runtime's own default, `'App'`. */
   executionKind?: ProductExecutionKind;
+  initialState?: InitialState;
+  behaviors?: InitialBehaviors;
 }
 
 function resolveAccount(entry: Account): { name: string; uri: string } {
@@ -52,6 +54,8 @@ export function generateHostPage(config: HostPageConfig): string {
     ...(productAccountConfigs && { productAccounts: productAccountConfigs }),
     // The browser runtime owns the default, so it is not repeated here.
     ...(config.executionKind && { executionKind: config.executionKind }),
+    ...(config.initialState && { initialState: config.initialState }),
+    ...(config.behaviors && { behaviors: config.behaviors }),
   });
 
   // Otherwise the product URL could break out of the inline script.

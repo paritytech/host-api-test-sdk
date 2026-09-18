@@ -160,9 +160,14 @@ test("handles permission rejection", async ({ testHost }) => {
   expect(log[0].approved).toBe(false);
 });
 
-test("selective permissions", async ({ testHost }) => {
-  // Custom logic: approve ChainSubmit, reject Remote
-  await testHost.setPermissionBehavior((tag) => tag === "ChainSubmit");
+test("selective permissions", async ({ page, testHost }) => {
+  // The fixture's setters take a named mode only. A function has to be
+  // installed in the page, where it can actually be called.
+  await page.evaluate(() =>
+    window.__TEST_HOST__.setPermissionBehavior(
+      (request) => request.tag === "ChainSubmit",
+    ),
+  );
 
   // ... test product behavior ...
 });
@@ -236,17 +241,20 @@ The People chain is a **loopback statement store inside the page**: no node, no 
 | `testHost.setAccounts(names)` | Replace the roster; the first name becomes the active identity |
 | `testHost.getSigningLog()` | All auto-signed requests since last clear |
 | `testHost.clearSigningLog()` | Reset the signing log |
-| `testHost.setPermissionBehavior(behavior)` | `'approve-all'`, `'reject-all'`, or `(tag, value) => boolean` |
+| `testHost.setPermissionBehavior(behavior)` | `'approve-all'` or `'reject-all'`; the `(request) => boolean` form works in-page only |
 | `testHost.grantPermission(tag)` / `revokePermission(tag)` / `getGrantedPermissions()` | Pre-grant, revoke, inspect |
 | `testHost.getPermissionLog()` / `clearPermissionLog()` | Permission requests and outcomes |
 | `testHost.getNavigationLog()` / `clearNavigationLog()` | `navigateTo` attempts from the product |
 | `testHost.getNotificationLog()` / `clearNotificationLog()` | Push notifications, including scheduled and cancelled ones |
-| `testHost.getChatRooms()` / `getChatBots()` / `getChatMessageLog()` / `clearChatState()` | Chat state (needs `executionKind: 'Worker'`) |
+| `testHost.getChatRooms()` / `getChatBots()` / `getChatMessageLog()` / `clearChat()` | Chat state (needs `executionKind: 'Worker'`) |
+| `testHost.seedChatRoom(room)` / `seedChatBot(bot)` | Add a room/bot without the product creating it |
 | `testHost.injectChatAction(action)` | Deliver an incoming chat action to the product; rejects if it cannot be delivered |
 | `testHost.getPreimages()` / `seedPreimage(value)` / `clearPreimages()` | Preimage store |
 | `testHost.getTheme()` / `setTheme(theme)` | Host theme (`{ name, variant }`, or the `'light' \| 'dark'` shorthand) |
 
-Fixture options: `productUrl`, `accounts`, `networks`, `productAccounts`, `executionKind` (see [Execution kind](#execution-kind)).
+See [Overriding host conditions](#overriding-host-conditions) for the rest of the ambient-data and decision controls (locale, device-permission status, feature support, supported chains, product storage, user confirmation, navigation, notifications).
+
+Fixture options: `productUrl`, `accounts`, `networks`, `productAccounts`, `executionKind` (see [Execution kind](#execution-kind)), `initialState`, `behaviors` (see [Overriding host conditions](#overriding-host-conditions)).
 
 Every one of these is also on `window.__TEST_HOST__` inside the host page, synchronously, for tests that do not use the fixture.
 
@@ -340,6 +348,55 @@ const theme = await testHost.getTheme();
 // theme.variant: 'Light' | 'Dark'
 // theme.name.tag: 'Default' | 'Custom'
 ```
+
+The same value can be set at boot instead, via `initialState.theme` — see [Overriding host conditions](#overriding-host-conditions).
+
+### Overriding host conditions
+
+Theme, above, is one instance of a general pattern: every ambient condition the host reports, and every decision the host makes on the product's behalf, can be overridden from a test — live, through `window.__TEST_HOST__` / the fixture, or up front, via the `initialState` and `behaviors` options on `createTestHostFixture` / `createTestHostServer`.
+
+Two families cover the whole surface:
+
+- **Ambient data** — what the host reports. `get<Thing>()` reads it, `set<Thing>()` / `seed<Thing>()` writes it, `clear<Thing>()` resets it.
+- **Decisions** — how the host answers a request the product makes. `set<Thing>Behavior(b)` picks the policy — `'approve-all'` (default) or `'reject-all'`, or, in-page only, a function `(request) => boolean`. `get<Thing>Log()` / `clear<Thing>Log()` inspect what was asked and how it was answered.
+
+| Member | Family | Description |
+|--------|--------|-------------|
+| `setDevicePermissionStatus(type, status)` / `getDevicePermissionStatuses()` | data | Force the OS status `permissionStatus.devicePermissionStatus` reports for one `HostDevicePermissionRequest` (`'Granted' \| 'Denied' \| 'NotDetermined' \| 'NotApplicable'`); `undefined` restores the default |
+| `seedChatRoom(room)` / `seedChatBot(bot)` | data | Add a chat room/bot without the product creating it; live subscribers are notified (needs `executionKind: 'Worker'`) |
+| `getLocale()` / `setLocale(languageTag)` | data | The BCP 47 tag the host reports to products |
+| `setFeatureSupport(feature, supported)` / `getFeatureSupport()` | data | Force `featureSupported` for one feature tag; `undefined` restores the derived answer |
+| `setSupportedChains(chains)` / `getSupportedChains()` | data | Replace the advertised chain set (`ChainEntry[]`); `undefined` restores the one derived from `networks`, which the getter also reports |
+| `seedProductStorage(key, value)` / `getProductStorage()` / `clearProductStorage()` | data | Pre-populate, read, or wipe product-storage entries (see limitation below) |
+| `setUserConfirmationBehavior(b)` / `getUserConfirmationLog()` / `clearUserConfirmationLog()` | decision | How the host answers `confirmUserAction` |
+| `setNavigationBehavior(b)` | decision | How the host answers `navigateTo` (log: `getNavigationLog()` / `clearNavigationLog()`, above) |
+| `setNotificationBehavior(b)` | decision | How the host answers `pushNotification`; the function form sees `{ text, deeplink, scheduledAt }` (log: `getNotificationLog()` / `clearNotificationLog()`, above) |
+
+`initialState` and `behaviors` apply the same data and decisions before the product's first frame:
+
+```ts
+const { testHost } = createTestHostFixture({
+  productUrl: "http://localhost:3000",
+  initialState: {
+    locale: "pt-BR",
+    theme: "dark",
+    devicePermissionStatuses: { Camera: "Denied" },
+    features: { Chain: false },
+    supportedChains: [{ identifier: "AssetHub", genesisHash: "0x23e7..." }],
+    // Granted without the product asking, as `grantPermission(tag)` would.
+    grantedPermissions: ["ChainSubmit"],
+    productStorage: { "some-key-getProductStorage-reported": "value" },
+  },
+  behaviors: {
+    userConfirmation: "reject-all",
+  },
+});
+```
+
+Two limitations worth knowing:
+
+- **`seedProductStorage` only replays a key `getProductStorage()` has reported.** The core namespaces product-storage keys per product, so a key is always round-tripped, never hand-constructed — seeding a key the product has never written is not supported. `initialState.productStorage` carries the same restriction.
+- **A function-form behavior cannot cross `page.evaluate`.** `setUserConfirmationBehavior` / `setNavigationBehavior` / `setNotificationBehavior` on the fixture, and the `behaviors` boot option, accept only `'approve-all' | 'reject-all'` — the `FixtureBehavior` type. The function form — `(request) => boolean`, the third arm of `Behavior<Req>` — works only in-page, via `window.__TEST_HOST__`.
 
 ### Built-in networks
 

@@ -1,6 +1,6 @@
 import type { ChatMessageContent } from '@parity/truapi';
 import { describe, expect, it } from 'vitest';
-import { createChatCallbacks } from './chat.js';
+import { createChatCallbacks, roomListSnapshot } from './chat.js';
 import { createHostState } from './state.js';
 
 const product = { productId: 'test.dot', executionKind: 'App' } as const;
@@ -92,5 +92,27 @@ describe('chat callbacks', () => {
     // A room created after unsubscribing must not resurrect the listener.
     await createChatRoom(product, { roomId: 'room-1', name: 'Room', icon: 'icon.png' });
     expect(state.chatRoomSubscribers.size).toBe(0);
+  });
+
+  // What `seedChatRoom` pushes, without the control itself: that is
+  // `window.__TEST_HOST__`'s, and the integration suite drives it.
+  it('a pushed room-list snapshot reaches a subscriber that is already listening', async () => {
+    const state = createHostState();
+    const { subscribeChatRooms } = createChatCallbacks(state);
+    const items = subscribeChatRooms(product)[Symbol.asyncIterator]();
+    await items.next();
+
+    state.chatRooms.set('seeded', {
+      roomId: 'seeded',
+      name: 'Seeded',
+      icon: 'https://example.com/i.png',
+      participatingAs: 'RoomHost',
+    });
+    for (const notify of state.chatRoomSubscribers) notify(roomListSnapshot(state));
+
+    const next = await items.next();
+    expect(next.value.isOk() ? next.value.value.rooms : null).toEqual([
+      { roomId: 'seeded', participatingAs: 'RoomHost' },
+    ]);
   });
 });

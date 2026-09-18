@@ -3,9 +3,16 @@
  * than a class because `control-api.ts` mutates them directly.
  */
 
-import type { AuthState } from '@parity/truapi-host';
+import type { AuthState, DevicePermissionStatus, HostChainEntry } from '@parity/truapi-host';
+import type {
+  NavigationBehavior,
+  NotificationBehavior,
+  PermissionBehavior,
+  UserConfirmationBehavior,
+  UserConfirmationLogEntry,
+} from '../../types.js';
 
-export type PermissionBehavior = 'approve-all' | 'reject-all' | ((tag: string, value: unknown) => boolean);
+export type { PermissionBehavior };
 
 export interface PermissionLogEntry {
   tag: string;
@@ -72,8 +79,20 @@ export interface HostState {
   permissionBehavior: PermissionBehavior;
   grantedPermissions: Set<string>;
   permissionLog: PermissionLogEntry[];
+  /** Device-permission type → reported status; unset types report the default. */
+  devicePermissionStatuses: Map<string, DevicePermissionStatus>;
   navigationLog: NavigationLogEntry[];
   notificationLog: NotificationLogEntry[];
+
+  /** How `navigation.navigateTo` answers; `'approve-all'` by default. */
+  navigationBehavior: NavigationBehavior;
+  /** How `notifications.pushNotification` answers; `'approve-all'` by default. */
+  notificationBehavior: NotificationBehavior;
+
+  /** How `userConfirmation.confirmUserAction` answers; `'approve-all'` by default. */
+  userConfirmationBehavior: UserConfirmationBehavior;
+  /** Every review the core asked the host to confirm. */
+  userConfirmationLog: UserConfirmationLogEntry[];
 
   theme: Theme;
   /** Active `theme.subscribeTheme()` listeners; notified when `theme` changes. */
@@ -89,11 +108,19 @@ export interface HostState {
   /** Listeners waiting on one preimage key, keyed by lowercased `0x`-hex. */
   preimageSubscribers: Map<string, Set<(value: Uint8Array | undefined) => void>>;
 
+  /** Feature tag → forced answer; absent means fall back to the derived one. */
+  featureOverrides: Map<string, boolean>;
+  /** Replaces the derived chain set entirely when set. */
+  supportedChainsOverride?: HostChainEntry[];
+
+  /** What `productStorage` serves; seedable so a product can resume from prior state. */
+  productStorage: Map<string, Uint8Array>;
+
   /** One flat namespace: chat state is not partitioned per product. */
   chatRooms: Map<string, ChatRoom>;
   chatBots: Map<string, ChatBot>;
   chatMessageLog: ChatMessageLogEntry[];
-  /** Next `msg-<n>` suffix; reset to 1 by `clearChatState()`. */
+  /** Next `msg-<n>` suffix; reset to 1 by `clearChat()`. */
   nextChatMessageId: number;
   /** Active `chat.subscribeChatRooms()` listeners; notified on every room-list change. */
   chatRoomSubscribers: Set<(rooms: Array<{ roomId: string; participatingAs: 'RoomHost' | 'Bot' }>) => void>;
@@ -105,8 +132,15 @@ export function createHostState(): HostState {
     permissionBehavior: 'approve-all',
     grantedPermissions: new Set(),
     permissionLog: [],
+    devicePermissionStatuses: new Map(),
     navigationLog: [],
     notificationLog: [],
+
+    navigationBehavior: 'approve-all',
+    notificationBehavior: 'approve-all',
+
+    userConfirmationBehavior: 'approve-all',
+    userConfirmationLog: [],
 
     theme: { name: { tag: 'Default', value: undefined }, variant: 'Light' },
     themeSubscribers: new Set(),
@@ -116,6 +150,11 @@ export function createHostState(): HostState {
 
     preimages: new Map(),
     preimageSubscribers: new Map(),
+
+    featureOverrides: new Map(),
+    supportedChainsOverride: undefined,
+
+    productStorage: new Map(),
 
     chatRooms: new Map(),
     chatBots: new Map(),

@@ -10,8 +10,21 @@ import type { HostFeatureSupportedRequest, HostFeatureSupportedResponse } from '
 import type { HostChainEntry, HostChainSet } from '@parity/truapi-host';
 import { PEOPLE_GENESIS_HASH } from '../constants.js';
 import { type ChainRuntimeConfig, normalizeGenesisHash } from './chain.js';
+import type { HostState } from './state.js';
 
-export function createFeatureCallbacks(networks: ChainRuntimeConfig[]): {
+/** The chain set the configured networks imply — what `supportedChains()` reports unless overridden. */
+export function derivedChains(networks: readonly ChainRuntimeConfig[]): HostChainEntry[] {
+  const chains: HostChainEntry[] = [
+    { identifier: 'People', genesisHash: normalizeGenesisHash(PEOPLE_GENESIS_HASH) },
+  ];
+  for (const network of networks) {
+    if (!network.chain) continue;
+    chains.push({ identifier: network.chain, genesisHash: normalizeGenesisHash(network.genesisHash) });
+  }
+  return chains;
+}
+
+export function createFeatureCallbacks(state: HostState, networks: ChainRuntimeConfig[]): {
   featureSupported(request: HostFeatureSupportedRequest): Promise<HostFeatureSupportedResponse>;
   supportedChains(): Promise<HostChainSet>;
 } {
@@ -24,6 +37,11 @@ export function createFeatureCallbacks(networks: ChainRuntimeConfig[]): {
 
   return {
     async featureSupported(request: HostFeatureSupportedRequest): Promise<HostFeatureSupportedResponse> {
+      // Checked before the tag guard below: tags arrive over the wire, so an
+      // unknown future one must still be forceable at runtime.
+      const override = state.featureOverrides.get(request.tag);
+      if (override !== undefined) return { supported: override };
+
       if (request.tag !== 'Chain') {
         return { supported: false };
       }
@@ -31,12 +49,7 @@ export function createFeatureCallbacks(networks: ChainRuntimeConfig[]): {
     },
 
     async supportedChains(): Promise<HostChainSet> {
-      const chains: HostChainEntry[] = [{ identifier: 'People', genesisHash: peopleGenesis }];
-      for (const network of networks) {
-        if (!network.chain) continue;
-        chains.push({ identifier: network.chain, genesisHash: normalizeGenesisHash(network.genesisHash) });
-      }
-      return { network: 'polkadot', chains };
+      return { network: 'polkadot', chains: state.supportedChainsOverride ?? derivedChains(networks) };
     },
   };
 }

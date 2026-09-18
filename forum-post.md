@@ -920,6 +920,39 @@ Removed types: `LoginBehavior`, `PaymentLogEntry`, `PaymentTopUpBehavior`, `Stat
 - **`accounts[].uri` is hard junctions only.** Keys are derived in the page with `@scure/sr25519`; there is no keyring any more. `'//Alice//custom'` is fine; a mnemonic or hex seed now throws.
 - **`featureSupported` now agrees with `supportedChains()` about the People chain.** The host always advertises its in-page People loopback, but the feature probe only ever matched the configured `networks` — which never contain the People genesis, because that chain is served in the page. Asking whether the one chain every signature travels over was supported got you `false`.
 - **Three bugs in the loopback store** that between them blocked every signature are fixed: the `statement_submit` reply shape, the `newStatements` subscription envelope, and the topic-filter key spelling (which had been quietly turning every filter into a firehose). Also the AutoSigning grant, which was refused as an "invalid subtree secret" because schnorrkel has two 64-byte secret encodings and this host was handing over the wrong one.
+- **`clearChatState` is now `clearChat`.** Same behaviour, shorter name, in line with the new `seedChatRoom` / `seedChatBot` pair below.
+
+## Overriding host conditions
+
+Beyond theme, a product can now be exercised under a much wider set of conditions than "what the host does by default" — either live from a test, or pre-configured before the product's first frame.
+
+Two families, named consistently:
+
+- **Ambient data** the host reports — device-permission status, locale, feature support, the supported chain set, product storage, plus seeding chat rooms and bots. `get<Thing>` reads it, `set<Thing>` / `seed<Thing>` writes it, `clear<Thing>` resets it: `setDevicePermissionStatus` / `getDevicePermissionStatuses`, `seedChatRoom`, `seedChatBot`, `getLocale` / `setLocale`, `setFeatureSupport` / `getFeatureSupport`, `setSupportedChains` / `getSupportedChains`, `seedProductStorage` / `getProductStorage` / `clearProductStorage`. The per-key ones take `undefined` to put the host's own answer back.
+- **Decisions** the host makes on the product's behalf — confirmations, navigation, notifications. `set<Thing>Behavior(b)` takes `'approve-all'` (default), `'reject-all'`, or, in-page only, a function of the request — a notification's carries `{ text, deeplink, scheduledAt }`, so a test can refuse only the scheduled ones. `get<Thing>Log` / `clear<Thing>Log` inspect what was asked and how it was answered: `setUserConfirmationBehavior`, `getUserConfirmationLog` / `clearUserConfirmationLog`, `setNavigationBehavior`, `setNotificationBehavior`.
+
+Both families can be set up front, via `initialState` and `behaviors` on `createTestHostFixture` / `createTestHostServer`, so the product never sees the default:
+
+```ts
+const { testHost } = createTestHostFixture({
+  productUrl: "http://localhost:3000",
+  initialState: {
+    locale: "pt-BR",
+    theme: "dark",
+    devicePermissionStatuses: { Camera: "Denied" },
+    features: { Chain: false },
+    supportedChains: [{ identifier: "AssetHub", genesisHash: "0x23e7..." }],
+    grantedPermissions: ["ChainSubmit"],
+  },
+  behaviors: {
+    userConfirmation: "reject-all",
+  },
+});
+```
+
+Two things worth knowing before you reach for these: `seedProductStorage` only replays a key `getProductStorage()` has already reported — the core namespaces storage per product, so a key the product has never written can't be hand-constructed, in `initialState.productStorage` as much as in the live call. And the function form of a behavior only works in-page, via `window.__TEST_HOST__` — the Playwright fixture's setters and the `behaviors` boot option take `'approve-all' | 'reject-all'` only.
+
+See the README's [Overriding host conditions](https://github.com/paritytech/host-api-test-sdk#overriding-host-conditions) section for the full member table.
 
 ## If you maintain a host-playground
 

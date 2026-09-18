@@ -1,5 +1,6 @@
 /** Notifications: records what the product asked to push instead of displaying it. */
 import type { HostPushNotificationRequest, HostPushNotificationResponse, NotificationId } from '@parity/truapi';
+import { decideBehavior } from '../../types.js';
 import type { HostState } from './state.js';
 
 export function createNotificationCallbacks(state: HostState): {
@@ -26,6 +27,14 @@ export function createNotificationCallbacks(state: HostState): {
         notification.deeplink ? `(deeplink: ${notification.deeplink})` : '',
         notification.scheduledAt !== undefined ? `(scheduledAt: ${notification.scheduledAt})` : '',
       );
+
+      // `Notifications.pushNotification` declares no error response, so refusal is a thrown
+      // error; the id is still allocated so ids never collide across refusals.
+      const { text, deeplink, scheduledAt } = notification;
+      if (!decideBehavior(state.notificationBehavior, { text, deeplink, scheduledAt })) {
+        throw new Error('Notification refused by the test host');
+      }
+
       return { id };
     },
 
