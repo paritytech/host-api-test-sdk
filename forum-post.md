@@ -948,7 +948,7 @@ const { testHost } = createTestHostFixture({
 });
 ```
 
-Two things worth knowing before you reach for these: `seedProductStorage` only replays a key `getProductStorage()` has already reported — the core namespaces storage per product, so a key the product has never written can't be hand-constructed. And the function form of a behavior only works in-page, via `window.__TEST_HOST__` — the Playwright fixture's setters and the `behaviors` boot option take `'approve-all' | 'reject-all'` only.
+Two things worth knowing before you reach for these: `seedProductStorage` only replays a key `getProductStorage()` has already reported — the core namespaces storage per product, so a key the product has never written can't be hand-constructed, in `initialState.productStorage` as much as in the live call. And the function form of a behavior only works in-page, via `window.__TEST_HOST__` — the Playwright fixture's setters and the `behaviors` boot option take `'approve-all' | 'reject-all'` only.
 
 See the README's [Overriding host conditions](https://github.com/paritytech/host-api-test-sdk#overriding-host-conditions) section for the full member table.
 

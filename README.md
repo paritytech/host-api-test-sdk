@@ -386,7 +386,7 @@ const { testHost } = createTestHostFixture({
 
 Two limitations worth knowing:
 
-- **`seedProductStorage` only replays a key `getProductStorage()` has reported.** The core namespaces product-storage keys per product, so a key is always round-tripped, never hand-constructed — seeding a key the product has never written is not supported.
+- **`seedProductStorage` only replays a key `getProductStorage()` has reported.** The core namespaces product-storage keys per product, so a key is always round-tripped, never hand-constructed — seeding a key the product has never written is not supported. `initialState.productStorage` carries the same restriction.
 - **A function-form behavior cannot cross `page.evaluate`.** `setUserConfirmationBehavior` / `setNavigationBehavior` / `setNotificationBehavior` on the fixture, and the `behaviors` boot option, accept only `'approve-all' | 'reject-all'`. The function form — `(request) => boolean` — works only in-page, via `window.__TEST_HOST__`.
 
 ### Built-in networks
