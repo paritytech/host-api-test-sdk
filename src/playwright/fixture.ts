@@ -1,7 +1,7 @@
 import type { Page, FrameLocator } from '@playwright/test';
 import { createTestHostServer } from '../server.js';
 import { DEFAULT_CHAIN } from '../networks.js';
-import type { ChatActionInput, ChatBot, ChatMessageLogEntry, ChatRoom, CreateTestHostOptions, DevAccountName, HexString, NavigationLogEntry, NotificationLogEntry, PermissionLogEntry, PreimageEntry, SigningLogEntry, SupportedChainEntry, TestHostAPI, Theme, ThemeInput, UserConfirmationLogEntry } from '../types.js';
+import type { ChainEntry, ChatActionInput, ChatBot, ChatMessageLogEntry, ChatRoom, CreateTestHostOptions, DevAccountName, HexString, NavigationLogEntry, NotificationLogEntry, PermissionLogEntry, PreimageEntry, SigningLogEntry, TestHostAPI, Theme, ThemeInput, UserConfirmationLogEntry } from '../types.js';
 
 export interface TestHost {
   /** The host page (contains the iframe) */
@@ -133,7 +133,7 @@ export interface TestHost {
   getFeatureSupport(): Promise<Record<string, boolean>>;
 
   /** Replace the advertised chain set; `undefined` restores the derived one. */
-  setSupportedChains(chains: SupportedChainEntry[] | undefined): Promise<void>;
+  setSupportedChains(chains: ChainEntry[] | undefined): Promise<void>;
 
   /**
    * Wait until the product has actually talked to the host. This is the
@@ -338,7 +338,7 @@ export function createTestHostFixture(defaults: TestHostFixtureOptions) {
           return page.evaluate(() => window.__TEST_HOST__.getFeatureSupport());
         },
 
-        async setSupportedChains(chains: SupportedChainEntry[] | undefined) {
+        async setSupportedChains(chains: ChainEntry[] | undefined) {
           await page.evaluate((c) => window.__TEST_HOST__.setSupportedChains(c), chains);
         },
 

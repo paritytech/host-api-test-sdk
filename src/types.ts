@@ -32,13 +32,13 @@ type _ProductExecutionKindMirrorsCore = Expect<
 >;
 
 /** One chain `features.supportedChains()` advertises. */
-export interface SupportedChainEntry {
+export interface ChainEntry {
   identifier: ChainIdentifier;
   genesisHash: HexString;
 }
 
 /** Compile-time guard: this mirror must equal the core's chain-set entry. */
-type _SupportedChainEntryMirrorsCore = Expect<Equal<SupportedChainEntry, HostChainEntry>>;
+type _ChainEntryMirrorsCore = Expect<Equal<ChainEntry, HostChainEntry>>;
 
 export interface NetworkConfig {
   id: string;
@@ -284,7 +284,7 @@ export interface TestHostAPI {
   /** The forced answers currently in effect. */
   getFeatureSupport(): Record<string, boolean>;
   /** Replace the advertised chain set; `undefined` restores the derived one. */
-  setSupportedChains(chains: SupportedChainEntry[] | undefined): void;
+  setSupportedChains(chains: ChainEntry[] | undefined): void;
 
   dispose(): void;
 }

@@ -9,12 +9,12 @@ import type { IframeHost, WorkerPairingHostRuntime } from '@parity/truapi-host/w
 import type { HostState } from './callbacks/index.js';
 import type { SsoResponder } from './sso/responder.js';
 import type {
+  ChainEntry,
   ChatActionInput,
   HexString,
   NavigationBehavior,
   NotificationBehavior,
   PermissionBehavior,
-  SupportedChainEntry,
   TestHostAPI,
   Theme,
   ThemeInput,
@@ -257,7 +257,7 @@ export function buildControlApi(options: ControlApiOptions): TestHostAPI {
       return Object.fromEntries(state.featureOverrides);
     },
 
-    setSupportedChains(chains: SupportedChainEntry[] | undefined) {
+    setSupportedChains(chains: ChainEntry[] | undefined) {
       state.supportedChainsOverride = chains;
     },
 
