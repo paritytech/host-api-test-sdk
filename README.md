@@ -160,9 +160,14 @@ test("handles permission rejection", async ({ testHost }) => {
   expect(log[0].approved).toBe(false);
 });
 
-test("selective permissions", async ({ testHost }) => {
-  // Custom logic: approve ChainSubmit, reject Remote
-  await testHost.setPermissionBehavior((tag) => tag === "ChainSubmit");
+test("selective permissions", async ({ page, testHost }) => {
+  // The fixture's setters take a named mode only. A function has to be
+  // installed in the page, where it can actually be called.
+  await page.evaluate(() =>
+    window.__TEST_HOST__.setPermissionBehavior(
+      (request) => request.tag === "ChainSubmit",
+    ),
+  );
 
   // ... test product behavior ...
 });
@@ -236,7 +241,7 @@ The People chain is a **loopback statement store inside the page**: no node, no 
 | `testHost.setAccounts(names)` | Replace the roster; the first name becomes the active identity |
 | `testHost.getSigningLog()` | All auto-signed requests since last clear |
 | `testHost.clearSigningLog()` | Reset the signing log |
-| `testHost.setPermissionBehavior(behavior)` | `'approve-all'`, `'reject-all'`, or `(tag, value) => boolean` |
+| `testHost.setPermissionBehavior(behavior)` | `'approve-all'` or `'reject-all'`; the `(request) => boolean` form works in-page only |
 | `testHost.grantPermission(tag)` / `revokePermission(tag)` / `getGrantedPermissions()` | Pre-grant, revoke, inspect |
 | `testHost.getPermissionLog()` / `clearPermissionLog()` | Permission requests and outcomes |
 | `testHost.getNavigationLog()` / `clearNavigationLog()` | `navigateTo` attempts from the product |
