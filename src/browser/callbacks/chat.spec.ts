@@ -94,7 +94,9 @@ describe('chat callbacks', () => {
     expect(state.chatRoomSubscribers.size).toBe(0);
   });
 
-  it('a seeded room reaches a subscriber that is already listening', async () => {
+  // What `seedChatRoom` pushes, without the control itself: that is
+  // `window.__TEST_HOST__`'s, and the integration suite drives it.
+  it('a pushed room-list snapshot reaches a subscriber that is already listening', async () => {
     const state = createHostState();
     const { subscribeChatRooms } = createChatCallbacks(state);
     const items = subscribeChatRooms(product)[Symbol.asyncIterator]();
