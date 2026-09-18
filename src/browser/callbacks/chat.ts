@@ -23,7 +23,8 @@ import type { ProductContext } from '@parity/truapi-host';
 import { createPushChannel } from './passive.js';
 import type { HostState } from './state.js';
 
-function roomListSnapshot(state: HostState): Array<{ roomId: string; participatingAs: 'RoomHost' | 'Bot' }> {
+/** What a room-list subscriber is told — narrower than `ChatRoom`, and the core's codec only carries these two fields. */
+export function roomListSnapshot(state: HostState): Array<{ roomId: string; participatingAs: 'RoomHost' | 'Bot' }> {
   return [...state.chatRooms.values()].map((room) => ({
     roomId: room.roomId,
     participatingAs: room.participatingAs,

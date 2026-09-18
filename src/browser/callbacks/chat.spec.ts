@@ -1,6 +1,6 @@
 import type { ChatMessageContent } from '@parity/truapi';
 import { describe, expect, it } from 'vitest';
-import { createChatCallbacks } from './chat.js';
+import { createChatCallbacks, roomListSnapshot } from './chat.js';
 import { createHostState } from './state.js';
 
 const product = { productId: 'test.dot', executionKind: 'App' } as const;
@@ -106,9 +106,11 @@ describe('chat callbacks', () => {
       icon: 'https://example.com/i.png',
       participatingAs: 'RoomHost',
     });
-    for (const notify of state.chatRoomSubscribers) notify([...state.chatRooms.values()]);
+    for (const notify of state.chatRoomSubscribers) notify(roomListSnapshot(state));
 
     const next = await items.next();
-    expect(JSON.stringify(next.value)).toContain('seeded');
+    expect(next.value.isOk() ? next.value.value.rooms : null).toEqual([
+      { roomId: 'seeded', participatingAs: 'RoomHost' },
+    ]);
   });
 });

@@ -6,6 +6,7 @@ import { blake2b } from '@noble/hashes/blake2.js';
 import { scale } from '@parity/truapi';
 import type { TrUApiProductProvider } from '@parity/truapi-host';
 import type { IframeHost, WorkerPairingHostRuntime } from '@parity/truapi-host/web';
+import { roomListSnapshot } from './callbacks/chat.js';
 import type { HostState } from './callbacks/index.js';
 import type { SsoResponder } from './sso/responder.js';
 import type {
@@ -172,8 +173,8 @@ export function buildControlApi(options: ControlApiOptions): TestHostAPI {
 
     seedChatRoom(room: ChatRoom) {
       state.chatRooms.set(room.roomId, room);
-      const rooms = [...state.chatRooms.values()];
-      for (const notify of state.chatRoomSubscribers) notify(rooms);
+      const snapshot = roomListSnapshot(state);
+      for (const notify of state.chatRoomSubscribers) notify(snapshot);
     },
 
     seedChatBot(bot: ChatBot) {
