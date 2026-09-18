@@ -11,7 +11,7 @@
  */
 import { blake2b } from '@noble/hashes/blake2.js';
 import { sign } from '@scure/sr25519';
-import { scale } from '@parity/truapi';
+import { type DerivationIndex, scale } from '@parity/truapi';
 import type { DevKeypair } from '../dev-accounts.js';
 import type { RemoteMessagePayload } from './messages.js';
 
@@ -28,7 +28,10 @@ type RegisterResultHandle = Extract<ListResult, { success: true }>['value'][numb
 type RingLocation = Extract<ListResult, { success: true }>['value'][number]['rings'][number];
 
 /** Resolves the dev keypair backing one product account. */
-export type ResolveAccount = (dotNsIdentifier: string, derivationIndex: unknown) => DevKeypair;
+export type ResolveAccount = (
+  dotNsIdentifier: string,
+  derivationIndex: DerivationIndex | undefined,
+) => DevKeypair;
 
 interface RingVrfEntry {
   owner: string;

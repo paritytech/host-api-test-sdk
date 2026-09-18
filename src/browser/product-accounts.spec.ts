@@ -52,9 +52,7 @@ describe('derivationIndexBytes', () => {
   });
 
   it('passes a Raw index through unchanged, as the core does', () => {
-    const raw = `0x${'ee'.repeat(32)}`;
-    expect(hex(derivationIndexBytes({ tag: 'Raw', value: raw }))).toBe('ee'.repeat(32));
-    expect(hex(derivationIndexBytes({ tag: 'Raw', value: new Uint8Array(32).fill(0xee) }))).toBe(
+    expect(hex(derivationIndexBytes({ tag: 'Raw', value: `0x${'ee'.repeat(32)}` }))).toBe(
       'ee'.repeat(32),
     );
   });
@@ -66,17 +64,10 @@ describe('derivationIndexBytes', () => {
     );
   });
 
-  it('throws on a shape it does not recognise, rather than inventing a chain code', () => {
-    expect(() => derivationIndexBytes({ tag: 'Something', value: 1 })).toThrow(
-      /unsupported derivation index/,
-    );
-    expect(() => derivationIndexBytes('0')).toThrow(/unsupported derivation index/);
-    expect(() => derivationIndexBytes({ tag: 'Index', value: 'zero' })).toThrow(
-      /unsupported derivation index/,
-    );
-    expect(() => derivationIndexBytes({ tag: 'Raw', value: '0xaabb' })).toThrow(
-      /must be 32 bytes/,
-    );
+  it('refuses a Raw index that is not a 32-byte chain code', () => {
+    expect(() =>
+      resolveProductAccount(ALICE, 'myapp.dot', { tag: 'Raw', value: '0xaabb' }),
+    ).toThrow(/chain code must be 32 bytes/);
   });
 });
 
@@ -125,8 +116,10 @@ describe('resolveProductAccount', () => {
 
   it('derives the same account from a Raw index as the core would', () => {
     const subtree = resolveProductSubtree(ALICE, 'myapp.dot');
-    const raw = `0x${'ee'.repeat(32)}`;
-    const signer = resolveProductAccount(ALICE, 'myapp.dot', { tag: 'Raw', value: raw });
+    const signer = resolveProductAccount(ALICE, 'myapp.dot', {
+      tag: 'Raw',
+      value: `0x${'ee'.repeat(32)}`,
+    });
     expect(hex(signer.publicKey)).toBe(
       hex(HDKD.publicSoft(subtree.publicKey, new Uint8Array(32).fill(0xee))),
     );

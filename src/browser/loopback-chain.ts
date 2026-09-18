@@ -5,6 +5,7 @@
  * on the People chain. Serving that surface in-page is what keeps signing local:
  * no node, no network, no allowance to register.
  */
+import { scale } from '@parity/truapi';
 import {
   type Statement,
   type TopicFilterKind,
@@ -19,18 +20,6 @@ interface Subscription {
   topics: Uint8Array[];
   notify: (json: string) => void;
 }
-
-const toHex = (bytes: Uint8Array) =>
-  `0x${Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')}`;
-
-const fromHex = (value: string): Uint8Array => {
-  const hex = value.startsWith('0x') ? value.slice(2) : value;
-  const out = new Uint8Array(hex.length / 2);
-  for (let i = 0; i < out.length; i++) {
-    out[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
-  }
-  return out;
-};
 
 export interface LoopbackConnection {
   send(request: string): void;
@@ -54,23 +43,17 @@ export function createLoopbackStore(): LoopbackStore {
    * Accepts the filter object the core sends, and the bare array form.
    *
    * The core spells the keys lower-camel — `json!({ "matchAll": topics })` /
-   * `json!({ "matchAny": topics })` in `statement_store_rpc.rs` — so those are
-   * the spellings that matter. The capitalised variant names are accepted too:
-   * they are unambiguous aliases, and a serde rename upstream would otherwise
-   * turn every filter into an unmatched key, i.e. silently back into a
-   * firehose. `matchAny` is probed first so an object carrying both keys is
-   * never narrowed to `MatchAll`, which would drop statements a `matchAny`
-   * subscriber asked for.
+   * `json!({ "matchAny": topics })` in `statement_store_rpc.rs`. `matchAny` is
+   * probed first so an object carrying both keys is never narrowed to
+   * `MatchAll`, which would drop statements a `matchAny` subscriber asked for.
    */
   const FILTER_KEYS: ReadonlyArray<readonly [key: string, kind: TopicFilterKind]> = [
     ['matchAny', 'MatchAny'],
-    ['MatchAny', 'MatchAny'],
     ['matchAll', 'MatchAll'],
-    ['MatchAll', 'MatchAll'],
   ];
 
   function parseFilter(raw: unknown): { kind: TopicFilterKind; topics: Uint8Array[] } {
-    const toTopics = (values: unknown[]) => values.map((t) => fromHex(String(t)));
+    const toTopics = (values: unknown[]) => values.map((t) => scale.hexToBytes(String(t)));
 
     if (Array.isArray(raw)) {
       return { kind: 'MatchAll', topics: toTopics(raw) };
@@ -108,7 +91,7 @@ export function createLoopbackStore(): LoopbackStore {
 
             switch (method) {
               case 'statement_submit': {
-                const statement = decodeStatement(fromHex(String(params[0])));
+                const statement = decodeStatement(scale.hexToBytes(String(params[0])));
                 // The core reads `.status` off the result object and treats
                 // only `new`/`known` as accepted (`statement_store_rpc.rs`,
                 // `fn submit`); a bare `"new"` string has no `status` field
@@ -201,7 +184,7 @@ export function createLoopbackStore(): LoopbackStore {
       // ignores it and keys only on `params.subscription`.
       const result = {
         event: 'newStatements',
-        data: { statements: [toHex(encodeStatement(statement))], remaining: 0 },
+        data: { statements: [scale.bytesToHex(encodeStatement(statement))], remaining: 0 },
       };
       for (const subscription of subscriptions) {
         if (!matchesTopics(statement, subscription.kind, subscription.topics)) continue;

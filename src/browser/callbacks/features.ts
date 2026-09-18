@@ -24,25 +24,17 @@
 import type { HostFeatureSupportedRequest, HostFeatureSupportedResponse } from '@parity/truapi';
 import type { HostChainEntry, HostChainSet } from '@parity/truapi-host';
 import { PEOPLE_GENESIS_HASH } from '../constants.js';
-import type { ChainRuntimeConfig } from './chain.js';
-
-function normalizeHash(value: string): `0x${string}` {
-  const str = value.toLowerCase().trim();
-  return (str.startsWith('0x') ? str : `0x${str}`) as `0x${string}`;
-}
-
-const toHex = (bytes: Uint8Array): `0x${string}` =>
-  `0x${Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')}` as `0x${string}`;
+import { type ChainRuntimeConfig, normalizeGenesisHash } from './chain.js';
 
 export function createFeatureCallbacks(networks: ChainRuntimeConfig[]): {
   featureSupported(request: HostFeatureSupportedRequest): Promise<HostFeatureSupportedResponse>;
   supportedChains(): Promise<HostChainSet>;
 } {
-  const peopleGenesis = toHex(PEOPLE_GENESIS_HASH);
+  const peopleGenesis = normalizeGenesisHash(PEOPLE_GENESIS_HASH);
   /** Exactly the genesis hashes `chain.connect` routes — see that module. */
   const routable = new Set<string>([
     peopleGenesis,
-    ...networks.map((network) => normalizeHash(network.genesisHash)),
+    ...networks.map((network) => normalizeGenesisHash(network.genesisHash)),
   ]);
 
   return {
@@ -50,14 +42,14 @@ export function createFeatureCallbacks(networks: ChainRuntimeConfig[]): {
       if (request.tag !== 'Chain') {
         return { supported: false };
       }
-      return { supported: routable.has(normalizeHash(request.value.genesisHash)) };
+      return { supported: routable.has(normalizeGenesisHash(request.value.genesisHash)) };
     },
 
     async supportedChains(): Promise<HostChainSet> {
       const chains: HostChainEntry[] = [{ identifier: 'People', genesisHash: peopleGenesis }];
       for (const network of networks) {
         if (!network.chain) continue;
-        chains.push({ identifier: network.chain, genesisHash: normalizeHash(network.genesisHash) });
+        chains.push({ identifier: network.chain, genesisHash: normalizeGenesisHash(network.genesisHash) });
       }
       return { network: 'polkadot', chains };
     },

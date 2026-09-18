@@ -121,27 +121,6 @@ describe('loopback statement store', () => {
     expect(onResponse).toHaveBeenCalledOnce();
   });
 
-  it('accepts the capitalised variant spellings as aliases', () => {
-    const store = createLoopbackStore();
-    const onResponse = vi.fn();
-    const connection = store.connect(onResponse);
-    connection.send(
-      JSON.stringify({
-        jsonrpc: '2.0',
-        id: 21,
-        method: 'statement_subscribeStatement',
-        params: [{ MatchAny: [toHex(topic(13))] }],
-      }),
-    );
-    onResponse.mockClear();
-
-    store.publish({ topics: [topic(14)], data: new Uint8Array([1]) });
-    expect(onResponse).not.toHaveBeenCalled();
-
-    store.publish({ topics: [topic(13)], data: new Uint8Array([2]) });
-    expect(onResponse).toHaveBeenCalledOnce();
-  });
-
   it('stops delivering after unsubscribe', () => {
     const store = createLoopbackStore();
     const onResponse = vi.fn();

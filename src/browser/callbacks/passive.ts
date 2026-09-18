@@ -14,7 +14,7 @@
  * (`for await...break` calls the iterator's `return()`).
  */
 import { ok } from 'neverthrow';
-import type { GenericError, HostLocaleSubscribeItem, HostThemeSubscribeItem, Result } from '@parity/truapi';
+import { type GenericError, type HostLocaleSubscribeItem, type HostThemeSubscribeItem, type Result, scale } from '@parity/truapi';
 import type { HostState, Theme } from './state.js';
 
 export interface PushChannel<T> {
@@ -73,9 +73,6 @@ export function createPushChannel<T>(onClose?: () => void): PushChannel<T> {
   return { push, close, iterable };
 }
 
-const toHex = (bytes: Uint8Array): string =>
-  `0x${Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')}`;
-
 /**
  * Host theme source. Ported from `host-runtime.ts`'s `handleThemeSubscribe` /
  * `themeSubscribers`: every subscription is sent the current theme
@@ -130,7 +127,7 @@ export function createPreimageCallbacks(state: HostState): {
 } {
   return {
     lookupPreimage(key: Uint8Array) {
-      const keyHex = toHex(key).toLowerCase();
+      const keyHex = scale.bytesToHex(key);
       const notify = (value: Uint8Array | undefined) => channel.push(ok(value));
       const channel = createPushChannel<Result<Uint8Array | undefined, GenericError>>(() => {
         const subs = state.preimageSubscribers.get(keyHex);

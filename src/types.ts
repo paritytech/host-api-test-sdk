@@ -1,15 +1,10 @@
-// `CoreChainIdentifier` is referenced solely by the non-exported drift guard
-// below, so it never reaches the emitted declarations. `ChatActionPayload`
-// and `HostChatActionSubscribeItem` DO: an injected chat action is a protocol
-// value, and a hand-mirrored copy of that ~120-line generated union would be
-// a lie waiting to drift. See the note on `ChatActionInput`.
 import type {
-  ChainIdentifier as CoreChainIdentifier,
+  ChainIdentifier,
   ChatActionPayload,
   HostChatActionSubscribeItem,
 } from '@parity/truapi';
-// Same deal: referenced only by the drift guard under `ProductExecutionKind`,
-// so it is erased at emit. It has to be, because `@parity/truapi-host` is a
+// Referenced only by the drift guard under `ProductExecutionKind`, so it is
+// erased at emit. It has to be, because `@parity/truapi-host` is a
 // devDependency of this package — a published declaration that named it would
 // not resolve for a consumer.
 import type { ProductExecutionKind as CoreProductExecutionKind } from '@parity/truapi-host';
@@ -21,20 +16,13 @@ import type { ProductExecutionKind as CoreProductExecutionKind } from '@parity/t
 export type HexString = `0x${string}`;
 
 /**
- * A network's protocol role.
- *
- * Mirrors `ChainIdentifier` in `@parity/truapi`, which the browser runtime
- * reports through `features.supportedChains()`. It is spelled out here so
- * this package's published types stand alone rather than depending on a
- * package consumers do not install — and `_ChainIdentifierMirrorsCore`
- * below fails the build if the two ever drift apart.
+ * A network's protocol role, as `features.supportedChains()` reports it.
+ * Re-exported from `@parity/truapi`, which this package depends on.
  */
-export type ChainIdentifier = 'Relay' | 'AssetHub' | 'People' | 'Bulletin';
+export type { ChainIdentifier };
 
 type Equal<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
 type Expect<T extends true> = T;
-/** Compile-time guard, erased at emit: this mirror must equal the core's enum. */
-type _ChainIdentifierMirrorsCore = Expect<Equal<ChainIdentifier, CoreChainIdentifier>>;
 
 /**
  * Trusted kind of executable the host declares the product to be.
@@ -46,8 +34,9 @@ type _ChainIdentifierMirrorsCore = Expect<Equal<ChainIdentifier, CoreChainIdenti
  * entry point is denied for `App` and `Widget`. So a test that drives chat
  * must ask for `executionKind: 'Worker'`.
  *
- * Mirrored here rather than re-exported for the same reason as
- * `ChainIdentifier` above — `_ProductExecutionKindMirrorsCore` fails the build
+ * Mirrored here rather than re-exported because `@parity/truapi-host` is a
+ * devDependency of this package: a published declaration naming it would not
+ * resolve for a consumer. `_ProductExecutionKindMirrorsCore` fails the build
  * if the two drift.
  */
 export type ProductExecutionKind = 'App' | 'Widget' | 'Worker';

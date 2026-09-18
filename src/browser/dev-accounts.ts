@@ -6,6 +6,7 @@
  */
 import { HDKD, getPublicKey, secretFromSeed } from '@scure/sr25519';
 import { DEV_MINI_SECRET, ss58Address } from '@polkadot-labs/hdkd-helpers';
+import { scale } from '@parity/truapi';
 
 export interface DevKeypair {
   /**
@@ -55,17 +56,7 @@ export function canonicalSecretKey(secretKey: Uint8Array): Uint8Array {
   return out;
 }
 
-function toBytes(value: Uint8Array | string): Uint8Array {
-  if (typeof value !== 'string') return value;
-  const hex = value.startsWith('0x') ? value.slice(2) : value;
-  const out = new Uint8Array(hex.length / 2);
-  for (let i = 0; i < out.length; i++) {
-    out[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
-  }
-  return out;
-}
-
-const ROOT_SECRET = secretFromSeed(toBytes(DEV_MINI_SECRET as unknown as string));
+const ROOT_SECRET = secretFromSeed(scale.hexToBytes(DEV_MINI_SECRET));
 
 /** SCALE chain code for a junction label: compact length prefix, then the bytes. */
 function chainCode(label: string): Uint8Array {

@@ -7,7 +7,7 @@
  * `@parity/truapi-provider`, which owns the transport (remote JSON-RPC nodes
  * registered with `addRpcChain`) and hands back a raw string pipe.
  */
-import type { ChainIdentifier } from '@parity/truapi';
+import { type ChainIdentifier, scale } from '@parity/truapi';
 import type { ChainProvider, JsonRpcConnection } from '@parity/truapi-host';
 import { PEOPLE_GENESIS_HASH } from '../constants.js';
 import type { LoopbackStore } from '../loopback-chain.js';
@@ -58,16 +58,19 @@ export type RpcProviderLoader = (
   networks: readonly ChainRuntimeConfig[],
 ) => Promise<RpcProviderHandle>;
 
-/** Hex-normalise a genesis hash so string configs and raw bytes compare equal. */
-const normalize = (value: Uint8Array | string): string => {
-  if (typeof value === 'string') {
-    // Trimmed as well as lower-cased, so this agrees exactly with
-    // `features.ts`'s normaliser: a config hash with stray whitespace must
-    // not be reported supported by one and unroutable by the other.
-    const hex = value.trim();
-    return (hex.startsWith('0x') ? hex.slice(2) : hex).toLowerCase();
-  }
-  return Array.from(value, (b) => b.toString(16).padStart(2, '0')).join('');
+/**
+ * The canonical `0x`-prefixed lower-case spelling of a genesis hash, so string
+ * configs and raw bytes compare equal.
+ *
+ * One helper, used by every genesis comparison in the host: routing here and
+ * `features.ts`'s support answers. Two normalisers could disagree on a config
+ * hash with stray whitespace, and a hash reported supported by one but
+ * unroutable by the other is exactly the bug that invariant hides.
+ */
+export const normalizeGenesisHash = (value: Uint8Array | string): `0x${string}` => {
+  if (typeof value !== 'string') return scale.bytesToHex(value);
+  const hex = value.trim().toLowerCase();
+  return hex.startsWith('0x') ? (hex as `0x${string}`) : `0x${hex}`;
 };
 
 /**
@@ -81,7 +84,7 @@ export function registerRpcChains(
   networks: readonly ChainRuntimeConfig[],
 ): void {
   for (const network of networks) {
-    registrar.addRpcChain(`0x${normalize(network.genesisHash)}`, network.rpcUrl);
+    registrar.addRpcChain(normalizeGenesisHash(network.genesisHash), network.rpcUrl);
   }
 }
 
@@ -158,7 +161,7 @@ export function createChainCallbacks(options: {
   openRpcProvider?: RpcProviderLoader;
 }): ChainProvider {
   const { store, networks } = options;
-  const peopleGenesis = normalize(PEOPLE_GENESIS_HASH);
+  const peopleGenesis = normalizeGenesisHash(PEOPLE_GENESIS_HASH);
   const load = options.openRpcProvider ?? openRpcProvider;
 
   // One provider per host page, built on the first connect that needs it.
@@ -166,7 +169,7 @@ export function createChainCallbacks(options: {
 
   return {
     async connect(genesisHash: Uint8Array): Promise<JsonRpcConnection> {
-      const target = normalize(genesisHash);
+      const target = normalizeGenesisHash(genesisHash);
 
       if (target === peopleGenesis) {
         // Push-to-async-iterator bridge (see passive.ts): the loopback store's
@@ -201,15 +204,15 @@ export function createChainCallbacks(options: {
         };
       }
 
-      const network = networks.find((candidate) => normalize(candidate.genesisHash) === target);
+      const network = networks.find((candidate) => normalizeGenesisHash(candidate.genesisHash) === target);
       if (!network) {
-        throw new Error(`no chain configured for genesis 0x${target}`);
+        throw new Error(`no chain configured for genesis ${target}`);
       }
 
       // No bridge on this route: the provider's `Connection` is already the
       // raw string pipe the core's `JsonRpcConnection` asks for, so neither a
       // push channel nor a JSON (de)serialisation step is needed.
-      const connection = await (await provider()).connect(`0x${target}`);
+      const connection = await (await provider()).connect(target);
       // One drain per connection, not one per `responses()` call: two loops
       // over the same pipe would race each other for frames.
       const responses = drainResponses(connection);

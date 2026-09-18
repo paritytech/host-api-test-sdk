@@ -7,29 +7,8 @@
 import { blake2b } from '@noble/hashes/blake2.js';
 import { hexToBytes } from '@noble/hashes/utils.js';
 import { sign } from '@scure/sr25519';
+import { scale } from '@parity/truapi';
 import type { DevKeypair } from '../dev-accounts.js';
-
-/** SCALE compact encoding for a length. */
-function compactLength(value: number): Uint8Array {
-  // Single byte: 0-63 encoded as (value << 2 | 00)
-  if (value < 64) return new Uint8Array([value << 2]);
-  // Two bytes: 64-16383 encoded as (value << 2 | 01) little-endian
-  if (value < 2 ** 14) {
-    const encoded = (value << 2) | 0b01;
-    return new Uint8Array([encoded & 0xff, (encoded >> 8) & 0xff]);
-  }
-  // Four bytes: 16384+ encoded as (value << 2 | 10) little-endian
-  if (value < 2 ** 30) {
-    const encoded = (value << 2) | 0b10;
-    return new Uint8Array([
-      encoded & 0xff,
-      (encoded >> 8) & 0xff,
-      (encoded >> 16) & 0xff,
-      (encoded >> 24) & 0xff,
-    ]);
-  }
-  throw new Error(`length too large for compact encoding: ${value}`);
-}
 
 function concat(parts: readonly Uint8Array[]): Uint8Array {
   const total = parts.reduce((sum, part) => sum + part.length, 0);
@@ -70,7 +49,7 @@ export function buildSignedV4Extrinsic(
     callData,
   ]);
 
-  return concat([compactLength(inner.length), inner]);
+  return concat([scale.compact.enc(inner.length), inner]);
 }
 
 /** A `RawPayload`: opaque bytes, or a string the `isHex` rule interprets. */

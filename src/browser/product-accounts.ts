@@ -21,6 +21,7 @@
  * back, and `productAccounts` can only be keyed by the bare product id.
  */
 import { blake2b } from '@noble/hashes/blake2.js';
+import { type DerivationIndex, scale } from '@parity/truapi';
 import type { DevKeypair } from './dev-accounts.js';
 import { deriveFromUri, deriveSoft } from './dev-accounts.js';
 
@@ -57,45 +58,11 @@ export function indexBytes(index: number): Uint8Array {
  * Mirrors the core's `derivation_index_bytes`: `Index(n)` goes through
  * `index_bytes(n)`, while `Raw(bytes)` is passed through UNCHANGED — the two
  * spaces are disjoint by construction, which is what the magic buys.
- *
- * The parameter is `unknown` because that is what `ResolveAccount` passes —
- * an already-decoded `DerivationIndex` — so it is narrowed here rather than
- * assumed. An unrecognised shape throws, and the responder turns a handler
- * throw into a failure reply, so it surfaces to the product instead of
- * hanging it.
  */
-export function derivationIndexBytes(derivationIndex: unknown): Uint8Array {
-  if (typeof derivationIndex === 'object' && derivationIndex !== null && 'tag' in derivationIndex) {
-    const { tag, value } = derivationIndex as { tag: unknown; value: unknown };
-    if (tag === 'Index' && typeof value === 'number') return indexBytes(value);
-    if (tag === 'Index' && typeof value === 'bigint') return indexBytes(Number(value));
-    if (tag === 'Raw') {
-      // The wire carries `Raw` as a 32-byte `HexString`; a `Uint8Array` is
-      // accepted defensively. Anything not 32 bytes is not a chain code.
-      const bytes = typeof value === 'string' ? hexToBytes(value) : value;
-      if (bytes instanceof Uint8Array && bytes.length === 32) return bytes;
-      throw new Error(`raw derivation index must be 32 bytes: ${describe(derivationIndex)}`);
-    }
-  }
-  throw new Error(`unsupported derivation index: ${describe(derivationIndex)}`);
-}
-
-function hexToBytes(value: string): Uint8Array | undefined {
-  const hex = value.startsWith('0x') ? value.slice(2) : value;
-  if (hex.length % 2 !== 0 || !/^[0-9a-fA-F]*$/.test(hex)) return undefined;
-  const out = new Uint8Array(hex.length / 2);
-  for (let i = 0; i < out.length; i++) {
-    out[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
-  }
-  return out;
-}
-
-/** Readable rendering of an unexpected value for an error message. */
-function describe(value: unknown): string {
-  if (typeof value === 'object' && value !== null && 'tag' in value) {
-    return `{ tag: ${String((value as { tag: unknown }).tag)} }`;
-  }
-  return typeof value === 'object' ? JSON.stringify(value) : String(value);
+export function derivationIndexBytes(derivationIndex: DerivationIndex): Uint8Array {
+  return derivationIndex.tag === 'Index'
+    ? indexBytes(derivationIndex.value)
+    : scale.hexToBytes(derivationIndex.value);
 }
 
 /**
@@ -130,9 +97,9 @@ export function resolveProductSubtree(
 export function resolveProductAccount(
   config: ProductAccountConfig,
   dotNsIdentifier: string,
-  derivationIndex: unknown,
+  derivationIndex: DerivationIndex | undefined,
 ): DevKeypair {
   const subtree = resolveProductSubtree(config, dotNsIdentifier);
-  if (derivationIndex === undefined || derivationIndex === null) return subtree;
+  if (derivationIndex === undefined) return subtree;
   return deriveSoft(subtree, derivationIndexBytes(derivationIndex));
 }

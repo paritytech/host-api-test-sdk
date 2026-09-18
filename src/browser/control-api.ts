@@ -14,6 +14,7 @@
  * produced.
  */
 import { blake2b } from '@noble/hashes/blake2.js';
+import { scale } from '@parity/truapi';
 import type { TrUApiProductProvider } from '@parity/truapi-host';
 import type { IframeHost, WorkerPairingHostRuntime } from '@parity/truapi-host/web';
 import type { HostState } from './callbacks/index.js';
@@ -54,9 +55,6 @@ export function buildAllowAttribute(granted: Iterable<string>): string {
   }
   return policies.join('; ');
 }
-
-const toHex = (bytes: Uint8Array): HexString =>
-  `0x${Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')}`;
 
 /** Re-`0x`-prefix a stored key without asserting its type. */
 const asHex = (key: string): HexString => `0x${key.startsWith('0x') ? key.slice(2) : key}`;
@@ -223,15 +221,14 @@ export function buildControlApi(options: ControlApiOptions): TestHostAPI {
     },
 
     seedPreimage(value: Uint8Array): HexString {
-      const key = toHex(blake2b(value, { dkLen: 32 }));
-      const lookupKey = key.toLowerCase();
-      state.preimages.set(lookupKey, {
-        key: lookupKey,
+      const key = scale.bytesToHex(blake2b(value, { dkLen: 32 }));
+      state.preimages.set(key, {
+        key,
         value,
         fromProduct: false,
         timestamp: Date.now(),
       });
-      const subscribers = state.preimageSubscribers.get(lookupKey);
+      const subscribers = state.preimageSubscribers.get(key);
       if (subscribers) {
         for (const notify of subscribers) notify(value);
       }

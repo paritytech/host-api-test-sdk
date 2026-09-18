@@ -32,7 +32,7 @@
  */
 import { blake2b } from '@noble/hashes/blake2.js';
 import { TypeRegistry } from '@polkadot/types';
-import { type HexString, scale } from '@parity/truapi';
+import { type HexString, type ProductAccountId, scale } from '@parity/truapi';
 import { ss58Address } from '@polkadot-labs/hdkd-helpers';
 import { getPublicKey, sign } from '@scure/sr25519';
 import { type DevKeypair, canonicalSecretKey, deriveDev } from '../dev-accounts.js';
@@ -220,7 +220,7 @@ export function createSsoResponder(options: ResponderOptions): SsoResponder {
     signingLog.push({ type, payload, timestamp: Date.now() });
   };
 
-  const account = (handle: { dotNsIdentifier: string; derivationIndex: unknown }) =>
+  const account = (handle: ProductAccountId) =>
     resolveAccount(handle.dotNsIdentifier, handle.derivationIndex);
   /** The product's hard-subtree root — the key `ProductSubtreeRequest` reports. */
   const productSubtree = (productId: string) => resolveAccount(productId, undefined);
