@@ -3,11 +3,25 @@ import type { UserConfirmationReview } from '@parity/truapi-host';
 import { createUserConfirmationCallbacks } from './user-confirmation.js';
 import { createHostState } from './state.js';
 
-// Every real variant's `value` is a specific payload object, which the
-// callback never inspects; a bare tag is all these tests need.
-const fakeReview = (tag: string): UserConfirmationReview =>
-  ({ tag, value: undefined }) as unknown as UserConfirmationReview;
-const review = fakeReview('SignRaw');
+const account = { dotNsIdentifier: 'test-product.dot', derivationIndex: { tag: 'Index', value: 0 } } as const;
+
+// The callback only reads `.tag`/`.value` generically, but a real review's
+// shape still has to satisfy `UserConfirmationReview` — no cast.
+const review: UserConfirmationReview = {
+  tag: 'SignRaw',
+  value: {
+    tag: 'Product',
+    value: {
+      request: { account, payload: { tag: 'Bytes', value: { bytes: '0x00' } } },
+      watermarked: false,
+    },
+  },
+};
+
+const statementReview: UserConfirmationReview = {
+  tag: 'StatementStoreProductSign',
+  value: { account, payload: new Uint8Array() },
+};
 
 describe('user confirmation callbacks', () => {
   it('approves by default and logs the review', async () => {
@@ -39,7 +53,7 @@ describe('user confirmation callbacks', () => {
     const { confirmUserAction } = createUserConfirmationCallbacks(state);
 
     expect(await confirmUserAction(review)).toBe(false);
-    expect(await confirmUserAction(fakeReview('CreateTransaction'))).toBe(true);
-    expect(seen).toEqual(['SignRaw', 'CreateTransaction']);
+    expect(await confirmUserAction(statementReview)).toBe(true);
+    expect(seen).toEqual(['SignRaw', 'StatementStoreProductSign']);
   });
 });
