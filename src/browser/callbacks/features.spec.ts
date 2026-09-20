@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { PEOPLE_GENESIS_HASH } from '../constants.js';
 import type { ChainRuntimeConfig } from './chain.js';
-import { createFeatureCallbacks } from './features.js';
+import { createFeatureCallbacks, genesisForRole } from './features.js';
 import { createHostState } from './state.js';
 
 const PEOPLE_HEX = `0x${Array.from(PEOPLE_GENESIS_HASH, (b) => b.toString(16).padStart(2, '0')).join('')}` as const;
@@ -89,5 +89,21 @@ describe('feature support', () => {
 
     state.supportedChainsOverride = [];
     expect((await supportedChains()).chains).toEqual([]);
+  });
+});
+
+describe('genesisForRole', () => {
+  const ZERO_HEX = `0x${'00'.repeat(32)}`;
+
+  it('answers the genesis of the network declaring that role', () => {
+    expect(genesisForRole([ROLELESS, WITH_ROLE], 'AssetHub')).toBe(ROLELESS_HEX);
+  });
+
+  it('answers the all-zero hash when no network declares the role', () => {
+    // What the core reads as "this host deliberately has no such chain" — a
+    // network present but roleless must not be pressed into service as one.
+    expect(genesisForRole([ROLELESS], 'AssetHub')).toBe(ZERO_HEX);
+    expect(genesisForRole([WITH_ROLE], 'Bulletin')).toBe(ZERO_HEX);
+    expect(genesisForRole([], 'Bulletin')).toBe(ZERO_HEX);
   });
 });

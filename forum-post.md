@@ -956,5 +956,72 @@ See the README's [Overriding host conditions](https://github.com/paritytech/host
 
 ## If you maintain a host-playground
 
-`../host-playground` still pins `0.12.1` and the old bootstrap. It needs its own pass against 0.13.0: the truapi 0.17 sandbox bootstrap, the `productAccounts` key change, and any assertion pinning a product-account address.
+`../host-playground` still pins `0.12.1` and the old bootstrap. It needs its own pass against 0.13.0: the truapi 0.17 sandbox bootstrap, the `productAccounts` key change, and any assertion pinning a product-account address. Then 0.13.1: `productId`, if it signs under anything but `test-product.dot`.
 
+
+---
+
+# host-api-test-sdk 0.13.1
+
+Three things 0.13.0 shipped dead. If you tried `getUserId`, `preimage.submit`, or signing under your own product name and got a flat refusal with nothing in any log, this is why.
+
+## `getUserId()` works
+
+`account.getUserId()` failed for every product, always, with `Unknown: No primary username for this session`.
+
+The host minted its SSO session leaving both username fields empty, on the reasonable-looking assumption that the core fills them in. It does — but only by reading the dotNS contracts on Asset Hub, and it gives up the moment the host declares it has no Asset Hub, which this host did unconditionally. So the session had no username and never would.
+
+Sessions now carry one. It defaults to `"<name>.01"` for the active account — `alice.01`, `bob.01` — which is the shape of a real attested lite username, and it follows `switchAccount`. Override it when a test asserts on what gets displayed:
+
+```ts
+createTestHostFixture({
+  productUrl: "http://localhost:3000",
+  accounts: [{ name: "Alice", uri: "//Alice", username: "zaphod.07" }],
+});
+```
+
+## `productId` — sign as your own product
+
+This one was the quiet killer. The core refuses any call that acts *as* a product account when the `dotNsIdentifier` is not the id the host declared the product under: `signRaw`, `signPayload` and `createTransaction` answer `PermissionDenied`, `statementStore.createProofAuthorized` answers `UnknownAccount`. The host hard-coded that id to `test-product.dot` and offered no way to change it.
+
+So if your product signed as `myapp.dot`, every signature was refused — and `PermissionDenied` reads like a permissions problem, which sent people off pre-granting `ChainSubmit` and requesting `AutoSigning`, neither of which is the gate. Nothing appeared in `getSigningLog()`, because the core never got as far as asking the host to sign.
+
+```ts
+createTestHostFixture({
+  productUrl: "http://localhost:3000",
+  productId: "myapp.dot",
+});
+```
+
+`productId` is also what the core namespaces product storage and permissions under. It is *not* what `productAccounts` is keyed by — that is the `dotNsIdentifier` the product asks to sign with, which the gate normally forces to the same value.
+
+One escape hatch worth knowing about: `'localhost'` and `'localhost:<port>'` are development wildcards. The core admits them as callers for *any* `dotNsIdentifier`, so `productId: 'localhost:3000'` makes everything pass — handy against a dev server, but your suite is then not exercising the check at all.
+
+## `chain: 'Bulletin'` actually reaches the core
+
+`preimage.submit()` could not work. The core asked the host to connect to the all-zero genesis and got back `bulletin chain unavailable: … no chain configured for genesis 0x0000…`, no matter what you configured.
+
+The reason is worth knowing, because it is not what `supportedChains()` suggests. The core reaches two chains on its own account — Bulletin for preimage submission, Asset Hub for dotNS — and it picks them by the genesis hashes the host handed it at boot, not by anything the chain-set report says. The host was hard-coding both to all-zero, which the core reads as "this host deliberately has no such chain".
+
+They now come from whichever configured network declares that role:
+
+```ts
+networks: [
+  PASEO_ASSET_HUB,
+  {
+    id: "paseo-bulletin",
+    name: "Paseo Bulletin",
+    genesisHash: "0x8cfe6717dc4becfda2e13c488a1e2061ff2dfee96e7d031157f72d36716c0a22",
+    rpcUrl: "wss://paseo-bulletin-next-rpc.polkadot.io",
+    tokenSymbol: "PAS",
+    tokenDecimals: 10,
+    chain: "Bulletin",
+  },
+],
+```
+
+One consequence to be aware of: `chain: 'AssetHub'` now has an effect too. The core reads product manifests and `trustedProducts` grants from dotNS there, so a cross-product grant that used to be refused instantly now costs a real round trip to that network's `rpcUrl`. Signing is untouched — still the in-page People loopback, still no network.
+
+## Upgrading
+
+Nothing to change. Set `productId` if your product signs under its own dotNS name, and add a `chain: 'Bulletin'` network if you test preimage submission.

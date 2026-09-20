@@ -39,6 +39,7 @@ export async function createTestHostServer(
 
   const html = generateHostPage({
     productUrl,
+    productId: options.productId,
     accounts,
     networks,
     productAccounts: options.productAccounts,

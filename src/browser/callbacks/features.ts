@@ -6,9 +6,13 @@
  * guessing one from a display name would mislabel routing. So everything
  * `supportedChains` advertises is supported, but not the reverse.
  */
-import type { HostFeatureSupportedRequest, HostFeatureSupportedResponse } from '@parity/truapi';
+import type {
+  ChainIdentifier,
+  HostFeatureSupportedRequest,
+  HostFeatureSupportedResponse,
+} from '@parity/truapi';
 import type { HostChainEntry, HostChainSet } from '@parity/truapi-host';
-import { PEOPLE_GENESIS_HASH } from '../constants.js';
+import { PEOPLE_GENESIS_HASH, ZERO_HASH } from '../constants.js';
 import { type ChainRuntimeConfig, normalizeGenesisHash } from './chain.js';
 import type { HostState } from './state.js';
 
@@ -22,6 +26,23 @@ export function derivedChains(networks: readonly ChainRuntimeConfig[]): HostChai
     chains.push({ identifier: network.chain, genesisHash: normalizeGenesisHash(network.genesisHash) });
   }
   return chains;
+}
+
+/**
+ * The genesis of the first network declaring `identifier`, or the all-zero hash
+ * the core reads as "this host deliberately has no such chain".
+ *
+ * The core routes the chains it uses internally — Bulletin for preimage
+ * submission, Asset Hub for dotNS — by the genesis it was configured with, not
+ * by anything `supportedChains()` reports, so this is what actually connects
+ * them.
+ */
+export function genesisForRole(
+  networks: readonly ChainRuntimeConfig[],
+  identifier: ChainIdentifier,
+): `0x${string}` {
+  const network = networks.find((candidate) => candidate.chain === identifier);
+  return normalizeGenesisHash(network?.genesisHash ?? ZERO_HASH);
 }
 
 export function createFeatureCallbacks(state: HostState, networks: ChainRuntimeConfig[]): {

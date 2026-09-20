@@ -20,7 +20,8 @@ import { createIframeHost, createWebWorkerPairingHostRuntime } from '@parity/tru
 import { buildAllowAttribute, buildControlApi, normalizeTheme } from './control-api.js';
 import type { ChainRuntimeConfig, HostState } from './callbacks/index.js';
 import { createHostCallbacks, createHostState } from './callbacks/index.js';
-import { PEOPLE_GENESIS_HASH, ZERO_HASH } from './constants.js';
+import { genesisForRole } from './callbacks/features.js';
+import { PEOPLE_GENESIS_HASH } from './constants.js';
 import type { DevKeypair } from './dev-accounts.js';
 import { deriveDev, deriveFromUri } from './dev-accounts.js';
 import { createHostWorker } from './host-worker.js';
@@ -35,6 +36,8 @@ import type { DevicePermissionStatus, InitialBehaviors, InitialState, TestHostAP
 interface AccountConfig {
   name: string;
   uri: string;
+  /** Absent means `defaultUsername(name)`. */
+  username?: string;
 }
 
 interface HostConfig {
@@ -145,8 +148,12 @@ const encoder = new TextEncoder();
  * only its own half and the peer's public key; this page is also the peer, so
  * it keeps `peerEncSecret`. `identitySecret` is the key every application reply
  * must be signed by, which the responder verifies at construction.
+ *
+ * The username is minted here too: the core only ever resolves one from the
+ * dotNS contracts on Asset Hub, so a host without a reachable one has to supply
+ * it or `account.getUserId` has nothing to answer.
  */
-function mintSession(signer: DevKeypair): ResponderSession {
+function mintSession(signer: DevKeypair, username: string): ResponderSession {
   const statementStore = deriveDev('Alice', 'statement-store');
   const peerEncSecret = x25519.utils.randomSecretKey();
   return {
@@ -163,8 +170,21 @@ function mintSession(signer: DevKeypair): ResponderSession {
     ssPublicKey: statementStore.publicKey,
     sessionIdOwn: crypto.getRandomValues(new Uint8Array(32)),
     sessionIdPeer: crypto.getRandomValues(new Uint8Array(32)),
+    username,
   };
 }
+
+/**
+ * The shape a real attested lite username has — `alice.01` — so a product that
+ * parses or renders one is not being shown something no live host would emit.
+ */
+function defaultUsername(accountName: string): string {
+  return `${accountName.toLowerCase()}.01`;
+}
+
+/** The session identity's username, for whichever account is active. */
+const usernameOf = (account: AccountConfig): string =>
+  account.username ?? defaultUsername(account.name);
 
 function concat(left: Uint8Array, right: Uint8Array): Uint8Array {
   const out = new Uint8Array(left.length + right.length);
@@ -276,7 +296,7 @@ async function init(): Promise<void> {
       derivationIndex,
     );
 
-  let session = mintSession(deriveFromUri(accounts[0].uri));
+  let session = mintSession(deriveFromUri(accounts[0].uri), usernameOf(accounts[0]));
   let responder = createSsoResponder({ store, session, resolveAccount });
   /** Signing recorded by responders retired by an account switch. */
   const retiredSigningLog: SigningLogEntry[] = [];
@@ -294,11 +314,14 @@ async function init(): Promise<void> {
   const runtime = await createWebWorkerPairingHostRuntime(worker, callbacks, {
     hostConfig: {
       host: { name: 'Test Host', platform: 'Web' },
-      // The loopback store answers this genesis in-page; all-zero declares
-      // "this host deliberately has no such chain".
+      // The loopback store answers this genesis in-page. The other two come
+      // from the configured networks: the core routes Bulletin and Asset Hub by
+      // the genesis it was handed here, not by anything `supportedChains()`
+      // reports, so a network configured but not declared here is unreachable
+      // to the core however well `chain.connect` could serve it.
       people: { genesisHash: PEOPLE_GENESIS_HASH },
-      bulletin: { genesisHash: ZERO_HASH },
-      assetHub: { genesisHash: ZERO_HASH },
+      bulletin: { genesisHash: genesisForRole(config.networks, 'Bulletin') },
+      assetHub: { genesisHash: genesisForRole(config.networks, 'AssetHub') },
       pairing: { deeplinkScheme: 'testhost' },
     },
   }).catch((cause: unknown) => {
@@ -366,7 +389,7 @@ async function init(): Promise<void> {
       productStatus = 'disconnected';
       retiredSigningLog.push(...responder.getSigningLog());
       responder.dispose();
-      session = mintSession(deriveFromUri(accounts[0].uri));
+      session = mintSession(deriveFromUri(accounts[0].uri), usernameOf(accounts[0]));
       responder = createSsoResponder({ store, session, resolveAccount });
 
       // No unwind: if activation then fails, the core has already reported the

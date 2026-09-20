@@ -18,6 +18,7 @@ import type { Frame, Page } from '@playwright/test';
 import { compactFromU8a, hexToU8a, u8aToHex } from '@polkadot/util';
 import { verify } from '@scure/sr25519';
 import { createTestHostServer, PASEO_ASSET_HUB } from '../dist/index.js';
+import type { NetworkConfig } from '../dist/index.js';
 // Type-only: brings in the `window.__TEST_HOST__` declaration the fixture
 // publishes, so the control-plane calls below are checked against it.
 import type {} from '../dist/playwright/index.js';
@@ -288,6 +289,36 @@ test.describe('Product account derivation', () => {
       expect(await getProductPublicKey(page, host.url)).toBe(
         u8aToHex(productAccount('//Bob//test-product.dot', 0).publicKey),
       );
+    } finally {
+      await host.close();
+    }
+  });
+
+  /**
+   * The core refuses any product-account call whose `dotNsIdentifier` is not
+   * the id the host declared the product under, so a host stuck on one id can
+   * only ever serve one product.
+   */
+  test('only the configured productId may sign with product accounts', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      productId: 'other-product.dot',
+      accounts: ['alice'],
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+
+      expectOk(
+        await product.evaluate(() =>
+          window.__TEST_PRODUCT__.signRawProduct('other-product.dot', 0, '0x1234'),
+        ),
+      );
+      expect(
+        await product.evaluate(() =>
+          window.__TEST_PRODUCT__.signRawProduct('test-product.dot', 0, '0x1234'),
+        ),
+      ).toEqual({ ok: false, error: 'PermissionDenied' });
     } finally {
       await host.close();
     }
@@ -1119,6 +1150,49 @@ test.describe('Preimage', () => {
       await host.close();
     }
   });
+
+  /**
+   * Preimage submission is the core's own Bulletin traffic, routed by the
+   * genesis the host declared at boot rather than by anything
+   * `supportedChains()` reports. Both halves are asserted because only the
+   * pair distinguishes "the host named the configured chain" from "the host
+   * named nothing and the core fell back to the all-zero genesis".
+   */
+  test('preimageSubmit reaches the Bulletin network the host configured', async ({ page }) => {
+    const BULLETIN: NetworkConfig = {
+      id: 'unreachable-bulletin',
+      name: 'Unreachable Bulletin',
+      genesisHash: `0x${'bb'.repeat(32)}`,
+      // Refused at once, so the assertion is on which chain was dialled rather
+      // than on a live one answering.
+      rpcUrl: 'ws://127.0.0.1:1',
+      tokenSymbol: 'UNIT',
+      tokenDecimals: 10,
+      chain: 'Bulletin',
+    };
+
+    for (const { networks, expected } of [
+      { networks: [PASEO_ASSET_HUB], expected: `no chain configured for genesis 0x${'00'.repeat(32)}` },
+      { networks: [PASEO_ASSET_HUB, BULLETIN], expected: 'ws://127.0.0.1:1' },
+    ]) {
+      const host = await createTestHostServer({
+        productUrl: productServer.url,
+        accounts: ['alice'],
+        networks,
+      });
+
+      try {
+        const product = await loadHostAndProduct(page, host.url, productServer.url);
+        const outcome = await product.evaluate(() =>
+          window.__TEST_PRODUCT__.preimageSubmit('0xdeadbeef'),
+        );
+        expect(outcome.ok).toBe(false);
+        expect(outcome.ok ? '' : outcome.error).toContain(expected);
+      } finally {
+        await host.close();
+      }
+    }
+  });
 });
 
 // ── Theme ──────────────────────────────────────────────────────────
@@ -1867,6 +1941,54 @@ test.describe('Session and connection state', () => {
           deriveSoft(deriveFromUri('//Derived//test-product.dot'), indexBytes(0)).publicKey,
         ),
       ).toBe(false);
+    } finally {
+      await host.close();
+    }
+  });
+
+  /**
+   * The core resolves a session username only from the dotNS contracts on
+   * Asset Hub; a host without a reachable one must mint it, or `getUserId`
+   * has nothing to answer.
+   */
+  test('getUserId reports the active account username, across a switch', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice', 'bob'],
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+
+      expect(
+        expectOk(await product.evaluate(() => window.__TEST_PRODUCT__.getUserId())).primaryUsername,
+      ).toBe('alice.01');
+
+      await page.evaluate(() => window.__TEST_HOST__.switchAccount('bob'));
+      await page.waitForFunction(() => window.__TEST_HOST__.getChainStatus() === 'connected', {
+        timeout: 30_000,
+      });
+
+      expect(
+        expectOk(await product.evaluate(() => window.__TEST_PRODUCT__.getUserId())).primaryUsername,
+      ).toBe('bob.01');
+    } finally {
+      await host.close();
+    }
+  });
+
+  test('a configured username overrides the derived one', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: [{ name: 'Alice', uri: '//Alice', username: 'zaphod.07' }],
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+
+      expect(
+        expectOk(await product.evaluate(() => window.__TEST_PRODUCT__.getUserId())).primaryUsername,
+      ).toBe('zaphod.07');
     } finally {
       await host.close();
     }

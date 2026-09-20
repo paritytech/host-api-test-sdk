@@ -61,11 +61,21 @@ export interface ExternalSessionOptions {
   sessionIdOwn: Uint8Array;
   /** Topic the peer publishes replies on. */
   sessionIdPeer: Uint8Array;
+  /**
+   * Primary username of the session identity. Absent leaves the core with no
+   * username, which is what `account.getUserId` answers from.
+   */
+  username?: string;
 }
 
 /**
- * Mirrors `encode_external_paired_session`. Usernames are deliberately absent —
- * the runtime resolves and persists those itself.
+ * Mirrors `encode_external_paired_session`.
+ *
+ * The username is written as the LITE one, the way a real paired host records
+ * an attested dotNS name. The core resolves usernames itself only from the
+ * dotNS contracts on Asset Hub, and gives up immediately when the host declares
+ * no Asset Hub — so a networkless host that leaves this out has no username at
+ * all, and every `getUserId` fails.
  */
 export function encodeExternalPairedSession(
   options: ExternalSessionOptions,
@@ -115,7 +125,7 @@ export function encodeExternalPairedSession(
     identity_account_id: options.identityAccountId,
     identity_chat_private_key: undefined,
     device_enc_public_key: undefined,
-    lite_username: undefined,
+    lite_username: options.username,
     full_username: undefined,
   });
 }
