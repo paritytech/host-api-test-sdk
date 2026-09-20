@@ -993,7 +993,9 @@ createTestHostFixture({
 });
 ```
 
-`productId` is also what `productAccounts` is keyed by and what the core namespaces product storage and permissions under.
+`productId` is also what the core namespaces product storage and permissions under. It is *not* what `productAccounts` is keyed by — that is the `dotNsIdentifier` the product asks to sign with, which the gate normally forces to the same value.
+
+One escape hatch worth knowing about: `'localhost'` and `'localhost:<port>'` are development wildcards. The core admits them as callers for *any* `dotNsIdentifier`, so `productId: 'localhost:3000'` makes everything pass — handy against a dev server, but your suite is then not exercising the check at all.
 
 ## `chain: 'Bulletin'` actually reaches the core
 

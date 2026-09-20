@@ -14,7 +14,7 @@ configured otherwise, so three product-facing features were dead on arrival in
 
 ### Added
 
-- **`productId` on `createTestHostServer` and the Playwright fixture** (default `'test-product.dot'`). The dotNS identifier the host declares the product under: the id product-account calls must name, the key `productAccounts` is looked up by, and the namespace the core scopes product storage and permissions to.
+- **`productId` on `createTestHostServer` and the Playwright fixture** (default `'test-product.dot'`). The dotNS identifier the host declares the product under: the id product-account calls must name, and the namespace the core scopes product storage and permissions to. It is *not* what `productAccounts` is keyed by — that is the `dotNsIdentifier` in the request, which the gate normally forces to be the same value. A `localhost` or `localhost:<port>` product id is a development wildcard the core admits for any `dotNsIdentifier`, so setting one turns the gate off entirely.
 - **`accounts[].username`** on the custom-account form, overriding the derived `"<name>.01"`. This is what `account.getUserId()` reports while that account is the active identity.
 
 ### Changed

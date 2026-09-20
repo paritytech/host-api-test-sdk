@@ -349,7 +349,10 @@ createTestHostFixture({
 });
 ```
 
-`productId` is also the key `productAccounts` is looked up by, and the namespace the core scopes product storage and permissions to.
+`productId` is also the namespace the core scopes product storage and permissions to.
+
+> [!NOTE]
+> `productAccounts` is keyed by the `dotNsIdentifier` in the *request*, not by `productId`. The core asks the host for the subtree of the account being derived (`product_account_public_key` in `truapi-server/src/runtime.rs`), so the two coincide only because the gate above normally forces them to. They come apart for a `localhost` product id, which is a deliberate development wildcard: `is_product_account_valid_for_caller` admits `'localhost'` and `'localhost:<port>'` as callers for **any** `dotNsIdentifier`. Set `productId: 'localhost:3000'` and nothing is gated — convenient for a dev server, but it means a test suite is no longer exercising the check at all.
 
 ### Execution kind
 
