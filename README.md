@@ -19,7 +19,7 @@ To E2E test a product you do not want any of that. This package gives you a **th
 
 - Embeds your product in an iframe and runs the real TrUAPI core (as WebAssembly, in a Web Worker)
 - Provides dev accounts (Alice, Bob, …) with known keypairs
-- **Auto-signs every signing request, with no prompts** — the host plays both ends of the SSO session in-page
+- **Auto-signs every signing request, with no prompts** — the host plays both ends of the SSO session in-page, for the product id it was configured with (`productId`)
 - Routes product chain traffic by genesis hash to the RPC endpoints you configure
 - Exposes a control API for Playwright assertions (signing log, permission log, account switching, chat, preimages, theme)
 - Answers remote and device permission requests (auto-approve by default, configurable per test)
@@ -135,6 +135,15 @@ const server = await createTestHostServer({
 ```
 
 A network with no `chain` is still routable by genesis hash; it is simply left out of `supportedChains()` rather than labelled by guesswork.
+
+`chain` is not only a label. The core reaches two chains on its own account, and picks them by the genesis hash the host declared at boot rather than by anything `supportedChains()` reports:
+
+| Role | What the core uses it for | Without it |
+|------|---------------------------|------------|
+| `'Bulletin'` | `preimage.submit()` | Every submit fails: `bulletin chain unavailable … no chain configured for genesis 0x0000…` |
+| `'AssetHub'` | dotNS lookups — product manifests, and the `trustedProducts` grants that carry cross-product access | Every grant not already cached is refused, indistinguishably from the other product having granted nothing |
+
+So a test that exercises preimage submission needs a network with `chain: 'Bulletin'`, and one that exercises cross-product grants needs `chain: 'AssetHub'`. Both talk to the real `rpcUrl`.
 
 **Signing never touches a network.** The People chain is served in-page by a loopback statement store, which is what carries the SSO signing round trip. Only a product's own chain calls go out to `rpcUrl`, so a test that never reads chain state runs fully offline.
 
@@ -254,7 +263,7 @@ The People chain is a **loopback statement store inside the page**: no node, no 
 
 See [Overriding host conditions](#overriding-host-conditions) for the rest of the ambient-data and decision controls (locale, device-permission status, feature support, supported chains, product storage, user confirmation, navigation, notifications).
 
-Fixture options: `productUrl`, `accounts`, `networks`, `productAccounts`, `executionKind` (see [Execution kind](#execution-kind)), `initialState`, `behaviors` (see [Overriding host conditions](#overriding-host-conditions)).
+Fixture options: `productUrl`, `productId` (see [Product identity](#product-identity)), `accounts`, `networks`, `productAccounts`, `executionKind` (see [Execution kind](#execution-kind)), `initialState`, `behaviors` (see [Overriding host conditions](#overriding-host-conditions)).
 
 Every one of these is also on `window.__TEST_HOST__` inside the host page, synchronously, for tests that do not use the fixture.
 
@@ -291,6 +300,17 @@ createTestHostFixture({
 
 Because the session carries exactly one identity, a legacy-account request naming any *other* account is refused by the core, and `getLegacyAccounts()` answers with an empty list whatever the roster holds.
 
+Each account also carries the **primary username** the core reports through `account.getUserId()`, defaulting to `"<name>.01"` — `alice.01`, `bob.01`. A real host resolves that name from the dotNS contracts on Asset Hub; this one has no reachable Asset Hub in the general case, so it mints the name along with the session. Override it per account when a test asserts on what is displayed:
+
+```ts
+createTestHostFixture({
+  productUrl: 'http://localhost:3000',
+  accounts: [{ name: 'Alice', uri: '//Alice', username: 'zaphod.07' }],
+});
+```
+
+The username follows the active identity, so `switchAccount('bob')` moves `getUserId()` to `bob.01`.
+
 > [!IMPORTANT]
 > **`uri` is a path of hard junctions, not a full polkadot-js SURI.** The host derives keys in-page with `@scure/sr25519`: the string is split on `//` and every segment becomes one hard-junction **label**, verbatim. Nothing else is interpreted. So `'//Alice'` and `'//Alice//custom'` work; a `/` inside a segment (`'//Alice//custom/0'`) is part of that junction's label and will not produce the address polkadot-js would; and a mnemonic or hex seed is not read as a seed at all — it becomes a junction label, and since a label is capped at 31 bytes, a real mnemonic or a `0x`-prefixed 32-byte seed throws on that limit. A *short* hex string does not throw: it silently derives a real but unintended account. Pass neither.
 
@@ -317,6 +337,19 @@ Unmapped products fall back to the default subtree. Because the entry replaces t
 
 > [!WARNING]
 > **Per-index keys are gone.** `productAccounts: { 'myapp.dot/0': 'bob' }` threw away half the story — the core never asks the host about index `0`, so such a key could not move the address — and it is now rejected with an error naming the replacement. Use the bare product id. See [Migrating to 0.13](#migrating-from-012x-to-0130).
+
+### Product identity
+
+The host declares your product to the core under a dotNS identifier, `productId`, which defaults to `test-product.dot`. The core checks it on every call that acts *as* a product account: `signRaw`, `signPayload` and `createTransaction` refuse a `dotNsIdentifier` naming another product with `PermissionDenied`, and `statementStore.createProofAuthorized` refuses it with `UnknownAccount`. So if your product signs as `myapp.dot`, say so:
+
+```ts
+createTestHostFixture({
+  productUrl: 'http://localhost:3000',
+  productId: 'myapp.dot',
+});
+```
+
+`productId` is also the key `productAccounts` is looked up by, and the namespace the core scopes product storage and permissions to.
 
 ### Execution kind
 
@@ -470,6 +503,14 @@ The build produces three kinds of output:
 1. **Browser assets** (`dist/host/`) — ESM chunks built with esbuild, plus the two `.wasm` payloads, served by the test host's own HTTP server
 2. **ESM modules** (`dist/*.js`) — the Node-side API compiled with `tsc`
 3. **CJS bundles** (`dist/index.cjs`, `dist/playwright.cjs`) — the same API for CommonJS consumers
+
+## Migrating from 0.13.0 to 0.14.0
+
+Nothing to change; three things start working that previously could not.
+
+- **`account.getUserId()` answers.** It used to fail with `No primary username for this session` for every product, because the host minted a session with no username and the core only resolves one from Asset Hub. Sessions now carry `"<name>.01"`, overridable per account with `accounts[].username`.
+- **`productId` is configurable.** Previously fixed at `test-product.dot`, which meant a product signing under its own dotNS identifier got `PermissionDenied` from every product-account call. Set `productId` to whatever your product signs as.
+- **A `chain: 'Bulletin'` or `chain: 'AssetHub'` network now reaches the core.** Those two roles were declared to the core as absent whatever you configured, so `preimage.submit()` could never connect. Configuring such a network now makes the core use its `rpcUrl` — which is real network traffic, where before it failed instantly.
 
 ## Migrating from 0.12.x to 0.13.0
 

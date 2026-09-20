@@ -183,6 +183,11 @@ export interface TestHostFixtureOptions {
   /** URL of the product to test */
   productUrl: string;
   /**
+   * dotNS identifier the product runs as (default `'test-product.dot'`); see
+   * `CreateTestHostOptions.productId`.
+   */
+  productId?: CreateTestHostOptions['productId'];
+  /**
    * The account roster (default `['alice']`). The FIRST entry is the active
    * identity and the only account that signs.
    */
@@ -205,6 +210,7 @@ export function createTestHostFixture(defaults: TestHostFixtureOptions) {
     testHost: async ({ page }: { page: Page }, use: (fixture: TestHost) => Promise<void>) => {
       const server = await createTestHostServer({
         productUrl: defaults.productUrl,
+        productId: defaults.productId,
         accounts: defaults.accounts ?? ['alice'],
         networks: defaults.networks ?? [DEFAULT_CHAIN],
         productAccounts: defaults.productAccounts,

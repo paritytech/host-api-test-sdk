@@ -141,6 +141,7 @@ declare global {
       subscribeChatRooms(): { unsubscribe(): void };
       getReceivedChatRooms(): string[][];
       preimageLookup(key: string): Promise<Outcome<{ value: number[] | null }>>;
+      preimageSubmit(valueHex: string): Promise<Outcome<{ key: HexString }>>;
       subscribeTheme(): { unsubscribe(): void };
       getReceivedThemes(): HostThemeSubscribeItem[];
       subscribeLocale(): { unsubscribe(): void };
@@ -287,6 +288,9 @@ async function init(): Promise<void> {
       ),
 
     getReceivedChatRooms: () => receivedChatRooms.map((rooms) => [...rooms]),
+
+    preimageSubmit: (valueHex) =>
+      call(() => api.preimage.submit(valueHex as HexString), (key) => ({ key })),
 
     preimageLookup: (key) =>
       new Promise((resolve) => {

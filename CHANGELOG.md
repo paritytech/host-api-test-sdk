@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.14.0
+
+Three parts of the host were declared to the core as absent and could not be
+configured otherwise, so three product-facing features were dead on arrival in
+0.13.0. Each is now wired, and each has a test that fails without it.
+
+### Fixed
+
+- **`account.getUserId()` failed for every product** with `Unknown: No primary username for this session`. The host minted its SSO session with both username fields empty, on the assumption that the core resolves them itself. It does — but only from the dotNS contracts on Asset Hub, and it gives up at once when the host declares no Asset Hub, which this one did. The session now carries a username: `"<name>.01"` for the active account (`alice.01`, `bob.01`), following `switchAccount`.
+- **A `chain: 'Bulletin'` network never reached the core**, so `preimage.submit()` could not work at all: the core asked the host to connect to the all-zero genesis and got `bulletin chain unavailable: … no chain configured for genesis 0x0000…`. The core routes its own Bulletin and Asset Hub traffic by the genesis hashes it was handed at boot, not by anything `supportedChains()` reports, and the host was hard-coding both to all-zero. They now come from whichever configured network declares that `chain` role. Preimage *lookup* was unaffected and still is.
+- **The product's dotNS identifier was fixed at `test-product.dot`.** The core refuses any call acting as a product account whose `dotNsIdentifier` is not the id the host declared the product under — `signRaw`, `signPayload` and `createTransaction` with `PermissionDenied`, `statementStore.createProofAuthorized` with `UnknownAccount`. A real product signing under its own name therefore got a blanket `PermissionDenied` with nothing in any log to explain it, and no option existed to change the id. See `productId` below.
+
+### Added
+
+- **`productId` on `createTestHostServer` and the Playwright fixture** (default `'test-product.dot'`). The dotNS identifier the host declares the product under: the id product-account calls must name, the key `productAccounts` is looked up by, and the namespace the core scopes product storage and permissions to.
+- **`accounts[].username`** on the custom-account form, overriding the derived `"<name>.01"`. This is what `account.getUserId()` reports while that account is the active identity.
+
+### Changed
+
+- **Configuring a network with `chain: 'AssetHub'` now has an effect on the core**, where before it was declared absent. The core reads dotNS from it — product manifests, and the `trustedProducts` grants that carry cross-product access — so a grant that used to be refused instantly now costs a real round trip to that network's `rpcUrl`. Unchanged for a network with no `chain` role, and unchanged for every other kind of test: signing is still the in-page People loopback, with no network at all.
+
+### Downstream
+
+- `../host-playground` pinned `0.12.1`. 0.13.0's migration notes apply first; this release adds `productId`, which that suite needs if its product signs under anything but `test-product.dot`.
+
 ## 0.13.0
 
 A rewrite of everything below the public API: the host no longer speaks the

@@ -84,6 +84,12 @@ export interface DevAccountInfo {
    * read as a label too (a short one silently derives an unintended account).
    */
   uri: string;
+  /**
+   * Primary username `account.getUserId()` reports while this account is the
+   * active identity (default: `"<name>.01"`, the shape of an attested lite
+   * username). This host has no Asset Hub to resolve a real one from.
+   */
+  username?: string;
 }
 
 export interface TestHostServer {
@@ -99,6 +105,13 @@ export type Account = DevAccountName | DevAccountInfo;
 export interface CreateTestHostOptions {
   /** URL of the product to embed (e.g. http://localhost:3001) */
   productUrl: string;
+  /**
+   * dotNS identifier the product runs as (default `'test-product.dot'`). The
+   * core refuses every product-account signing call whose `dotNsIdentifier`
+   * names a different product, so this must match what the product asks to
+   * sign with.
+   */
+  productId?: string;
   /**
    * The account roster (default: `['alice']`). The FIRST entry is the active
    * identity — the SSO session is minted for it and it is the only account that

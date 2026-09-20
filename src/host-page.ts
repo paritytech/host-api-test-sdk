@@ -3,6 +3,8 @@ import type { Account, InitialBehaviors, InitialState, NetworkConfig, ProductExe
 
 interface HostPageConfig {
   productUrl: string;
+  /** Omitted means the browser runtime's own default, `'test-product.dot'`. */
+  productId?: string;
   accounts: Account[];
   networks: NetworkConfig[];
   productAccounts?: Record<string, Account>;
@@ -12,12 +14,13 @@ interface HostPageConfig {
   behaviors?: InitialBehaviors;
 }
 
-function resolveAccount(entry: Account): { name: string; uri: string } {
+function resolveAccount(entry: Account): { name: string; uri: string; username?: string } {
   if (typeof entry === 'string') {
     const info = DEV_ACCOUNTS[entry];
     return { name: info.name, uri: info.uri };
   }
-  return { name: entry.name, uri: entry.uri };
+  // The browser runtime derives a username from the name when none is given.
+  return { name: entry.name, uri: entry.uri, ...(entry.username && { username: entry.username }) };
 }
 
 export function generateHostPage(config: HostPageConfig): string {
@@ -52,7 +55,8 @@ export function generateHostPage(config: HostPageConfig): string {
       ...(n.chain && { chain: n.chain }),
     })),
     ...(productAccountConfigs && { productAccounts: productAccountConfigs }),
-    // The browser runtime owns the default, so it is not repeated here.
+    // The browser runtime owns these defaults, so they are not repeated here.
+    ...(config.productId && { productId: config.productId }),
     ...(config.executionKind && { executionKind: config.executionKind }),
     ...(config.initialState && { initialState: config.initialState }),
     ...(config.behaviors && { behaviors: config.behaviors }),

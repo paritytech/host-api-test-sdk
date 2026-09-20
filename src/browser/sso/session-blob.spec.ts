@@ -27,7 +27,15 @@ describe('session blob', () => {
     expect(decoded.identity_account_id).toEqual(options.identityAccountId);
   });
 
-  it('leaves usernames unset so the runtime resolves them itself', () => {
+  it('writes the username as the lite one, leaving the full one unset', () => {
+    const decoded = SessionInfo.dec(
+      encodeExternalPairedSession({ ...options, username: 'alice.01' }).slice(1),
+    );
+    expect(decoded.lite_username).toBe('alice.01');
+    expect(decoded.full_username).toBeUndefined();
+  });
+
+  it('leaves both usernames unset when none is supplied', () => {
     const decoded = SessionInfo.dec(encodeExternalPairedSession(options).slice(1));
     expect(decoded.lite_username).toBeUndefined();
     expect(decoded.full_username).toBeUndefined();
