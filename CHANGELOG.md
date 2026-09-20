@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.14.0
+## 0.13.1
 
 Three parts of the host were declared to the core as absent and could not be
 configured otherwise, so three product-facing features were dead on arrival in
@@ -20,10 +20,6 @@ configured otherwise, so three product-facing features were dead on arrival in
 ### Changed
 
 - **Configuring a network with `chain: 'AssetHub'` now has an effect on the core**, where before it was declared absent. The core reads dotNS from it — product manifests, and the `trustedProducts` grants that carry cross-product access — so a grant that used to be refused instantly now costs a real round trip to that network's `rpcUrl`. Unchanged for a network with no `chain` role, and unchanged for every other kind of test: signing is still the in-page People loopback, with no network at all.
-
-### Downstream
-
-- `../host-playground` pinned `0.12.1`. 0.13.0's migration notes apply first; this release adds `productId`, which that suite needs if its product signs under anything but `test-product.dot`.
 
 ## 0.13.0
 

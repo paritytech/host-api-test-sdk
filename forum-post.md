@@ -956,12 +956,12 @@ See the README's [Overriding host conditions](https://github.com/paritytech/host
 
 ## If you maintain a host-playground
 
-`../host-playground` still pins `0.12.1` and the old bootstrap. It needs its own pass against 0.13.0: the truapi 0.17 sandbox bootstrap, the `productAccounts` key change, and any assertion pinning a product-account address. Then 0.14.0: `productId`, if it signs under anything but `test-product.dot`.
+`../host-playground` still pins `0.12.1` and the old bootstrap. It needs its own pass against 0.13.0: the truapi 0.17 sandbox bootstrap, the `productAccounts` key change, and any assertion pinning a product-account address. Then 0.13.1: `productId`, if it signs under anything but `test-product.dot`.
 
 
 ---
 
-# host-api-test-sdk 0.14.0
+# host-api-test-sdk 0.13.1
 
 Three things 0.13.0 shipped dead. If you tried `getUserId`, `preimage.submit`, or signing under your own product name and got a flat refusal with nothing in any log, this is why.
 

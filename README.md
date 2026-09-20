@@ -504,7 +504,7 @@ The build produces three kinds of output:
 2. **ESM modules** (`dist/*.js`) — the Node-side API compiled with `tsc`
 3. **CJS bundles** (`dist/index.cjs`, `dist/playwright.cjs`) — the same API for CommonJS consumers
 
-## Migrating from 0.13.0 to 0.14.0
+## Migrating from 0.13.0 to 0.13.1
 
 Nothing to change; three things start working that previously could not.
 
