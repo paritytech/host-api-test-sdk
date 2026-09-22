@@ -9,8 +9,12 @@ import type { IframeHost, WorkerPairingHostRuntime } from '@parity/truapi-host/w
 import type { ChainRuntimeConfig } from './callbacks/chain.js';
 import { roomListSnapshot } from './callbacks/chat.js';
 import { derivedChains } from './callbacks/features.js';
+import { clearAllProductStorage, setProductStorage } from './callbacks/storage.js';
 import type { HostState } from './callbacks/index.js';
+import type { LoopbackStore, StoredStatement } from './loopback-chain.js';
 import type { SsoResponder } from './sso/responder.js';
+import { encodeStatement, signStatement } from './sso/statement.js';
+import type { Statement } from './sso/statement.js';
 import type {
   ChainEntry,
   ChatActionInput,
@@ -22,6 +26,8 @@ import type {
   NavigationBehavior,
   NotificationBehavior,
   PermissionBehavior,
+  StatementEntry,
+  StatementInput,
   TestHostAPI,
   Theme,
   ThemeInput,
@@ -49,6 +55,21 @@ export function buildAllowAttribute(granted: Iterable<string>): string {
   return policies.join('; ');
 }
 
+/** The store keeps bytes; the control API reports the `0x`-hex a test asserts on. */
+function toStatementEntry(entry: StoredStatement): StatementEntry {
+  const { statement } = entry;
+  return {
+    topics: (statement.topics ?? []).map((topic) => scale.bytesToHex(topic)),
+    data: statement.data === undefined ? undefined : scale.bytesToHex(statement.data),
+    proof: statement.proof && {
+      signature: scale.bytesToHex(statement.proof.signature),
+      signer: scale.bytesToHex(statement.proof.signer),
+    },
+    fromProduct: entry.fromProduct,
+    timestamp: entry.timestamp,
+  };
+}
+
 /** Re-`0x`-prefix a stored key without asserting its type. */
 const asHex = (key: string): HexString => `0x${key.startsWith('0x') ? key.slice(2) : key}`;
 
@@ -65,6 +86,14 @@ export interface ControlApiOptions {
   networks: readonly ChainRuntimeConfig[];
   /** A stable facade: account switching replaces the live responder underneath. */
   responder: SsoResponder;
+  /** The in-page People store, for the statement controls. */
+  store: LoopbackStore;
+  /**
+   * The active session's 64-byte sr25519 identity secret. Read through a
+   * callback because an account switch re-mints it, and an injected statement
+   * must be signed by whoever the host currently is.
+   */
+  identitySecret(): Uint8Array;
   runtime: WorkerPairingHostRuntime;
   iframeHost: IframeHost;
   /** The live product provider. Re-created when accounts switch. */
@@ -238,6 +267,38 @@ export function buildControlApi(options: ControlApiOptions): TestHostAPI {
       state.preimages.clear();
     },
 
+    getStatements(): StatementEntry[] {
+      return options.store.statements().map(toStatementEntry);
+    },
+
+    getSubmittedStatements(): StatementEntry[] {
+      return options.store
+        .statements()
+        .filter((entry) => entry.fromProduct)
+        .map(toStatementEntry);
+    },
+
+    injectStatement(input: StatementInput): StatementEntry {
+      const unsigned: Statement = {
+        topics: input.topics.map((topic) => scale.hexToBytes(topic)),
+        data: input.data === undefined ? undefined : scale.hexToBytes(input.data),
+      };
+      // Encoding first: the codec caps topics at four, and a throw here names
+      // the problem rather than leaving a statement half-delivered.
+      encodeStatement(unsigned);
+      // The core drops an unproven statement on the floor — silently, since a
+      // store is allowed to serve anything — so an injected one is signed by
+      // the session identity, exactly as the SSO responder signs its replies.
+      const statement = signStatement(options.identitySecret(), unsigned);
+      options.store.inject(statement);
+      const stored = options.store.statements();
+      return toStatementEntry(stored[stored.length - 1]);
+    },
+
+    clearStatements() {
+      options.store.clear();
+    },
+
     getTheme(): Theme {
       const { name, variant } = state.theme;
       // `HostState` leaves `value` optional on `Default`; the public `Theme`
@@ -297,7 +358,7 @@ export function buildControlApi(options: ControlApiOptions): TestHostAPI {
     },
 
     seedProductStorage(key: string, value: string) {
-      state.productStorage.set(key, new TextEncoder().encode(value));
+      setProductStorage(state, key, new TextEncoder().encode(value));
     },
 
     getProductStorage() {
@@ -307,7 +368,21 @@ export function buildControlApi(options: ControlApiOptions): TestHostAPI {
     },
 
     clearProductStorage() {
-      state.productStorage.clear();
+      clearAllProductStorage(state);
+    },
+
+    getOperationLog() {
+      return state.operationLog.map((entry) => ({ ...entry }));
+    },
+
+    getOpenOperations() {
+      return [...state.openOperations.values()].map((entry) => ({ ...entry }));
+    },
+
+    clearOperationLog() {
+      // The open map keeps its entries, so an operation opened before the clear
+      // can still be ended — it just no longer shows in the log.
+      state.operationLog.length = 0;
     },
 
     dispose() {

@@ -1,13 +1,20 @@
 import type { Page, FrameLocator } from '@playwright/test';
 import { createTestHostServer } from '../server.js';
 import { DEFAULT_CHAIN } from '../networks.js';
-import type { ChainEntry, ChatActionInput, ChatBot, ChatMessageLogEntry, ChatRoom, CreateTestHostOptions, DevAccountName, DevicePermissionStatus, HexString, HostDevicePermissionRequest, InitialBehaviors, InitialState, NavigationLogEntry, NotificationLogEntry, PermissionLogEntry, PreimageEntry, SigningLogEntry, TestHostAPI, Theme, ThemeInput, UserConfirmationLogEntry } from '../types.js';
+import type { ChainEntry, ChatActionInput, ChatBot, ChatMessageLogEntry, ChatRoom, CreateTestHostOptions, DevAccountName, DevicePermissionStatus, HexString, HostDevicePermissionRequest, InitialBehaviors, InitialState, NavigationLogEntry, NotificationLogEntry, OperationEntry, PermissionLogEntry, PreimageEntry, SigningLogEntry, StatementEntry, StatementInput, TestHostAPI, Theme, ThemeInput, UserConfirmationLogEntry } from '../types.js';
 
 /**
  * What the fixture's behaviour setters accept. A `Behavior`'s function form
  * cannot cross `page.evaluate`, so it is in-page only — via `window.__TEST_HOST__`.
  */
 export type FixtureBehavior = 'approve-all' | 'reject-all';
+
+/**
+ * What the two consent setters accept on top of `FixtureBehavior`.
+ * `'approve-once'` yields the core's one-use grant: it is consumed by a single
+ * permission-gated operation, so the next request prompts again.
+ */
+export type FixtureConsentBehavior = FixtureBehavior | 'approve-once';
 
 export interface TestHost {
   /** The host page (contains the iframe) */
@@ -36,8 +43,8 @@ export interface TestHost {
   /** Clear the signing log */
   clearSigningLog(): Promise<void>;
 
-  /** Set how the host responds to remote permission requests. */
-  setPermissionBehavior(behavior: FixtureBehavior): Promise<void>;
+  /** Set how the host responds to remote and device permission requests. */
+  setPermissionBehavior(behavior: FixtureConsentBehavior): Promise<void>;
 
   /** Pre-grant a permission without the product requesting it */
   grantPermission(tag: string): Promise<void>;
@@ -121,7 +128,7 @@ export interface TestHost {
   setLocale(languageTag: string): Promise<void>;
 
   /** Set how the host answers `confirmUserAction`. */
-  setUserConfirmationBehavior(behavior: FixtureBehavior): Promise<void>;
+  setUserConfirmationBehavior(behavior: FixtureConsentBehavior): Promise<void>;
 
   /** Every review the core asked the host to confirm. */
   getUserConfirmationLog(): Promise<UserConfirmationLogEntry[]>;
@@ -159,6 +166,40 @@ export interface TestHost {
 
   /** Drop every product-storage entry. */
   clearProductStorage(): Promise<void>;
+
+  /**
+   * Every pending operation a `Worker` product opened, in the order opened —
+   * still-open ones and those already ended. The core holds the product's
+   * worker runtime up while one is open.
+   */
+  getOperationLog(): Promise<OperationEntry[]>;
+
+  /** Just the operations still open: what is holding the worker runtime up. */
+  getOpenOperations(): Promise<OperationEntry[]>;
+
+  /** Drop the log. Operations still open stay open and can still be ended. */
+  clearOperationLog(): Promise<void>;
+
+  /**
+   * Every statement the in-page store holds, oldest first: what the product
+   * submitted, plus anything `injectStatement` seeded. The host's own SSO
+   * signing traffic is excluded — `getSigningLog()` is the oracle for that.
+   */
+  getStatements(): Promise<StatementEntry[]>;
+
+  /** `getStatements()` narrowed to what the PRODUCT submitted. */
+  getSubmittedStatements(): Promise<StatementEntry[]>;
+
+  /**
+   * Seed a statement: retained like a submission, delivered at once to a live
+   * subscription whose filter matches, and replayed to one opened later — so a
+   * test never has to win a race against the product's subscribe. Signed with
+   * the active session identity, because the core drops an unproven statement.
+   */
+  injectStatement(statement: StatementInput): Promise<StatementEntry>;
+
+  /** Drop every retained statement. Live subscriptions and signing are unaffected. */
+  clearStatements(): Promise<void>;
 
   /**
    * Wait until the product has actually talked to the host. This is the
@@ -251,7 +292,7 @@ export function createTestHostFixture(defaults: TestHostFixtureOptions) {
           await page.evaluate(() => window.__TEST_HOST__.clearSigningLog());
         },
 
-        async setPermissionBehavior(behavior: FixtureBehavior) {
+        async setPermissionBehavior(behavior: FixtureConsentBehavior) {
           await page.evaluate((b) => window.__TEST_HOST__.setPermissionBehavior(b), behavior);
         },
 
@@ -366,7 +407,7 @@ export function createTestHostFixture(defaults: TestHostFixtureOptions) {
           await page.evaluate((tag) => window.__TEST_HOST__.setLocale(tag), languageTag);
         },
 
-        async setUserConfirmationBehavior(behavior: FixtureBehavior) {
+        async setUserConfirmationBehavior(behavior: FixtureConsentBehavior) {
           await page.evaluate((b) => window.__TEST_HOST__.setUserConfirmationBehavior(b), behavior);
         },
 
@@ -415,6 +456,34 @@ export function createTestHostFixture(defaults: TestHostFixtureOptions) {
 
         async clearProductStorage() {
           await page.evaluate(() => window.__TEST_HOST__.clearProductStorage());
+        },
+
+        async getOperationLog() {
+          return page.evaluate(() => window.__TEST_HOST__.getOperationLog());
+        },
+
+        async getOpenOperations() {
+          return page.evaluate(() => window.__TEST_HOST__.getOpenOperations());
+        },
+
+        async clearOperationLog() {
+          await page.evaluate(() => window.__TEST_HOST__.clearOperationLog());
+        },
+
+        async getStatements() {
+          return page.evaluate(() => window.__TEST_HOST__.getStatements());
+        },
+
+        async getSubmittedStatements() {
+          return page.evaluate(() => window.__TEST_HOST__.getSubmittedStatements());
+        },
+
+        async injectStatement(statement: StatementInput) {
+          return page.evaluate((s) => window.__TEST_HOST__.injectStatement(s), statement);
+        },
+
+        async clearStatements() {
+          await page.evaluate(() => window.__TEST_HOST__.clearStatements());
         },
 
         async waitForConnection(timeout = 30_000) {

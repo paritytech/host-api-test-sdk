@@ -1,5 +1,55 @@
 # Changelog
 
+## 0.14.0
+
+The upstream stack moves to truapi `0.18`. The core changed how it asks the host
+for consent — an answer now carries a lifetime, not just a verdict — added two
+host services every host must implement, and stopped rewriting dotNS links on
+their way to `navigateTo`.
+
+### Breaking changes
+
+- **Upstream bumped, and both sides of the wire move together.** `@parity/truapi` and `@parity/truapi-host` `0.17.0` → `0.18.0`, `@parity/truapi-provider` `0.2.0` → `0.2.1`. **A product on truapi `0.17` will not connect.** Note for anyone on `@parity/product-sdk`: its `@parity/product-sdk-host` dependency pins `@parity/truapi` `^0.17.0` as of `0.21.0`, the newest release at the time of writing, and a caret on a `0.x` version excludes `0.18`. Such a product cannot reach a `0.14` host until a product-sdk release moves to `0.18` — stay on `0.13.x` until then.
+- **A permission answer carries a lifetime.** The core replaced the host callbacks' `{ granted: boolean }` with `PermissionDecision` — `'AllowOnce' | 'AllowAlways' | 'Deny'` — and acts on the difference: a lasting grant is stored and never re-asked, a one-use grant is consumed by a single permission-gated operation and the next request prompts again. Two consequences for test code:
+  - **`PermissionLogEntry` gained `decision`**, and `UserConfirmationLogEntry` gained `decision` and `lifetimeAsked`. `approved` keeps its meaning — `false` only for `'Deny'`, so a one-use grant reads as an approval — and an assertion on `approved` or `tag` is unaffected. An assertion that deep-equals a whole entry needs the new fields.
+  - **`PermissionBehavior` and `UserConfirmationBehavior` widened.** Both take a third named mode, `'approve-once'`, and their function form may return a `PermissionDecision` as well as a boolean (`true` still reads as `'AllowAlways'`). They are now `DecisionBehavior<Req>` rather than `Behavior<Req>`; `Behavior` is unchanged and still backs navigation and notifications.
+- **`navigateTo` no longer resolves a dotNS link to `https://`.** `polkadot://foo.dot` reaches the host as `polkadot://foo.dot`, and `dot://foo.dot` is normalized to the same spelling, because the core now treats the dotNS schemes as app handoffs for the host's own URL handler rather than web addresses to rewrite. A test asserting on `getNavigationLog()[n].url` for a dotNS URL must change its expectation.
+- **External navigation is gated by the new `OpenUrl` device permission.** `navigateTo('https://…')` prompts for it on first use and is refused with `PermissionDenied` — never reaching the navigation log — when the host denies. The grant is device-wide, not per-host, so approving it once covers every later URL, and `mailto:` consumes it too; only the dotNS schemes bypass it. A test that set `setPermissionBehavior('reject-all')` and still expected an external navigation to be logged will now see an empty log. `'OpenUrl'` is a new `HostDevicePermissionRequest` variant.
+
+### Added
+
+- **`'approve-once'`**, wherever a consent behavior is set: `setPermissionBehavior`, `setUserConfirmationBehavior`, the `behaviors` boot option, and the fixture's own setters (the new `FixtureConsentBehavior` type, which is `FixtureBehavior` plus that mode). It is how you test a product that must survive being re-prompted — the core asks again on every request instead of once. `PermissionDecision` and `DecisionBehavior` are exported from the package root.
+- **`localStorage.subscribe` is served.** The core's `ProductStorage` trait gained `subscribeStorage`, a required method: it emits the key's current value, then one item per later write or clear. The host implements it over the same in-memory map product storage already used, so a test's `seedProductStorage(key, value)` and `clearProductStorage()` reach a subscribed product exactly as the product's own writes do — the control API no longer touches the map directly. A cleared key arrives as an absent value rather than ending the stream.
+- **`worker.beginOperation` / `endOperation` are served.** The core's new `ProductOperations` trait, through which a `Worker` product holds its runtime alive while work is pending. The host records each operation rather than acting on it, and exposes them: **`getOperationLog()`** (every operation in the order opened, with `endedAt` set once closed), **`getOpenOperations()`** (just what is still holding the runtime up — the oracle for a product leaking its own runtime), and **`clearOperationLog()`** (which leaves open operations endable). New exported type `OperationEntry`. Nothing is ever refused: `TooManyOpen` is a real host's back-pressure, and a test host imposing a limit would fail products for reasons no production host reproduces.
+- **`userConfirmation.confirmPermission` is served**, the review entry point the core uses for identity and account disclosures, whose answer keeps its lifetime. One behavior answers it and `confirmUserAction` alike, so a test sets a policy once and it holds whichever way the core asks; `lifetimeAsked` on the log entry says which one it was.
+
+### Fixed
+
+- **The statement store is a store again, not a relay — and its test controls are back.** 0.13.0 moved statement traffic onto the in-page People loopback and, in doing so, dropped three things without replacing them: `getSubmittedStatements`, `injectStatement` and `clearStatements` were removed from `TestHostAPI`, and the loopback that took over retained nothing and fanned nothing out. The result was a statement surface that could not be tested deterministically:
+  - **A submitted statement reached no subscriber.** `statement_submit` notified the SSO responder and stopped there; it was never delivered to a matching subscription. A product that submits a statement and watches for it — or two products sharing a topic — saw nothing.
+  - **There was no historical dump.** The protocol promises one: `RemoteStatementStoreSubscribeItem.isComplete` is `false` "while the host is still streaming the historical dump". The loopback answered a subscribe with an id and no statements, so a test had to win a race against the product's own subscribe or lose the statement. What did arrive came from the core's in-flight cache, one page, `isComplete` never reaching `true`.
+
+  The store now retains what is submitted, delivers it to every matching live subscription, and replays the matching set to a subscription opened later. **`getStatements()`**, **`getSubmittedStatements()`**, **`injectStatement(statement)`** and **`clearStatements()`** are on `TestHostAPI`, `window.__TEST_HOST__` and the Playwright fixture; new exported types `StatementEntry` and `StatementInput`.
+
+  Two things worth knowing about the restoration, because neither was true of the pre-0.13 implementation:
+  - **An injected statement is signed** with the active session identity, following the account across a switch. The core validates the proof and silently drops an unproven statement, so injecting an unsigned one would have looked like the delivery bug it replaced.
+  - **The host's own SSO signing traffic is excluded** from the retained set and from fan-out, identified by the session's own topic ids. It reaches the responder through `onSubmit` exactly as before, so signing travels the path it always did. Retaining it would replay stale signing requests into a re-subscribing session, and fanning it out would echo the core its own request; keeping it out also means `getSubmittedStatements()` shows the product's statements rather than a stream of encrypted session frames. `getSigningLog()` remains the oracle for signing.
+
+### Internal
+
+- Unit coverage grew from 156 to 183 tests, with new suites for the permission decisions and for pending operations, and a `loopback statement retention` suite pinning the replay, the fan-out and the session-traffic exclusion; the integration suite grew from 63 to 77, covering the `OpenUrl` gate, the lasting-vs-one-use prompt counts end to end, the storage subscription (including a test's own seed reaching a subscribed product), the operation lifecycle, and the statement store both ways round — seeded before the subscribe and after it.
+- The test product gained `subscribeLocalStorage`, `getReceivedLocalStorage`, `beginOperation`, `endOperation`, `statementSubmit`, `subscribeStatements` and `getReceivedStatements`, so the new services and the restored statement surface are exercised through the real protocol rather than against the handlers alone.
+- `toBehaviorMode` split in two at the page-config boundary: navigation and notification keep the two-mode check, the two consent decisions get a three-mode one. Both still read their mode set off the published type, so a mode added to `InitialBehaviors` and not to the check fails to compile.
+
+### Upstream note
+
+The generated doc on `SystemClient.navigateTo` says `mailto:`, `tel:`, `polkadot:`
+and `dot:` "consume no grant". Only the dotNS pair behaves that way: a `mailto:`
+URL is refused under a stored `OpenUrl` denial and prompts under a one-use grant,
+exactly as an `https://` URL does. The note on `RemotePermission::Domains` — that
+external navigation uses `OpenUrl` instead — matches what the core actually does.
+This changelog describes the observed behavior.
+
 ## 0.13.1
 
 Three parts of the host were declared to the core as absent and could not be

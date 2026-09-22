@@ -15,6 +15,7 @@ describe('host callbacks', () => {
     for (const group of [
       'navigation', 'notifications', 'permissions', 'features', 'productStorage',
       'coreStorage', 'chain', 'auth', 'userConfirmation', 'theme', 'locale', 'preimage',
+      'productOperations',
     ]) {
       expect(callbacks).toHaveProperty(group);
     }
@@ -43,8 +44,8 @@ describe('host callbacks', () => {
     const callbacks = createHostCallbacks({
       state, store: createLoopbackStore(), networks: [],
     });
-    const response = await callbacks.permissions.remotePermission({ permission: { tag: 'ChainSubmit' } });
-    expect(response).toBeTruthy();
+    const decision = await callbacks.permissions.remotePermission({ permission: { tag: 'ChainSubmit' } });
+    expect(decision).toBe('AllowAlways');
     expect(state.permissionLog[0].approved).toBe(true);
   });
 

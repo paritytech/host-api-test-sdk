@@ -68,6 +68,16 @@ async function loadHostAndProduct(page: Page, hostUrl: string, productUrl: strin
   return getProductFrame(page, productUrl);
 }
 
+/**
+ * A subscription's items arrive asynchronously, so a spec waits for the shape
+ * it expects rather than reading the sink once.
+ */
+async function expectStorageItems(product: Frame, expected: Array<string | null>): Promise<void> {
+  await expect
+    .poll(() => product.evaluate(() => window.__TEST_PRODUCT__.getReceivedLocalStorage()))
+    .toEqual(expected);
+}
+
 /** Read the product account key the test product received from the host. */
 async function getProductPublicKey(page: Page, hostUrl: string): Promise<string> {
   const frame = await loadHost(page, hostUrl);
@@ -500,9 +510,10 @@ test.describe('Navigation', () => {
 
       const log = await page.evaluate(() => window.__TEST_HOST__.getNavigationLog());
       expect(log).toHaveLength(1);
-      // The core resolves the dotNS scheme before handing the URL to the host,
-      // so what the host records is the https form, not what the product typed.
-      expect(log[0].url).toBe('https://example.dot/settings');
+      // A dotNS link is an app handoff, so the core categorizes it and passes
+      // it through for the host's own URL handler rather than rewriting it to
+      // an https form.
+      expect(log[0].url).toBe('polkadot://example.dot/settings');
       expect(typeof log[0].timestamp).toBe('number');
     } finally {
       await host.close();
@@ -519,13 +530,14 @@ test.describe('Navigation', () => {
       const product = await loadHostAndProduct(page, host.url, productServer.url);
 
       await product.evaluate(() => window.__TEST_PRODUCT__.navigateTo('polkadot://foo.dot'));
-      await product.evaluate(() => window.__TEST_PRODUCT__.navigateTo('polkadot://bar.dot/page'));
+      await product.evaluate(() => window.__TEST_PRODUCT__.navigateTo('dot://bar.dot/page'));
 
       const log = await page.evaluate(() => window.__TEST_HOST__.getNavigationLog());
-      // dotNS-resolved, in the order the product asked for them.
+      // In the order the product asked for them, and normalized: `dot:` is the
+      // same app-handoff scheme as `polkadot:` and arrives spelled that way.
       expect(log.map((entry) => entry.url)).toEqual([
-        'https://foo.dot',
-        'https://bar.dot/page',
+        'polkadot://foo.dot',
+        'polkadot://bar.dot/page',
       ]);
     } finally {
       await host.close();
@@ -570,6 +582,69 @@ test.describe('Navigation', () => {
       expect(log.some((entry) => entry.url.includes('blocked'))).toBe(true);
     } finally {
       await host.close();
+    }
+  });
+
+  test('an external URL is gated by the OpenUrl device permission, a dotNS link is not', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice'],
+      behaviors: { permission: 'reject-all' },
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+
+      const external = await product.evaluate(() =>
+        window.__TEST_PRODUCT__.navigateTo('https://example.com/page'),
+      );
+      expect(external).toEqual({ ok: false, error: 'PermissionDenied' });
+
+      // The dotNS schemes are app handoffs the core never gates, so this one
+      // reaches the host under the very same denial.
+      expectOk(
+        await product.evaluate(() => window.__TEST_PRODUCT__.navigateTo('polkadot://ok.dot')),
+      );
+
+      expect(
+        await page.evaluate(() => window.__TEST_HOST__.getNavigationLog().map((e) => e.url)),
+      ).toEqual(['polkadot://ok.dot']);
+      expect(
+        await page.evaluate(() => window.__TEST_HOST__.getPermissionLog().map((e) => e.tag)),
+      ).toEqual(['OpenUrl']);
+    } finally {
+      await host.close();
+    }
+  });
+
+  // The clearest end-to-end proof that the two grant lifetimes differ: a
+  // lasting grant is asked for once, a one-use grant on every call.
+  test('a one-use OpenUrl grant is re-asked per URL, a lasting one is asked once', async ({ page }) => {
+    for (const [mode, expected] of [
+      ['approve-once', 2],
+      ['approve-all', 1],
+    ] as const) {
+      const host = await createTestHostServer({
+        productUrl: productServer.url,
+        accounts: ['alice'],
+        behaviors: { permission: mode },
+      });
+
+      try {
+        const product = await loadHostAndProduct(page, host.url, productServer.url);
+
+        expectOk(await product.evaluate(() => window.__TEST_PRODUCT__.navigateTo('https://a.test/')));
+        expectOk(await product.evaluate(() => window.__TEST_PRODUCT__.navigateTo('https://b.test/')));
+
+        const log = await page.evaluate(() => window.__TEST_HOST__.getPermissionLog());
+        expect(log.filter((entry) => entry.tag === 'OpenUrl')).toHaveLength(expected);
+        expect(log.every((entry) => entry.approved)).toBe(true);
+        expect(
+          await page.evaluate(() => window.__TEST_HOST__.getNavigationLog()),
+        ).toHaveLength(2);
+      } finally {
+        await host.close();
+      }
     }
   });
 });
@@ -1557,6 +1632,320 @@ test.describe('Local storage', () => {
         await product.evaluate(() => window.__TEST_PRODUCT__.localStorageRead('resume-token')),
       );
       expect(read.value).toBe('abc');
+    } finally {
+      await host.close();
+    }
+  });
+
+  test('a subscription replays the current value, then every later change', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice'],
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+
+      expectOk(await product.evaluate(() => window.__TEST_PRODUCT__.localStorageWrite('watched', 'one')));
+      await product.evaluate(() => window.__TEST_PRODUCT__.subscribeLocalStorage('watched'));
+      await expectStorageItems(product, ['one']);
+
+      expectOk(await product.evaluate(() => window.__TEST_PRODUCT__.localStorageWrite('watched', 'two')));
+      await expectStorageItems(product, ['one', 'two']);
+
+      // A clear arrives as an absent value rather than ending the stream.
+      expectOk(await product.evaluate(() => window.__TEST_PRODUCT__.localStorageClear('watched')));
+      await expectStorageItems(product, ['one', 'two', null]);
+    } finally {
+      await host.close();
+    }
+  });
+
+  test('a subscription opens on a miss with no value', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice'],
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+
+      await product.evaluate(() => window.__TEST_PRODUCT__.subscribeLocalStorage('never-written'));
+      await expectStorageItems(product, [null]);
+    } finally {
+      await host.close();
+    }
+  });
+
+  test('a subscription sees what the TEST seeded, not only what the product wrote', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice'],
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+
+      // Round-trip, as above: the namespaced key is only ever replayed.
+      expectOk(await product.evaluate(() => window.__TEST_PRODUCT__.localStorageWrite('seeded', 'first')));
+      const [key] = Object.keys(await page.evaluate(() => window.__TEST_HOST__.getProductStorage()));
+
+      await product.evaluate(() => window.__TEST_PRODUCT__.subscribeLocalStorage('seeded'));
+      await expectStorageItems(product, ['first']);
+
+      await page.evaluate((k) => window.__TEST_HOST__.seedProductStorage(k, 'second'), key);
+      await expectStorageItems(product, ['first', 'second']);
+
+      await page.evaluate(() => window.__TEST_HOST__.clearProductStorage());
+      await expectStorageItems(product, ['first', 'second', null]);
+    } finally {
+      await host.close();
+    }
+  });
+});
+
+// ── Statement store ─────────────────────────────────────────────────
+
+test.describe('Statement store', () => {
+  const TOPIC = `0x${'11'.repeat(32)}` as const;
+  const OTHER_TOPIC = `0x${'22'.repeat(32)}` as const;
+
+  /** The data of every statement the product has been delivered, in order. */
+  async function receivedData(product: Frame): Promise<Array<string | undefined>> {
+    const pages = await product.evaluate(() => window.__TEST_PRODUCT__.getReceivedStatements());
+    return pages.flatMap((page) => page.data);
+  }
+
+  test('a submitted statement is recorded and reaches a live subscriber', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice'],
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+
+      await product.evaluate((t) => window.__TEST_PRODUCT__.subscribeStatements(t), TOPIC);
+      expectOk(
+        await product.evaluate(
+          (t) => window.__TEST_PRODUCT__.statementSubmit(t, '0xcafe'),
+          TOPIC,
+        ),
+      );
+
+      await expect.poll(() => receivedData(product)).toEqual(['0xcafe']);
+
+      const submitted = await page.evaluate(() => window.__TEST_HOST__.getSubmittedStatements());
+      expect(submitted).toHaveLength(1);
+      expect(submitted[0]).toMatchObject({ topics: [TOPIC], data: '0xcafe', fromProduct: true });
+      // Submitted through `createProofAuthorized`, so it carries a real proof.
+      expect(submitted[0].proof?.signature).toMatch(/^0x[0-9a-f]{128}$/);
+    } finally {
+      await host.close();
+    }
+  });
+
+  // The regression this whole surface exists for: a test that seeds before the
+  // product subscribes must not lose the statement to the race.
+  test('an injected statement is replayed to a subscription opened afterwards', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice'],
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+
+      await page.evaluate(
+        (t) => window.__TEST_HOST__.injectStatement({ topics: [t], data: '0xdead' }),
+        TOPIC,
+      );
+
+      // Subscribed only now — the statement is already in the store.
+      await product.evaluate((t) => window.__TEST_PRODUCT__.subscribeStatements(t), TOPIC);
+      await expect.poll(() => receivedData(product)).toEqual(['0xdead']);
+    } finally {
+      await host.close();
+    }
+  });
+
+  test('an injected statement reaches a subscriber already listening', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice'],
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+
+      await product.evaluate((t) => window.__TEST_PRODUCT__.subscribeStatements(t), TOPIC);
+      await page.evaluate(
+        (t) => window.__TEST_HOST__.injectStatement({ topics: [t], data: '0xbeef' }),
+        TOPIC,
+      );
+
+      await expect.poll(() => receivedData(product)).toEqual(['0xbeef']);
+    } finally {
+      await host.close();
+    }
+  });
+
+  test('a statement on another topic is not delivered', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice'],
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+
+      await product.evaluate((t) => window.__TEST_PRODUCT__.subscribeStatements(t), TOPIC);
+      await page.evaluate(
+        (t) => window.__TEST_HOST__.injectStatement({ topics: [t], data: '0xf00d' }),
+        OTHER_TOPIC,
+      );
+      await page.evaluate(
+        (t) => window.__TEST_HOST__.injectStatement({ topics: [t], data: '0xbeef' }),
+        TOPIC,
+      );
+
+      // The matching one arrives; the other never does, whatever the ordering.
+      await expect.poll(() => receivedData(product)).toEqual(['0xbeef']);
+      expect(await page.evaluate(() => window.__TEST_HOST__.getStatements())).toHaveLength(2);
+    } finally {
+      await host.close();
+    }
+  });
+
+  test('the host\'s own signing traffic stays out of the statement log', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice'],
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+
+      // Signing is an SSO round trip over this very store.
+      expectOk(
+        await product.evaluate(() =>
+          window.__TEST_PRODUCT__.signRawProduct('test-product.dot', 0, '0x0102'),
+        ),
+      );
+
+      expect(await page.evaluate(() => window.__TEST_HOST__.getStatements())).toEqual([]);
+      // The signature itself did happen — it is just not statement-log traffic.
+      expect(await page.evaluate(() => window.__TEST_HOST__.getSigningLog())).not.toHaveLength(0);
+    } finally {
+      await host.close();
+    }
+  });
+
+  test('clearStatements empties the log and leaves signing working', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice'],
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+
+      await page.evaluate(
+        (t) => window.__TEST_HOST__.injectStatement({ topics: [t], data: '0xdead' }),
+        TOPIC,
+      );
+      expect(await page.evaluate(() => window.__TEST_HOST__.getStatements())).toHaveLength(1);
+
+      await page.evaluate(() => window.__TEST_HOST__.clearStatements());
+      expect(await page.evaluate(() => window.__TEST_HOST__.getStatements())).toEqual([]);
+
+      expectOk(
+        await product.evaluate(() =>
+          window.__TEST_PRODUCT__.signRawProduct('test-product.dot', 0, '0x0304'),
+        ),
+      );
+    } finally {
+      await host.close();
+    }
+  });
+});
+
+// ── Pending operations ──────────────────────────────────────────────
+
+test.describe('Pending operations', () => {
+
+  test('an operation is recorded open, then closed, and reaches the host log', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice'],
+      // `worker.beginOperation` is reached only through the Worker protocol
+      // trait, so no other execution kind can call it.
+      executionKind: 'Worker',
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+
+      expect(await page.evaluate(() => window.__TEST_HOST__.getOpenOperations())).toEqual([]);
+
+      const { id } = expectOk(
+        await product.evaluate(() => window.__TEST_PRODUCT__.beginOperation('indexing')),
+      );
+
+      const open = await page.evaluate(() => window.__TEST_HOST__.getOpenOperations());
+      expect(open).toHaveLength(1);
+      expect(open[0]).toMatchObject({ id, label: 'indexing', endedAt: undefined });
+      expect(open[0].productId).toBe('test-product.dot');
+
+      expectOk(await product.evaluate((n) => window.__TEST_PRODUCT__.endOperation(n), id));
+
+      expect(await page.evaluate(() => window.__TEST_HOST__.getOpenOperations())).toEqual([]);
+      const log = await page.evaluate(() => window.__TEST_HOST__.getOperationLog());
+      expect(log).toHaveLength(1);
+      expect(typeof log[0].endedAt).toBe('number');
+    } finally {
+      await host.close();
+    }
+  });
+
+  test('ending an operation twice is accepted', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice'],
+      executionKind: 'Worker',
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+
+      const { id } = expectOk(await product.evaluate(() => window.__TEST_PRODUCT__.beginOperation()));
+      expectOk(await product.evaluate((n) => window.__TEST_PRODUCT__.endOperation(n), id));
+      expectOk(await product.evaluate((n) => window.__TEST_PRODUCT__.endOperation(n), id));
+
+      expect(await page.evaluate(() => window.__TEST_HOST__.getOperationLog())).toHaveLength(1);
+    } finally {
+      await host.close();
+    }
+  });
+
+  test('clearOperationLog leaves an open operation endable', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice'],
+      executionKind: 'Worker',
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+
+      const { id } = expectOk(await product.evaluate(() => window.__TEST_PRODUCT__.beginOperation('keep')));
+      await page.evaluate(() => window.__TEST_HOST__.clearOperationLog());
+
+      expect(await page.evaluate(() => window.__TEST_HOST__.getOperationLog())).toEqual([]);
+      expect(await page.evaluate(() => window.__TEST_HOST__.getOpenOperations())).toHaveLength(1);
+
+      expectOk(await product.evaluate((n) => window.__TEST_PRODUCT__.endOperation(n), id));
+      expect(await page.evaluate(() => window.__TEST_HOST__.getOpenOperations())).toEqual([]);
     } finally {
       await host.close();
     }

@@ -14,6 +14,7 @@ import { createChatCallbacks } from './chat.js';
 import { createFeatureCallbacks } from './features.js';
 import { createNavigationCallbacks } from './navigation.js';
 import { createNotificationCallbacks } from './notifications.js';
+import { createOperationCallbacks } from './operations.js';
 import { createLocaleCallbacks, createPreimageCallbacks, createThemeCallbacks } from './passive.js';
 import { createPermissionCallbacks } from './permissions.js';
 import { createPermissionStatusCallbacks } from './permission-status.js';
@@ -51,6 +52,7 @@ export function createHostCallbacks(options: CreateHostCallbacksOptions): Requir
     theme: createThemeCallbacks(state),
     locale: createLocaleCallbacks(state),
     preimage: createPreimageCallbacks(state),
+    productOperations: createOperationCallbacks(state),
     chat: createChatCallbacks(state),
   };
 }

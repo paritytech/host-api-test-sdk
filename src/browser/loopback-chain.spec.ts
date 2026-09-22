@@ -261,3 +261,139 @@ describe('loopback statement store', () => {
     expect(response.result).toEqual({ status: 'new' });
   });
 });
+
+describe('loopback statement retention', () => {
+  const submit = (store: ReturnType<typeof createLoopbackStore>, statement: Parameters<typeof encodeStatement>[0]) => {
+    const connection = store.connect(() => {});
+    connection.send(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'statement_submit',
+        params: [toHex(encodeStatement(statement))],
+      }),
+    );
+    return connection;
+  };
+
+  const subscribe = (
+    store: ReturnType<typeof createLoopbackStore>,
+    onResponse: (json: string) => void,
+    filterTopic: Uint8Array,
+  ) => {
+    const connection = store.connect(onResponse);
+    connection.send(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'statement_subscribeStatement',
+        params: [{ matchAll: [toHex(filterTopic)] }],
+      }),
+    );
+    return connection;
+  };
+
+  /** The statements carried by every `newStatements` frame the mock received. */
+  const delivered = (onResponse: ReturnType<typeof vi.fn>): string[] =>
+    onResponse.mock.calls
+      .map(([json]) => JSON.parse(json as string))
+      .filter((message) => message.method === 'statement_statement')
+      .flatMap((message) => message.params.result.data.statements as string[]);
+
+  it('retains what the product submits, and reports it as the product\'s', () => {
+    const store = createLoopbackStore();
+    submit(store, { topics: [topic(1)], data: new Uint8Array([7]) });
+
+    expect(store.statements()).toHaveLength(1);
+    expect(store.statements()[0].fromProduct).toBe(true);
+    expect(store.statements()[0].statement.data).toEqual(new Uint8Array([7]));
+  });
+
+  it('marks an injected statement as not the product\'s', () => {
+    const store = createLoopbackStore();
+    store.inject({ topics: [topic(1)], data: new Uint8Array([7]) });
+
+    expect(store.statements()[0].fromProduct).toBe(false);
+  });
+
+  // The whole point: without the replay a test races its subscribe against the
+  // submit, which is what the protocol's `isComplete` dump exists to rule out.
+  it('replays matching statements to a subscription opened afterwards', () => {
+    const store = createLoopbackStore();
+    store.inject({ topics: [topic(1)], data: new Uint8Array([1]) });
+    store.inject({ topics: [topic(2)], data: new Uint8Array([2]) });
+
+    const onResponse = vi.fn();
+    subscribe(store, onResponse, topic(1));
+
+    expect(delivered(onResponse)).toEqual([
+      toHex(encodeStatement({ topics: [topic(1)], data: new Uint8Array([1]) })),
+    ]);
+  });
+
+  it('sends no dump frame at all when nothing matches', () => {
+    const store = createLoopbackStore();
+    store.inject({ topics: [topic(2)], data: new Uint8Array([2]) });
+
+    const onResponse = vi.fn();
+    subscribe(store, onResponse, topic(1));
+
+    expect(delivered(onResponse)).toEqual([]);
+  });
+
+  it('fans a submitted statement out to a live subscription', () => {
+    const store = createLoopbackStore();
+    const onResponse = vi.fn();
+    subscribe(store, onResponse, topic(1));
+    onResponse.mockClear();
+
+    submit(store, { topics: [topic(1)], data: new Uint8Array([5]) });
+
+    expect(delivered(onResponse)).toEqual([
+      toHex(encodeStatement({ topics: [topic(1)], data: new Uint8Array([5]) })),
+    ]);
+  });
+
+  it('clears the retained set without closing live subscriptions', () => {
+    const store = createLoopbackStore();
+    const onResponse = vi.fn();
+    subscribe(store, onResponse, topic(1));
+    store.inject({ topics: [topic(1)], data: new Uint8Array([1]) });
+    onResponse.mockClear();
+
+    store.clear();
+    expect(store.statements()).toEqual([]);
+
+    store.inject({ topics: [topic(1)], data: new Uint8Array([2]) });
+    expect(delivered(onResponse)).toHaveLength(1);
+  });
+
+  // Signing shares this store. Retaining the session's traffic would replay
+  // stale requests into a re-subscribing session; fanning it out would echo the
+  // core its own request. Neither may happen.
+  it('neither retains nor delivers the host\'s own session traffic', () => {
+    const store = createLoopbackStore();
+    store.markSessionTopic(topic(8));
+
+    const onResponse = vi.fn();
+    subscribe(store, onResponse, topic(8));
+    onResponse.mockClear();
+
+    const seen = vi.fn();
+    store.onSubmit(seen);
+    submit(store, { topics: [topic(8)], data: new Uint8Array([1]) });
+
+    // The responder still hears it — that is how signing travels.
+    expect(seen).toHaveBeenCalledOnce();
+    expect(store.statements()).toEqual([]);
+    expect(delivered(onResponse)).toEqual([]);
+  });
+
+  it('still retains a statement whose topics miss every session topic', () => {
+    const store = createLoopbackStore();
+    store.markSessionTopic(topic(8));
+    submit(store, { topics: [topic(1)], data: new Uint8Array([1]) });
+
+    expect(store.statements()).toHaveLength(1);
+  });
+});
