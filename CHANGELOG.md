@@ -2,16 +2,17 @@
 
 ## 0.15.0
 
-`getSigningLog()` came back empty for a product that had been granted
-auto-signing — reported from a product-sdk migration, where the empty log was
-indistinguishable from a broken accessor. It was neither a broken accessor nor a
-regression: it is what the capability does. The host can now withhold it.
+Breaking for code driving `window.__TEST_HOST__` directly: `grantPermission()`
+and `revokePermission()` are now `Promise<void>` and must be awaited. The
+Playwright fixture already declared them async — fixture users change nothing.
 
 ### Fixed
 
-- **A product granted `AutoSigning` was signed for with no host-visible evidence at all.** `getSigningLog()`, `getUserConfirmationLog()` and `getPermissionLog()` all returned `[]` around a `signRaw()` that demonstrably succeeded. The cause is the capability itself: `AutoSigning` hands the core `productRootPrivateKey` — the product's whole subtree secret — and from that moment the core derives every product account and signs **in-process**, in its own worker. No SSO round trip is made, so no host callback runs and there is nothing for any log to record. It has been this way since 0.13.0 wired the capability; it went unnoticed because nothing here granted auto-signing and then asserted on signing.
-
-  The host cannot observe an in-core signature — it gave away the key — so the fix is to let a suite decline the grant. **`setResourceAllocationBehavior(behavior)`** and **`behaviors.resourceAllocation`** choose which resources are allocated: `'approve-all'` (the default, and what every earlier release did unconditionally), `'reject-all'`, a record that grants anything it does not mention, or — in-page only — a function. `{ AutoSigning: false }` is the one that matters:
+- **`AutoSigning` made signing invisible to the host.** The capability hands the
+  core the product's subtree secret, so the core signs in its own worker: no host
+  callback runs and `getSigningLog()`, `getUserConfirmationLog()` and
+  `getPermissionLog()` stay empty around a valid signature. Not a broken
+  accessor. A suite that asserts on signing must decline the grant:
 
   ```ts
   createTestHostFixture({
@@ -20,50 +21,70 @@ regression: it is what the capability does. The host can now withhold it.
   });
   ```
 
-  With the grant withheld the core falls back to the SSO round trip, and every signature lands in `getSigningLog()` and `getUserConfirmationLog()` again. A refused resource is answered `Rejected` rather than skipped — the core reads one outcome per requested resource — and withholding auto-signing leaves the allowances a product needs intact, so `statementStore.createProofAuthorized` keeps working.
+  `setResourceAllocationBehavior(behavior)` takes `'approve-all'` (default),
+  `'reject-all'`, a record granting anything it does not mention, or — in-page
+  only — a function. Use the boot option when the product asks at startup; by
+  the time the setter runs the grant is made. Refused resources are answered
+  `Rejected`, one outcome per requested resource, so withholding `AutoSigning`
+  leaves `StatementStoreAllowance` and `BulletinAllowance` working.
 
-  Prefer the boot option over the setter: a product that asks at its first frame already holds the grant by the time a setter could run.
+- **`revokePermission()` did not revoke.** It deleted the tag from the host's own
+  set; the core kept the stored `AllowAlways` and went on serving the product. No
+  re-prompt, nothing logged, and `getGrantedPermissions()` reporting a state the
+  core would not honour. Both calls now write `setPermissionAuthorizationStatus`.
+  Revoking writes `NotDetermined` — "ask again" — so pair it with
+  `setPermissionBehavior('reject-all')` for a refusal.
+  `initialState.grantedPermissions` is replayed into the core at boot.
 
-- **`getSigningLog()`'s documented contract now holds for `signRaw`.** The README calls it the oracle for "did signing happen" in four places; with auto-signing granted it silently was not. The core's own docs say so in passing — `account.signVrf` is documented as "local when `AutoSigning` covers the account, otherwise a per-call user confirmation" — but nothing here said it, and nothing made it adjustable. Both are fixed.
+- **A grant the core could not store looked like it worked.** The request was
+  built from the tag alone and any failure was swallowed by a logging `catch`, so
+  an unknown tag left `getGrantedPermissions()` holding something the core had
+  never heard of. Unknown tags now reject. `Remote` is stored under its domain
+  list and takes it as a second argument:
+  `grantPermission('Remote', { domains: ['example.dot'] })`.
 
-- **Product storage is addressable by the key the product actually used.** `getProductStorage()` is keyed by the namespaced form the core hands the host, `truapi:product-storage:v1:<productIdLength>:<productId>:<localKey>`, which is not the key a test knows. Matching it by suffix — the only option before — is ambiguous whenever a local key contains `:`: a product id of `demo` and a local key of `demo:mykey` are indistinguishable that way. **`getProductStorageValue(localKey)`** looks a value up by exact local key, and **`getProductStorageEntries()`** returns `{ key, localKey, value }` for every entry. The length prefix in the format is what makes the split exact, and the parser answers `localKey: undefined` rather than guessing if the core ever moves to a layout it does not know. `getProductStorage()` is unchanged.
+- **`setResourceAllocationBehavior()` validates its argument**, as
+  `behaviors.resourceAllocation` already did. `{ AutoSignin: false }` was accepted
+  and then granted the resource it was meant to withhold. Unknown keys throw.
 
-- **The published package now contains its CHANGELOG.** `files` was `["dist"]`, so npm shipped the README and LICENSE but not this file — consumers tracing a breaking change had to `npm pack` each version and diff the `.d.ts` by hand.
+- **Product storage is addressable by the product's own key.**
+  `getProductStorage()` is keyed by the namespaced form
+  (`truapi:product-storage:v1:<productIdLength>:<productId>:<localKey>`), and
+  suffix-matching it is ambiguous when a local key contains `:`. Use
+  `getProductStorageValue(localKey)` or `getProductStorageEntries()`.
+  `getProductStorage()` is unchanged.
 
-- **`revokePermission()` now revokes in the core, not just in the host's own view.** It deleted the tag from `state.grantedPermissions` — which drives `getGrantedPermissions()` and the iframe's Permissions Policy — and stopped there. The core keeps its own authorization store, and that is the one it acts on, so a revoked permission went on being served from the stored `AllowAlways`: no fresh prompt, nothing in `getPermissionLog()`, and `getGrantedPermissions()` reporting a state the core would not honour. A test that revoked and expected the product to be re-asked, or blocked, got neither.
+- **The published package contains its CHANGELOG.** `files` was `["dist"]`.
 
-  Both `grantPermission()` and `revokePermission()` now write through to the core (`setPermissionAuthorizationStatus`), revoking to `NotDetermined` so the product is asked again rather than silently refused — pair it with `setPermissionBehavior('reject-all')` for a refusal. `initialState.grantedPermissions` is replayed into the core once the runtime is up, so a pre-granted permission is no longer prompted for either.
-
-  **Both are now `Promise<void>`.** The Playwright fixture already declared them async and awaits the evaluate, so fixture users see no change; a test driving `window.__TEST_HOST__` directly should `await` them.
-
-- **A grant the core could not store used to look like it worked.** The write-through above built the core's `PermissionAuthorizationRequest` from the tag alone, and any tag outside the device set became a remote permission unchecked. Two cases could not survive that. An unknown tag — `grantPermission('TransactionSubmit')`, a name this project's own forum post still shows from an older release — produced a request the codec rejects. And `Remote`, alone among the remote permissions, carries a payload: the core files the decision under the domain list, so a request built without it does not encode at all. Both threw inside a `try/catch` that only logged, leaving `getGrantedPermissions()` holding a tag the core had never heard of — the same silent divergence the revoke fix was about, in the one corner it did not reach.
-
-  `grantPermission` and `revokePermission` now take an optional payload — `grantPermission('Remote', { domains: ['example.dot'] })` — and **reject** on an unknown tag, or on a payload-carrying one given without its payload, naming what they would have accepted. They also write the core first and update the host's own view only once that lands, so the two can no longer disagree. `initialState.grantedPermissions` is a plain `string[]` seeded before the runtime exists, so a bad tag there is reported to the console and skipped rather than failing the boot.
-
-  The device/remote split is now a total record over the core's own unions rather than a `Set<string>`, so a capability added upstream fails to compile here instead of being routed to the wrong half. `src/browser/control-api.spec.ts` encodes every permission the host accepts through the core's codec, which is what makes "the core will take this" a checked claim rather than an assertion about shape.
-
-- **`setResourceAllocationBehavior()` now validates its argument**, on the same terms `behaviors.resourceAllocation` already did. It is reachable from plain JS through `page.evaluate`, where `{ AutoSignin: false }` would have been accepted and then silently granted the resource it was written to withhold — the precise bug the option exists to prevent. An unknown key throws naming the key, and the previous behavior is left in place rather than half-applied. The in-page function form passes through untouched.
-
-- **`pnpm test:integration` rebuilds the host bundle.** It built the test product but not the host, and the browser runs `dist/host/`, so an edit to `src/browser/` was tested only if the developer remembered `pnpm run build:bundle` first — otherwise the suite passed against the previous build and said nothing. CI always built first and was unaffected; this only ever misled local runs, which is where `CLAUDE.md` tells you to run it.
+- **`pnpm test:integration` rebuilds the host bundle.** It built only the test
+  product, so edits under `src/browser/` were tested against the previous build
+  unless you built first. CI always built first.
 
 ### Added
 
-- **`TRUAPI_WIRE_SCHEMA_HASH`** — the wire schema the bundled core actually speaks, exported from the package root. Read it from the export; it changes whenever the vendored core does, so it is not written down anywhere a copy could go stale. The declared `@parity/truapi` version is weaker evidence: the core ships as a vendored `.wasm`, so the dependency says what the JS codecs were built against, not what the binary speaks. Answering "can my product talk to this host?" previously meant running `strings` over `dist/host/truapi_server_bg.wasm` — and that does not even work reliably, since the only 16-hex strings in the binary are Cargo path hashes. `build.mjs` now reads the value out of the compiled core through its own `wireSchemaHash()` export and fails the build if it disagrees with the constant, so a dependency bump cannot publish a stale one.
+- `setResourceAllocationBehavior()`, `getResourceAllocationLog()`,
+  `clearResourceAllocationLog()` and `behaviors.resourceAllocation`.
+- `getProductStorageEntries()`, `getProductStorageValue(localKey)`.
+- `TRUAPI_WIRE_SCHEMA_HASH` — the wire schema the bundled core speaks. The
+  package version describes the JS codecs, not the vendored `.wasm`. `build.mjs`
+  reads it out of the compiled core and fails on drift.
+- Types: `AllocatableResourceTag`, `ResourceAllocationBehavior`,
+  `ResourceAllocationLogEntry`, `ProductStorageEntry`. `AllocatableResourceTag`
+  is guarded against the core's union at compile time.
 
-- **`getResourceAllocationLog()` / `clearResourceAllocationLog()`** — every resource a product asked for, which product asked, and whether the host allocated it. This is the accessor that was missing: an empty signing log is now explained by an `{ resource: 'AutoSigning', granted: true }` entry sitting in front of it, rather than looking like a broken API.
-- New exported types `AllocatableResourceTag`, `ResourceAllocationBehavior` and `ResourceAllocationLogEntry`. `AllocatableResourceTag` carries a compile-time guard against the core's own resource union, so a resource added upstream fails to compile here.
-- `SigningLogEntry`'s doc comment now says what does **not** reach it, and points at the option that fixes it.
+### Notes
 
-### Documented, not changed
-
-- **An allocation passes two host decisions, not one.** A `ResourceAllocation` user confirmation comes first — all-or-nothing, and denying it fails the product's whole request with an error — then the allocation itself, which `setResourceAllocationBehavior` answers per resource with a well-formed `Rejected` outcome. The confirmation lever already existed and works in 0.14.0 through the in-page function form; the new one is preferable because it is selective, survives `page.evaluate`, and can be set before the product's first frame.
-- **`ChainSubmit` can reach the host two ways.** The core triggers it implicitly, on the business call that needs it — as the protocol documents for `ChainSubmit`, `PreimageSubmit` and `StatementSubmit`. A product, or its SDK, may also request it explicitly at connect: `@parity/product-sdk-signer` does, via `requestChainSubmitPermission`, default `true`. An empty `getPermissionLog()` right after connect therefore means only that nothing has asked yet — expected for a bare product (this repo's test product never asks, and the entry appears when it first signs), but worth investigating for a product-sdk one, whose request is wrapped in a `try/catch` that only warns, so a failing request leaves no entry, no error and a successful connect. The `ResourceAllocation` confirmation such a product triggers is a separate decision in `getUserConfirmationLog()`, not `ChainSubmit` by another route. Pinned by a test asserting the permission log is empty at connect and after an allocation, and carries `ChainSubmit` after a signature.
-- **An account switch *is* observable by the product**, through its own `account.connectionStatusSubscribe()` — a switch delivers `Disconnected` then `Connected` there, and the product keeps working across it with no reload. What does not work is gating on `waitForConnection()` afterwards: `getConnectionStatus()` reports the *product* connection and only moves when a frame arrives from the product, so it sits at `'disconnected'` until the product next talks, however healthy the session is. `getChainStatus()` reports the host session and reads `'connected'` at once. A test that reloads the page to work around this is testing a plain reconnect instead of a live switch; three integration tests now pin the live path.
-
-### Internal
-
-- Unit coverage 183 → 209: a new `src/types.spec.ts` for `decideResource` and `parseResourceAllocationBehavior`, a new `src/browser/control-api.spec.ts` checking every permission the host can grant against the core's own codec, plus a `sso responder resource policy` suite pinning the per-resource verdicts, the one-outcome-per-resource rule and the recording. Integration 77 → 94, including one test that *documents the trap* — granting `AutoSigning` and asserting the logs go empty — so the behaviour cannot change silently.
-- The page-config validation for `resourceAllocation` lives in `types.ts` beside the type it parses, rather than in `host-runtime.ts`: an unknown resource key throws naming the key, and that is checked by a unit test rather than by scraping a browser console.
+- An allocation passes two gates: a `ResourceAllocation` user confirmation
+  (all-or-nothing, denying it fails the whole request), then the allocation
+  itself (per resource). Prefer the second.
+- `ChainSubmit` is requested implicitly by the core on the call that needs it. A
+  product may also request it at connect — `@parity/product-sdk-signer` does, and
+  wraps it in a `catch` that only warns, so a failed request leaves no trace.
+- An account switch is observable by the product via
+  `account.connectionStatusSubscribe()`. Do not gate on `waitForConnection()`
+  after a switch: `getConnectionStatus()` tracks the product connection and only
+  moves when a frame arrives. `getChainStatus()` is the host session.
+- Unit 183 → 209, integration 77 → 94.
 
 ## 0.14.0
 

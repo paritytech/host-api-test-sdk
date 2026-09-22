@@ -1215,154 +1215,83 @@ Everything else is additive.
 
 # host-api-test-sdk 0.15.0
 
-One fix, from a report out of a product-sdk migration: `getSigningLog()` came
-back empty for a `signRaw()` that demonstrably succeeded. So did
-`getUserConfirmationLog()` and `getPermissionLog()`. Cleared right before the
-call, dumped right after — all three `[]`, while the product UI rendered a valid
-signature.
+## `getSigningLog()` was empty and the API was not broken
 
-It was not a broken accessor, and not a regression in the accessor's shape.
+Reported from a product-sdk migration: `signRaw()` succeeded, and
+`getSigningLog()`, `getUserConfirmationLog()` and `getPermissionLog()` were all
+empty afterwards.
 
-## Why the logs were empty
+That is what `AutoSigning` does. The capability hands the core the product's
+subtree secret, so the core signs in its own worker — no SSO round trip, no host
+callback, nothing to log. The host cannot observe those signatures; it gave away
+the key.
 
-The product had been granted **`AutoSigning`**.
-
-That capability hands the core `productRootPrivateKey` — the product's whole
-subtree secret. From that moment the core derives every product account and signs
-**inside its own worker**. There is no SSO round trip, so no host callback runs,
-so there is nothing for any log to record. The host cannot see those signatures
-because it gave the key away.
-
-This has been true since 0.13.0 wired the capability. It went unnoticed here
-because nothing in this repo granted auto-signing and *then* asserted on signing
-— a product-sdk product asks for it at boot, which is how the report surfaced it.
-
-## The fix: decline the grant
-
-The host cannot observe an in-core signature, so the only honest fix is to let a
-suite refuse the capability. `behaviors.resourceAllocation` and
-`setResourceAllocationBehavior()` choose what gets allocated:
+So a suite that asserts on signing has to decline the grant:
 
 ```ts
-const { testHost } = createTestHostFixture({
+createTestHostFixture({
   productUrl: "http://localhost:3000",
   behaviors: { resourceAllocation: { AutoSigning: false } },
 });
 ```
 
-The core then falls back to asking the host per signature, and every one lands in
-`getSigningLog()` and `getUserConfirmationLog()` again — verified end to end, in
-both directions, in the integration suite.
+Signing then goes back through the host and lands in the logs again. The record
+form grants anything it does not mention, so `StatementStoreAllowance` and
+`BulletinAllowance` are untouched and `createProofAuthorized` keeps working.
+`'approve-all'` (the default) and `'reject-all'` also work, and in-page you can
+pass a function. Use the boot option rather than `setResourceAllocationBehavior()`
+when the product asks at startup — by then the grant is made.
 
-The record form grants anything it does not mention, so this withholds
-auto-signing and leaves `StatementStoreAllowance` and `BulletinAllowance`
-untouched; `statementStore.createProofAuthorized` keeps working. `'approve-all'`
-(the default, and what every earlier release did) and `'reject-all'` are there
-too, and in-page you can pass a function.
+`getResourceAllocationLog()` shows what was asked and what was answered, so an
+empty signing log now has an entry in front of it explaining why.
 
-**Use the boot option rather than the setter** when the product asks at startup:
-by the time a setter could run, the grant is already made.
+## `revokePermission()` did not revoke
 
-## And an accessor so this is diagnosable
+Found while comparing notes on the above. It deleted the tag from the host's own
+set. The core keeps its own authorization store, and that is the one it acts on —
+so a revoked permission kept working, nothing was logged, and
+`getGrantedPermissions()` reported a state the core would not honour. Any test
+that revoked and expected a re-prompt was asserting nothing.
 
-The deeper problem was that an empty log looked identical to a broken API. It no
-longer does:
-
-```ts
-expect(await testHost.getResourceAllocationLog()).toEqual([
-  { productId: "myapp.dot", resource: "AutoSigning", granted: true, timestamp: expect.any(Number) },
-]);
-```
-
-An empty signing log now has that entry sitting in front of it, saying exactly
-why. `clearResourceAllocationLog()` resets it. New exported types:
-`AllocatableResourceTag`, `ResourceAllocationBehavior`,
-`ResourceAllocationLogEntry`.
-
-`SigningLogEntry`'s own doc comment now states what does not reach it, and points
-at the option that fixes it.
-
-## Upgrading
-
-Nothing to change — `'approve-all'` is the default. Add the boot option to any
-suite that asserts on signing.
-
-## Also in 0.15.0, from the same migration
-
-**Product storage is addressable by the key your product used.**
-`getProductStorage()` is keyed by the namespaced form the core hands the host —
-`truapi:product-storage:v1:<productIdLength>:<productId>:<localKey>` — so
-matching it meant suffix-matching, which is ambiguous the moment a local key
-contains a colon. `getProductStorageValue("mykey")` and
-`getProductStorageEntries()` (which carries `localKey` beside `key`) match
-exactly instead.
-
-**The package ships its CHANGELOG.** `files` was `["dist"]`, so npm carried the
-README and LICENSE but not the changelog — which is how you end up diffing
-`.d.ts` files across four published versions to find a breaking change.
-
-**`TRUAPI_WIRE_SCHEMA_HASH`**, exported from the package root. The core ships as
-a vendored `.wasm`, so the declared `@parity/truapi` version tells you what the
-JS codecs were built against, not what the binary speaks — and the binary is
-what your product has to match. The build reads the value out of the compiled
-core and fails if it drifts from the constant, so the export cannot go stale.
-
-**An account switch is observable by the product** — this one needed no code
-change, only saying so. `account.connectionStatusSubscribe()` delivers
-`Disconnected` then `Connected` across a `switchAccount()`, and the product keeps
-working with no reload. What hangs is gating on `waitForConnection()` afterwards:
-`getConnectionStatus()` tracks the *product* connection and only moves when a
-frame arrives, so it sits at `'disconnected'` until the product next talks.
-`getChainStatus()` is the host-session one and reads `'connected'` immediately.
-
-## The bug we found on the way: `revokePermission()` did not revoke
-
-This one came out of a side remark while we were comparing notes — "I'd cleared
-the log but not revoked" — and it turned out to be worse than the thing we were
-chasing.
-
-`revokePermission(tag)` deleted the tag from the host's own set. That set drives
-`getGrantedPermissions()` and the iframe's Permissions Policy. It is not what
-gates the product: the core keeps its own authorization store, and that is the
-one it acts on. So a revoked permission went on being served from the stored
-`AllowAlways` — no fresh prompt, nothing in `getPermissionLog()`, and
-`getGrantedPermissions()` describing a state the core would not honour. Silent in
-all three directions at once. Any suite that revoked and asserted the product was
-re-asked, or blocked, was asserting nothing.
-
-Both `grantPermission()` and `revokePermission()` now write the core's decision
-as well, and both are `Promise<void>`. The Playwright fixture already declared
-them async, so fixture users change nothing; a test driving
-`window.__TEST_HOST__` directly should `await` them.
+Both `grantPermission()` and `revokePermission()` now write the core's decision,
+and **both are `Promise<void>`**. The fixture already declared them async; code
+driving `window.__TEST_HOST__` directly needs to `await` them.
 
 ```ts
 await testHost.revokePermission("ChainSubmit");
 await testHost.setPermissionBehavior("reject-all");
-// Now the next signing attempt is asked, refused, and fails.
+// the next signing attempt is asked, refused, and fails
 ```
 
-Revoking writes *undetermined*, not denied — it means "ask me again", and the
-behavior decides the answer. Collapsing it to a denial would have made
-`setPermissionBehavior` unobservable on that path, which is one silent wrong
-answer traded for another.
+Revoking writes *undetermined*, not denied — it means "ask again", and the
+behavior decides the answer.
 
-Two smaller things fell out of fixing it. A grant the core could not store used
-to fail inside a `catch` that only logged: `grantPermission('TransactionSubmit')`
-— a name this very post shows from a 0.6-era release — left the tag in
-`getGrantedPermissions()` and nothing anywhere else. Unknown tags now reject, and
-name what would have been accepted. And `Remote`, alone among the remote
-permissions, is stored under its payload as well as its tag, so it takes one:
+Two smaller ones fell out of that. A grant the core could not store used to fail
+inside a `catch` that only logged, so an unknown tag sat in
+`getGrantedPermissions()` and nowhere else; unknown tags now reject. And `Remote`
+is stored under its domain list, so it takes one:
+`grantPermission("Remote", { domains: ["example.dot"] })`.
 
-```ts
-await testHost.grantPermission("Remote", { domains: ["example.dot"] });
-```
+## Also in 0.15.0
 
-`setResourceAllocationBehavior()` picked up the same validation its boot-option
-twin already had, for the same reason: `{ AutoSignin: false }` used to be
-accepted and would then grant the resource it was written to withhold.
+- **Product storage by the key your product used.** `getProductStorage()` is
+  keyed by the namespaced form, and suffix-matching it breaks when a local key
+  contains a colon. `getProductStorageValue("mykey")` and
+  `getProductStorageEntries()` match exactly.
+- **The package ships its CHANGELOG.** `files` was `["dist"]`.
+- **`TRUAPI_WIRE_SCHEMA_HASH`**, exported from the package root. The package
+  version tells you what the JS codecs were built against, not what the vendored
+  `.wasm` speaks. The build fails if the two drift.
+- **An account switch is observable by the product** via
+  `account.connectionStatusSubscribe()` — `Disconnected` then `Connected`, no
+  reload needed. Do not gate on `waitForConnection()` afterwards: it tracks the
+  product connection and only moves when a frame arrives, so it hangs until the
+  product next talks. `getChainStatus()` is the host session.
+- **`pnpm test:integration` rebuilds the host bundle**, so local runs stop
+  testing the previous build. Contributors only; CI always built first.
 
-One for contributors rather than users: `pnpm test:integration` now rebuilds the
-host bundle. The browser runs `dist/host/`, and the script built only the test
-product — so an edit under `src/browser/` was tested against the previous build
-unless you remembered to build first, and the suite passed and said nothing. CI
-always built first, so this only ever misled local runs.
+## Upgrading
+
+Await `grantPermission()` and `revokePermission()` if you call them on
+`window.__TEST_HOST__` directly. Otherwise nothing to change — `'approve-all'`
+stays the default. Add the boot option to any suite that asserts on signing.
