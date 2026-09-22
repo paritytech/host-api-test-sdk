@@ -36,6 +36,16 @@ regression: it is what the capability does. The host can now withhold it.
 
   **Both are now `Promise<void>`.** The Playwright fixture already declared them async and awaits the evaluate, so fixture users see no change; a test driving `window.__TEST_HOST__` directly should `await` them.
 
+- **A grant the core could not store used to look like it worked.** The write-through above built the core's `PermissionAuthorizationRequest` from the tag alone, and any tag outside the device set became a remote permission unchecked. Two cases could not survive that. An unknown tag — `grantPermission('TransactionSubmit')`, a name this project's own forum post still shows from an older release — produced a request the codec rejects. And `Remote`, alone among the remote permissions, carries a payload: the core files the decision under the domain list, so a request built without it does not encode at all. Both threw inside a `try/catch` that only logged, leaving `getGrantedPermissions()` holding a tag the core had never heard of — the same silent divergence the revoke fix was about, in the one corner it did not reach.
+
+  `grantPermission` and `revokePermission` now take an optional payload — `grantPermission('Remote', { domains: ['example.dot'] })` — and **reject** on an unknown tag, or on a payload-carrying one given without its payload, naming what they would have accepted. They also write the core first and update the host's own view only once that lands, so the two can no longer disagree. `initialState.grantedPermissions` is a plain `string[]` seeded before the runtime exists, so a bad tag there is reported to the console and skipped rather than failing the boot.
+
+  The device/remote split is now a total record over the core's own unions rather than a `Set<string>`, so a capability added upstream fails to compile here instead of being routed to the wrong half. `src/browser/control-api.spec.ts` encodes every permission the host accepts through the core's codec, which is what makes "the core will take this" a checked claim rather than an assertion about shape.
+
+- **`setResourceAllocationBehavior()` now validates its argument**, on the same terms `behaviors.resourceAllocation` already did. It is reachable from plain JS through `page.evaluate`, where `{ AutoSignin: false }` would have been accepted and then silently granted the resource it was written to withhold — the precise bug the option exists to prevent. An unknown key throws naming the key, and the previous behavior is left in place rather than half-applied. The in-page function form passes through untouched.
+
+- **`pnpm test:integration` rebuilds the host bundle.** It built the test product but not the host, and the browser runs `dist/host/`, so an edit to `src/browser/` was tested only if the developer remembered `pnpm run build:bundle` first — otherwise the suite passed against the previous build and said nothing. CI always built first and was unaffected; this only ever misled local runs, which is where `CLAUDE.md` tells you to run it.
+
 ### Added
 
 - **`TRUAPI_WIRE_SCHEMA_HASH`** (`462dacb6e0d1f504` for this release) — the wire schema the bundled core actually speaks, exported from the package root and stated in the README. The declared `@parity/truapi` version is weaker evidence: the core ships as a vendored `.wasm`, so the dependency says what the JS codecs were built against, not what the binary speaks. Answering "can my product talk to this host?" previously meant running `strings` over `dist/host/truapi_server_bg.wasm` — and that does not even work reliably, since the only 16-hex strings in the binary are Cargo path hashes. `build.mjs` now reads the value out of the compiled core through its own `wireSchemaHash()` export and fails the build if it disagrees with the constant, so a dependency bump cannot publish a stale one.
@@ -52,7 +62,7 @@ regression: it is what the capability does. The host can now withhold it.
 
 ### Internal
 
-- Unit coverage 183 → 203: a new `src/types.spec.ts` for `decideResource` and `parseResourceAllocationBehavior`, plus a `sso responder resource policy` suite pinning the per-resource verdicts, the one-outcome-per-resource rule and the recording. Integration 77 → 81, including one test that *documents the trap* — granting `AutoSigning` and asserting the logs go empty — so the behaviour cannot change silently.
+- Unit coverage 183 → 209: a new `src/types.spec.ts` for `decideResource` and `parseResourceAllocationBehavior`, a new `src/browser/control-api.spec.ts` checking every permission the host can grant against the core's own codec, plus a `sso responder resource policy` suite pinning the per-resource verdicts, the one-outcome-per-resource rule and the recording. Integration 77 → 94, including one test that *documents the trap* — granting `AutoSigning` and asserting the logs go empty — so the behaviour cannot change silently.
 - The page-config validation for `resourceAllocation` lives in `types.ts` beside the type it parses, rather than in `host-runtime.ts`: an unknown resource key throws naming the key, and that is checked by a unit test rather than by scraping a browser console.
 
 ## 0.14.0

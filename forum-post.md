@@ -1315,3 +1315,55 @@ working with no reload. What hangs is gating on `waitForConnection()` afterwards
 `getConnectionStatus()` tracks the *product* connection and only moves when a
 frame arrives, so it sits at `'disconnected'` until the product next talks.
 `getChainStatus()` is the host-session one and reads `'connected'` immediately.
+
+## The bug we found on the way: `revokePermission()` did not revoke
+
+This one came out of a side remark while we were comparing notes — "I'd cleared
+the log but not revoked" — and it turned out to be worse than the thing we were
+chasing.
+
+`revokePermission(tag)` deleted the tag from the host's own set. That set drives
+`getGrantedPermissions()` and the iframe's Permissions Policy. It is not what
+gates the product: the core keeps its own authorization store, and that is the
+one it acts on. So a revoked permission went on being served from the stored
+`AllowAlways` — no fresh prompt, nothing in `getPermissionLog()`, and
+`getGrantedPermissions()` describing a state the core would not honour. Silent in
+all three directions at once. Any suite that revoked and asserted the product was
+re-asked, or blocked, was asserting nothing.
+
+Both `grantPermission()` and `revokePermission()` now write the core's decision
+as well, and both are `Promise<void>`. The Playwright fixture already declared
+them async, so fixture users change nothing; a test driving
+`window.__TEST_HOST__` directly should `await` them.
+
+```ts
+await testHost.revokePermission("ChainSubmit");
+await testHost.setPermissionBehavior("reject-all");
+// Now the next signing attempt is asked, refused, and fails.
+```
+
+Revoking writes *undetermined*, not denied — it means "ask me again", and the
+behavior decides the answer. Collapsing it to a denial would have made
+`setPermissionBehavior` unobservable on that path, which is one silent wrong
+answer traded for another.
+
+Two smaller things fell out of fixing it. A grant the core could not store used
+to fail inside a `catch` that only logged: `grantPermission('TransactionSubmit')`
+— a name this very post shows from a 0.6-era release — left the tag in
+`getGrantedPermissions()` and nothing anywhere else. Unknown tags now reject, and
+name what would have been accepted. And `Remote`, alone among the remote
+permissions, is stored under its payload as well as its tag, so it takes one:
+
+```ts
+await testHost.grantPermission("Remote", { domains: ["example.dot"] });
+```
+
+`setResourceAllocationBehavior()` picked up the same validation its boot-option
+twin already had, for the same reason: `{ AutoSignin: false }` used to be
+accepted and would then grant the resource it was written to withhold.
+
+One for contributors rather than users: `pnpm test:integration` now rebuilds the
+host bundle. The browser runs `dist/host/`, and the script built only the test
+product — so an edit under `src/browser/` was tested against the previous build
+unless you remembered to build first, and the suite passed and said nothing. CI
+always built first, so this only ever misled local runs.

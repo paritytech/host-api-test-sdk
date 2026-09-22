@@ -505,8 +505,22 @@ async function init(): Promise<void> {
     // `initialState.grantedPermissions` seeded the host's own set before the
     // runtime existed. The core keeps the decision it acts on, so replay them
     // into it now — otherwise a pre-granted permission is still prompted for.
+    //
+    // A tag the core does not know throws, and that must not take the whole
+    // host down: the seed is a plain `string[]`, so a typo here is a config
+    // mistake to report, not a reason for `window.__TEST_HOST__` to never
+    // finish booting. The tag stays in the host's own set, and the message
+    // says the core did not take it.
     for (const tag of state.grantedPermissions) {
-      await window.__TEST_HOST__.grantPermission(tag);
+      try {
+        await window.__TEST_HOST__.grantPermission(tag);
+      } catch (error) {
+        console.error(
+          `[test-host] initialState.grantedPermissions: "${tag}" was not granted in the core, ` +
+            'so the product will still be asked for it:',
+          error,
+        );
+      }
     }
 
     console.log(

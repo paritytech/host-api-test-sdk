@@ -24,6 +24,7 @@ import type { LoopbackStore, StoredStatement } from './loopback-chain.js';
 import type { SsoResponder } from './sso/responder.js';
 import { encodeStatement, signStatement } from './sso/statement.js';
 import type { Statement } from './sso/statement.js';
+import { parseResourceAllocationBehavior } from '../types.js';
 import type {
   ChainEntry,
   ChatActionInput,
@@ -49,23 +50,62 @@ import type {
  * The device capabilities, as `HostDevicePermissionRequest` names them. A tag
  * outside this set is a `RemotePermission` — the split the core's
  * `PermissionAuthorizationRequest` needs, which a bare tag string does not carry.
+ *
+ * Written as a total record rather than a `Set<string>` so the compiler keeps it
+ * in step with the core: a device capability added upstream fails to compile
+ * here instead of being quietly routed as a remote permission, which would
+ * write the authorization under a key the core never reads.
  */
-const DEVICE_PERMISSIONS = new Set([
-  'Notifications',
-  'Camera',
-  'Microphone',
-  'Bluetooth',
-  'NFC',
-  'Location',
-  'Clipboard',
-  'OpenUrl',
-  'Biometrics',
-]);
+const DEVICE_PERMISSIONS: Record<HostDevicePermissionRequest, true> = {
+  Notifications: true,
+  Camera: true,
+  Microphone: true,
+  Bluetooth: true,
+  NFC: true,
+  Location: true,
+  Clipboard: true,
+  OpenUrl: true,
+  Biometrics: true,
+};
 
-function toAuthorizationRequest(tag: string): PermissionAuthorizationRequest {
-  return DEVICE_PERMISSIONS.has(tag)
-    ? { tag: 'Device', value: tag as HostDevicePermissionRequest }
-    : { tag: 'Remote', value: { permission: { tag } as RemotePermissionRequest['permission'] } };
+type RemotePermission = RemotePermissionRequest['permission'];
+
+/**
+ * The remote permissions, and whether the variant carries a payload. `Remote`
+ * does — the domain list is part of what the core stores the decision under —
+ * so a grant naming it without one cannot be expressed and is rejected rather
+ * than written wrong.
+ */
+const REMOTE_PERMISSIONS: Record<RemotePermission['tag'], boolean> = {
+  Remote: true,
+  WebRtc: false,
+  ChainSubmit: false,
+  PreimageSubmit: false,
+  StatementSubmit: false,
+};
+
+export function toAuthorizationRequest(
+  tag: string,
+  value: unknown,
+): PermissionAuthorizationRequest {
+  if (Object.hasOwn(DEVICE_PERMISSIONS, tag)) {
+    return { tag: 'Device', value: tag as HostDevicePermissionRequest };
+  }
+  if (!Object.hasOwn(REMOTE_PERMISSIONS, tag)) {
+    throw new Error(
+      `unknown permission "${tag}": expected one of ${[
+        ...Object.keys(DEVICE_PERMISSIONS),
+        ...Object.keys(REMOTE_PERMISSIONS),
+      ].join(', ')}`,
+    );
+  }
+  if (REMOTE_PERMISSIONS[tag as RemotePermission['tag']] && value === undefined) {
+    throw new Error(
+      `permission "${tag}" carries a payload and cannot be granted by tag alone — ` +
+        `pass it, e.g. grantPermission('Remote', { domains: ['example.dot'] })`,
+    );
+  }
+  return { tag: 'Remote', value: { permission: { tag, value } as RemotePermission } };
 }
 
 /** Matches dot.li's own mapping, and is why `grantPermission` touches the iframe. */
@@ -146,20 +186,21 @@ export function buildControlApi(options: ControlApiOptions): TestHostAPI {
   const { state, responder, runtime, iframeHost, provider } = options;
 
   /**
-   * Write the decision the core acts on. Failures are logged, not thrown: the
-   * host's own view is already updated, and a test that cannot reach the core
-   * has bigger problems than this call.
+   * Write the decision the core acts on. Failures reject rather than warn: a
+   * write that does not land leaves `getGrantedPermissions()` describing a
+   * state the core will not honour, which is the exact silent wrongness these
+   * two calls were changed to stop.
    */
-  const setAuthorization = async (tag: string, status: PermissionAuthorizationStatus) => {
-    try {
-      await runtime.setPermissionAuthorizationStatus(
-        options.productId,
-        toAuthorizationRequest(tag),
-        status,
-      );
-    } catch (error) {
-      console.error(`[test-host] could not set ${tag} to ${status} in the core:`, error);
-    }
+  const setAuthorization = async (
+    tag: string,
+    value: unknown,
+    status: PermissionAuthorizationStatus,
+  ) => {
+    await runtime.setPermissionAuthorizationStatus(
+      options.productId,
+      toAuthorizationRequest(tag, value),
+      status,
+    );
   };
 
   /** Re-apply the Permissions Policy for whatever is granted right now. */
@@ -199,22 +240,23 @@ export function buildControlApi(options: ControlApiOptions): TestHostAPI {
       state.permissionBehavior = behavior;
     },
 
-    async grantPermission(tag: string) {
-      state.grantedPermissions.add(tag);
-      if (DEVICE_PERMISSION_POLICY[tag]) refreshIframeAllow();
+    async grantPermission(tag: string, value?: unknown) {
       // The core keeps its own decision, and that is the one it acts on. The
       // host's set only drives `getGrantedPermissions()` and the iframe policy,
-      // so writing one without the other reports a state the core will not honour.
-      await setAuthorization(tag, 'Authorized');
+      // so writing one without the other reports a state the core will not
+      // honour — which is why the core goes first and a failure leaves neither.
+      await setAuthorization(tag, value, 'Authorized');
+      state.grantedPermissions.add(tag);
+      if (DEVICE_PERMISSION_POLICY[tag]) refreshIframeAllow();
     },
 
-    async revokePermission(tag: string) {
-      state.grantedPermissions.delete(tag);
-      if (DEVICE_PERMISSION_POLICY[tag]) refreshIframeAllow();
+    async revokePermission(tag: string, value?: unknown) {
       // `NotDetermined`, not `Denied`: revoking returns the product to being
       // asked, which is what a test revoking before a reconnect is after. Use
       // `setPermissionBehavior('reject-all')` to make that asking end in refusal.
-      await setAuthorization(tag, 'NotDetermined');
+      await setAuthorization(tag, value, 'NotDetermined');
+      state.grantedPermissions.delete(tag);
+      if (DEVICE_PERMISSION_POLICY[tag]) refreshIframeAllow();
     },
 
     getGrantedPermissions() {
@@ -457,7 +499,12 @@ export function buildControlApi(options: ControlApiOptions): TestHostAPI {
     },
 
     setResourceAllocationBehavior(behavior: ResourceAllocationBehavior) {
-      state.resourceAllocationBehavior = behavior;
+      // Validated on the way in, exactly as `behaviors.resourceAllocation` is:
+      // this is reachable from plain JS through `page.evaluate`, where a
+      // misspelled resource key would silently grant the one it meant to
+      // withhold. The function form is in-page only and passes through.
+      state.resourceAllocationBehavior =
+        typeof behavior === 'function' ? behavior : parseResourceAllocationBehavior(behavior);
     },
 
     getResourceAllocationLog() {

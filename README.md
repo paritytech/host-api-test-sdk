@@ -259,6 +259,17 @@ means "ask me again", and the behavior decides the answer. Clearing the log is
 not revoking: `clearPermissionLog()` only empties the record, leaving the stored
 grant in place, so a test that clears and expects a fresh entry will see nothing.
 
+Both calls address one stored decision, so the tag has to name a permission the
+core knows — `'Camera'`, `'ChainSubmit'`, `'StatementSubmit'` and so on — and an
+unknown one rejects rather than quietly doing nothing. One permission, `Remote`,
+is stored under its payload as well as its tag, so it needs that payload passed
+alongside, and the same payload on the way back out:
+
+```ts
+await testHost.grantPermission("Remote", { domains: ["example.dot"] });
+await testHost.revokePermission("Remote", { domains: ["example.dot"] });
+```
+
 ### What `permissionLog` records (and what it doesn't)
 
 The permission log is narrower than the name suggests. It records the two prompts the host is actually asked to answer — **remote permission requests** (`RemotePermission`, one entry per request, with its `tag` and `value`) and **device permission requests** (`Camera`, `Microphone`, `Location`, `Bluetooth`, recorded under the request name with `value: undefined`). A granted device permission also updates the iframe's `allow` attribute, matching how a real host delegates browser-level access.
@@ -483,7 +494,7 @@ The People chain is a **loopback statement store inside the page**: no node, no 
 | `testHost.getSigningLog()` | All auto-signed requests since last clear |
 | `testHost.clearSigningLog()` | Reset the signing log |
 | `testHost.setPermissionBehavior(behavior)` | `'approve-all'`, `'approve-once'` or `'reject-all'`; the function form works in-page only |
-| `testHost.grantPermission(tag)` / `revokePermission(tag)` / `getGrantedPermissions()` | Pre-grant, revoke, inspect |
+| `testHost.grantPermission(tag, value?)` / `revokePermission(tag, value?)` / `getGrantedPermissions()` | Pre-grant, revoke, inspect. Both `await` — they write the core's own decision. `value` is needed only by `Remote`, which is stored under its domain list |
 | `testHost.getPermissionLog()` / `clearPermissionLog()` | Permission requests and outcomes |
 | `testHost.getNavigationLog()` / `clearNavigationLog()` | `navigateTo` attempts from the product |
 | `testHost.getOperationLog()` / `getOpenOperations()` / `clearOperationLog()` | Pending operations a `Worker` product opened to hold its runtime up |

@@ -2082,6 +2082,126 @@ test.describe('Resource allocation policy', () => {
     }
   });
 
+  // The complement of the revoke tests: a grant the host makes on the product's
+  // behalf has to land in the core too, or the product is asked anyway. This
+  // one comes in through `initialState`, which is replayed after the runtime
+  // starts — the only path that writes the core before the product's first frame.
+  test('a permission pre-granted at boot is never asked for', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice'],
+      initialState: { grantedPermissions: ['ChainSubmit'] },
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+
+      expectOk(
+        await product.evaluate(() =>
+          window.__TEST_PRODUCT__.signRawProduct('test-product.dot', 0, '0x0102'),
+        ),
+      );
+
+      // Signing needs `ChainSubmit`, and the stored grant answered for it.
+      expect(await page.evaluate(() => window.__TEST_HOST__.getPermissionLog())).toEqual([]);
+      expect(await page.evaluate(() => window.__TEST_HOST__.getGrantedPermissions())).toContain(
+        'ChainSubmit',
+      );
+    } finally {
+      await host.close();
+    }
+  });
+
+  // A grant the core cannot store must fail loudly. It used to be swallowed:
+  // `getGrantedPermissions()` gained the tag, the core gained nothing.
+  test('granting a permission the core does not know rejects', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice'],
+    });
+
+    try {
+      await loadHostAndProduct(page, host.url, productServer.url);
+
+      const failure = await page.evaluate(async () => {
+        try {
+          await window.__TEST_HOST__.grantPermission('TransactionSubmit');
+          return null;
+        } catch (error) {
+          return String(error);
+        }
+      });
+      expect(failure).toMatch(/unknown permission "TransactionSubmit"/);
+      // And the host's own view did not drift: the write failed, so neither moved.
+      expect(await page.evaluate(() => window.__TEST_HOST__.getGrantedPermissions())).not.toContain(
+        'TransactionSubmit',
+      );
+    } finally {
+      await host.close();
+    }
+  });
+
+  // `Remote` is the one permission whose stored decision includes a payload.
+  test('a payload-carrying permission needs its payload', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice'],
+    });
+
+    try {
+      await loadHostAndProduct(page, host.url, productServer.url);
+
+      const attempt = (value?: unknown) =>
+        page.evaluate(async (v) => {
+          try {
+            await window.__TEST_HOST__.grantPermission('Remote', v);
+            return null;
+          } catch (error) {
+            return String(error);
+          }
+        }, value);
+
+      expect(await attempt()).toMatch(/carries a payload/);
+      expect(await attempt({ domains: ['example.dot'] })).toBeNull();
+      expect(await page.evaluate(() => window.__TEST_HOST__.getGrantedPermissions())).toContain(
+        'Remote',
+      );
+    } finally {
+      await host.close();
+    }
+  });
+
+  // The setter validates on the same terms as the boot option: a misspelled key
+  // would otherwise grant the resource it was written to withhold.
+  test('setResourceAllocationBehavior refuses an unknown resource', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice'],
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+
+      const failure = await page.evaluate(() => {
+        try {
+          window.__TEST_HOST__.setResourceAllocationBehavior({ AutoSignin: false } as never);
+          return null;
+        } catch (error) {
+          return String(error);
+        }
+      });
+      expect(failure).toMatch(/invalid resourceAllocation resource: "AutoSignin"/);
+
+      // The rejected call left the previous behavior in place, rather than a
+      // half-applied one: auto-signing is still allocated.
+      expectOk(await allocate(product, ['AutoSigning']));
+      const log = await page.evaluate(() => window.__TEST_HOST__.getResourceAllocationLog());
+      expect(log.map((entry) => [entry.resource, entry.granted])).toEqual([['AutoSigning', true]]);
+    } finally {
+      await host.close();
+    }
+  });
+
   test('the allocation log records what was asked and what was answered', async ({ page }) => {
     const host = await createTestHostServer({
       productUrl: productServer.url,

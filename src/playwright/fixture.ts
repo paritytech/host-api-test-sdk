@@ -46,16 +46,26 @@ export interface TestHost {
   /** Set how the host responds to remote and device permission requests. */
   setPermissionBehavior(behavior: FixtureConsentBehavior): Promise<void>;
 
-  /** Pre-grant a permission without the product requesting it */
-  grantPermission(tag: string): Promise<void>;
+  /**
+   * Pre-grant a permission without the product requesting it — in the core,
+   * which is what gates the product, as well as in `getGrantedPermissions()`.
+   *
+   * `value` is the permission's payload, needed only by the variants that carry
+   * one: `grantPermission('Remote', { domains: ['example.dot'] })`. Rejects on
+   * an unknown tag, or on a payload-carrying one given without its payload.
+   */
+  grantPermission(tag: string, value?: unknown): Promise<void>;
 
   /**
    * Revoke a permission, returning the product to being asked the next time it
    * needs one — in the core, which is what actually gates the product, not only
    * in `getGrantedPermissions()`. Pair with `setPermissionBehavior('reject-all')`
    * to make that asking end in a refusal.
+   *
+   * Takes `value` on the same terms as `grantPermission`, and must be given the
+   * same payload the grant used — it addresses one stored decision, not a tag.
    */
-  revokePermission(tag: string): Promise<void>;
+  revokePermission(tag: string, value?: unknown): Promise<void>;
 
   /** List currently granted permissions */
   getGrantedPermissions(): Promise<string[]>;
@@ -332,12 +342,18 @@ export function createTestHostFixture(defaults: TestHostFixtureOptions) {
           await page.evaluate((b) => window.__TEST_HOST__.setPermissionBehavior(b), behavior);
         },
 
-        async grantPermission(tag: string) {
-          await page.evaluate((t) => window.__TEST_HOST__.grantPermission(t), tag);
+        async grantPermission(tag: string, value?: unknown) {
+          await page.evaluate(
+            ([t, v]) => window.__TEST_HOST__.grantPermission(t as string, v),
+            [tag, value] as const,
+          );
         },
 
-        async revokePermission(tag: string) {
-          await page.evaluate((t) => window.__TEST_HOST__.revokePermission(t), tag);
+        async revokePermission(tag: string, value?: unknown) {
+          await page.evaluate(
+            ([t, v]) => window.__TEST_HOST__.revokePermission(t as string, v),
+            [tag, value] as const,
+          );
         },
 
         async getGrantedPermissions() {

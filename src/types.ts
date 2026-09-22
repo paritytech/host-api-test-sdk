@@ -534,18 +534,28 @@ export interface TestHostAPI {
    * Pre-grant a permission without the product requesting it, in the core as
    * well as in the host's own view — the core is what actually gates the
    * product. Awaitable: the core write is a round trip to the worker.
+   *
+   * `value` is the permission's payload, needed only by the variants that carry
+   * one. `Remote` is the only such permission today, and the domains are part of
+   * what the core stores the decision under:
+   * `grantPermission('Remote', { domains: ['example.dot'] })`. Rejects on an
+   * unknown tag, or on a payload-carrying one given without its payload, rather
+   * than writing an authorization the core will never match.
    */
-  grantPermission(tag: string): Promise<void>;
+  grantPermission(tag: string, value?: unknown): Promise<void>;
   /**
    * Revoke a permission, returning the product to being asked the next time it
    * needs one. Combine with `setPermissionBehavior('reject-all')` to make that
    * asking end in a refusal.
    *
+   * Takes `value` on the same terms as `grantPermission`, and must be given the
+   * same payload the grant used — it addresses one stored decision, not a tag.
+   *
    * Before 0.15 this touched only the host's own set, so `getGrantedPermissions()`
    * changed while the core kept the decision it had stored and went on serving
    * the product without asking again.
    */
-  revokePermission(tag: string): Promise<void>;
+  revokePermission(tag: string, value?: unknown): Promise<void>;
   /** List currently granted permissions. */
   getGrantedPermissions(): string[];
   /** Get the log of all permission requests and their outcomes. */
