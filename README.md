@@ -245,12 +245,25 @@ const log = await page.evaluate(() =>
 
 The permission log is narrower than the name suggests. It records the two prompts the host is actually asked to answer — **remote permission requests** (`RemotePermission`, one entry per request, with its `tag` and `value`) and **device permission requests** (`Camera`, `Microphone`, `Location`, `Bluetooth`, recorded under the request name with `value: undefined`). A granted device permission also updates the iframe's `allow` attribute, matching how a real host delegates browser-level access.
 
-**`ChainSubmit` is requested by signing, not by connecting.** A suite that
-connects, allocates resources and then reads `permissionLog` sees an empty log
-for that reason alone — the entry appears once the product actually signs. The
-`ResourceAllocation` confirmation a product triggers at connect is a separate
-decision, in `getUserConfirmationLog()`, and is not `ChainSubmit` arriving by
-another route.
+**`ChainSubmit` can reach the host two ways, and only one of them is the core's.**
+The core triggers it *implicitly*, on the business call that needs it — the
+protocol says so of `ChainSubmit`, `PreimageSubmit` and `StatementSubmit` alike.
+A product, or the SDK it is built on, may *also* request it explicitly at
+connect: `@parity/product-sdk-signer` does, through its
+`requestChainSubmitPermission` option, which defaults to `true`.
+
+So an empty `permissionLog` right after connect means only that nothing has
+asked yet. For a bare product that is expected — this repo's own test product
+never requests it, and the entry appears when it first signs. For a product-sdk
+product it is worth a second look: that SDK's request is wrapped in a `try/catch`
+that only `log.warn`s, so a failing request leaves no host entry, no error, and a
+connect that succeeds. Check the browser console for
+`failed to request ChainSubmit permission` before concluding the permission
+moved somewhere.
+
+The `ResourceAllocation` confirmation a product triggers at connect is a separate
+decision, recorded in `getUserConfirmationLog()`, and is not `ChainSubmit`
+arriving by another route.
 
 It also records **`OpenUrl`**, the device permission the core gates outbound
 navigation on. `system.navigateTo` reaches the host's navigation callback only

@@ -1970,10 +1970,11 @@ test.describe('Resource allocation policy', () => {
     }
   });
 
-  // `ChainSubmit` is requested on the signing path, not at connect and not by
-  // an allocation. A suite that connects, allocates and then reads
-  // `getPermissionLog()` sees an empty log for that reason alone.
-  test('ChainSubmit is requested by signing, not by connecting or allocating', async ({ page }) => {
+  // The core triggers `ChainSubmit` implicitly, on the business call that needs
+  // it. A product may ALSO request it explicitly at connect — product-sdk's
+  // signer does, by default — which this test product deliberately does not, so
+  // what is pinned here is the core's own timing.
+  test('the core requests ChainSubmit on the signing call, not at connect', async ({ page }) => {
     const host = await createTestHostServer({
       productUrl: productServer.url,
       accounts: ['alice'],
