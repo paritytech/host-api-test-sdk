@@ -2001,6 +2001,87 @@ test.describe('Resource allocation policy', () => {
     }
   });
 
+  // A grant the core has stored is not re-asked, so a test that revokes and
+  // expects a fresh prompt is really testing whether the revoke reached the
+  // core at all. Before 0.15 it did not.
+  test('revoking returns the product to being asked', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice'],
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+      const tags = () =>
+        page.evaluate(() => window.__TEST_HOST__.getPermissionLog().map((e) => e.tag));
+
+      expectOk(
+        await product.evaluate(() =>
+          window.__TEST_PRODUCT__.signRawProduct('test-product.dot', 0, '0x01'),
+        ),
+      );
+      expect(await tags()).toEqual(['ChainSubmit']);
+
+      // Signing again reuses the stored grant: no second prompt.
+      await page.evaluate(() => window.__TEST_HOST__.clearPermissionLog());
+      expectOk(
+        await product.evaluate(() =>
+          window.__TEST_PRODUCT__.signRawProduct('test-product.dot', 0, '0x02'),
+        ),
+      );
+      expect(await tags()).toEqual([]);
+
+      // After a revoke it is asked again.
+      await page.evaluate(async () => {
+        await window.__TEST_HOST__.revokePermission('ChainSubmit');
+        window.__TEST_HOST__.clearPermissionLog();
+      });
+      expectOk(
+        await product.evaluate(() =>
+          window.__TEST_PRODUCT__.signRawProduct('test-product.dot', 0, '0x03'),
+        ),
+      );
+      expect(await tags()).toEqual(['ChainSubmit']);
+    } finally {
+      await host.close();
+    }
+  });
+
+  test('a revoked permission the host then denies actually blocks the product', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice'],
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+
+      expectOk(
+        await product.evaluate(() =>
+          window.__TEST_PRODUCT__.signRawProduct('test-product.dot', 0, '0x01'),
+        ),
+      );
+
+      await page.evaluate(async () => {
+        window.__TEST_HOST__.setPermissionBehavior('reject-all');
+        await window.__TEST_HOST__.revokePermission('ChainSubmit');
+        window.__TEST_HOST__.clearPermissionLog();
+      });
+
+      const refused = await product.evaluate(() =>
+        window.__TEST_PRODUCT__.signRawProduct('test-product.dot', 0, '0x02'),
+      );
+      expect(refused.ok).toBe(false);
+      expect(
+        await page.evaluate(() =>
+          window.__TEST_HOST__.getPermissionLog().map((e) => `${e.tag}:${e.decision}`),
+        ),
+      ).toEqual(['ChainSubmit:Deny']);
+    } finally {
+      await host.close();
+    }
+  });
+
   test('the allocation log records what was asked and what was answered', async ({ page }) => {
     const host = await createTestHostServer({
       productUrl: productServer.url,

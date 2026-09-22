@@ -4,7 +4,12 @@
  */
 import { blake2b } from '@noble/hashes/blake2.js';
 import { scale } from '@parity/truapi';
-import type { TrUApiProductProvider } from '@parity/truapi-host';
+import type { RemotePermissionRequest } from '@parity/truapi';
+import type {
+  PermissionAuthorizationRequest,
+  PermissionAuthorizationStatus,
+  TrUApiProductProvider,
+} from '@parity/truapi-host';
 import type { IframeHost, WorkerPairingHostRuntime } from '@parity/truapi-host/web';
 import type { ChainRuntimeConfig } from './callbacks/chain.js';
 import { roomListSnapshot } from './callbacks/chat.js';
@@ -39,6 +44,29 @@ import type {
   ThemeInput,
   UserConfirmationBehavior,
 } from '../types.js';
+
+/**
+ * The device capabilities, as `HostDevicePermissionRequest` names them. A tag
+ * outside this set is a `RemotePermission` — the split the core's
+ * `PermissionAuthorizationRequest` needs, which a bare tag string does not carry.
+ */
+const DEVICE_PERMISSIONS = new Set([
+  'Notifications',
+  'Camera',
+  'Microphone',
+  'Bluetooth',
+  'NFC',
+  'Location',
+  'Clipboard',
+  'OpenUrl',
+  'Biometrics',
+]);
+
+function toAuthorizationRequest(tag: string): PermissionAuthorizationRequest {
+  return DEVICE_PERMISSIONS.has(tag)
+    ? { tag: 'Device', value: tag as HostDevicePermissionRequest }
+    : { tag: 'Remote', value: { permission: { tag } as RemotePermissionRequest['permission'] } };
+}
 
 /** Matches dot.li's own mapping, and is why `grantPermission` touches the iframe. */
 export const DEVICE_PERMISSION_POLICY: Record<string, string> = {
@@ -94,6 +122,8 @@ export interface ControlApiOptions {
   responder: SsoResponder;
   /** The in-page People store, for the statement controls. */
   store: LoopbackStore;
+  /** The dotNS id the product runs as — the namespace the core stores decisions under. */
+  productId: string;
   /**
    * The active session's 64-byte sr25519 identity secret. Read through a
    * callback because an account switch re-mints it, and an injected statement
@@ -114,6 +144,23 @@ export interface ControlApiOptions {
 
 export function buildControlApi(options: ControlApiOptions): TestHostAPI {
   const { state, responder, runtime, iframeHost, provider } = options;
+
+  /**
+   * Write the decision the core acts on. Failures are logged, not thrown: the
+   * host's own view is already updated, and a test that cannot reach the core
+   * has bigger problems than this call.
+   */
+  const setAuthorization = async (tag: string, status: PermissionAuthorizationStatus) => {
+    try {
+      await runtime.setPermissionAuthorizationStatus(
+        options.productId,
+        toAuthorizationRequest(tag),
+        status,
+      );
+    } catch (error) {
+      console.error(`[test-host] could not set ${tag} to ${status} in the core:`, error);
+    }
+  };
 
   /** Re-apply the Permissions Policy for whatever is granted right now. */
   const refreshIframeAllow = () => {
@@ -152,14 +199,22 @@ export function buildControlApi(options: ControlApiOptions): TestHostAPI {
       state.permissionBehavior = behavior;
     },
 
-    grantPermission(tag: string) {
+    async grantPermission(tag: string) {
       state.grantedPermissions.add(tag);
       if (DEVICE_PERMISSION_POLICY[tag]) refreshIframeAllow();
+      // The core keeps its own decision, and that is the one it acts on. The
+      // host's set only drives `getGrantedPermissions()` and the iframe policy,
+      // so writing one without the other reports a state the core will not honour.
+      await setAuthorization(tag, 'Authorized');
     },
 
-    revokePermission(tag: string) {
+    async revokePermission(tag: string) {
       state.grantedPermissions.delete(tag);
       if (DEVICE_PERMISSION_POLICY[tag]) refreshIframeAllow();
+      // `NotDetermined`, not `Denied`: revoking returns the product to being
+      // asked, which is what a test revoking before a reconnect is after. Use
+      // `setPermissionBehavior('reject-all')` to make that asking end in refusal.
+      await setAuthorization(tag, 'NotDetermined');
     },
 
     getGrantedPermissions() {

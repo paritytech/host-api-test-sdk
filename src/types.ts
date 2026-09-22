@@ -530,10 +530,22 @@ export interface TestHostAPI {
   getChainStatus(): string;
   /** Set how the host responds to remote permission requests. */
   setPermissionBehavior(behavior: PermissionBehavior): void;
-  /** Pre-grant a permission without the product requesting it. */
-  grantPermission(tag: string): void;
-  /** Revoke a previously granted permission. */
-  revokePermission(tag: string): void;
+  /**
+   * Pre-grant a permission without the product requesting it, in the core as
+   * well as in the host's own view — the core is what actually gates the
+   * product. Awaitable: the core write is a round trip to the worker.
+   */
+  grantPermission(tag: string): Promise<void>;
+  /**
+   * Revoke a permission, returning the product to being asked the next time it
+   * needs one. Combine with `setPermissionBehavior('reject-all')` to make that
+   * asking end in a refusal.
+   *
+   * Before 0.15 this touched only the host's own set, so `getGrantedPermissions()`
+   * changed while the core kept the decision it had stored and went on serving
+   * the product without asking again.
+   */
+  revokePermission(tag: string): Promise<void>;
   /** List currently granted permissions. */
   getGrantedPermissions(): string[];
   /** Get the log of all permission requests and their outcomes. */

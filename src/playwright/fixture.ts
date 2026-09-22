@@ -49,7 +49,12 @@ export interface TestHost {
   /** Pre-grant a permission without the product requesting it */
   grantPermission(tag: string): Promise<void>;
 
-  /** Revoke a previously granted permission */
+  /**
+   * Revoke a permission, returning the product to being asked the next time it
+   * needs one — in the core, which is what actually gates the product, not only
+   * in `getGrantedPermissions()`. Pair with `setPermissionBehavior('reject-all')`
+   * to make that asking end in a refusal.
+   */
   revokePermission(tag: string): Promise<void>;
 
   /** List currently granted permissions */

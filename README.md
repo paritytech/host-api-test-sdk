@@ -241,6 +241,24 @@ const log = await page.evaluate(() =>
 );
 ```
 
+### Revoking, and why a grant is not re-asked
+
+The core stores each decision and acts on the stored one, so a permission
+granted `AllowAlways` is not prompted for again. `revokePermission(tag)` clears
+that stored decision as well as the host's own view, which returns the product to
+being asked:
+
+```ts
+await testHost.revokePermission("ChainSubmit");   // await: it reaches the core
+await testHost.setPermissionBehavior("reject-all");
+// The next signing attempt is asked, refused, and fails.
+```
+
+Revoking returns the permission to *undetermined*, not denied — so on its own it
+means "ask me again", and the behavior decides the answer. Clearing the log is
+not revoking: `clearPermissionLog()` only empties the record, leaving the stored
+grant in place, so a test that clears and expects a fresh entry will see nothing.
+
 ### What `permissionLog` records (and what it doesn't)
 
 The permission log is narrower than the name suggests. It records the two prompts the host is actually asked to answer — **remote permission requests** (`RemotePermission`, one entry per request, with its `tag` and `value`) and **device permission requests** (`Camera`, `Microphone`, `Location`, `Bluetooth`, recorded under the request name with `value: undefined`). A granted device permission also updates the iframe's `allow` attribute, matching how a real host delegates browser-level access.

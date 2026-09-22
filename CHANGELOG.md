@@ -30,6 +30,12 @@ regression: it is what the capability does. The host can now withhold it.
 
 - **The published package now contains its CHANGELOG.** `files` was `["dist"]`, so npm shipped the README and LICENSE but not this file — consumers tracing a breaking change had to `npm pack` each version and diff the `.d.ts` by hand.
 
+- **`revokePermission()` now revokes in the core, not just in the host's own view.** It deleted the tag from `state.grantedPermissions` — which drives `getGrantedPermissions()` and the iframe's Permissions Policy — and stopped there. The core keeps its own authorization store, and that is the one it acts on, so a revoked permission went on being served from the stored `AllowAlways`: no fresh prompt, nothing in `getPermissionLog()`, and `getGrantedPermissions()` reporting a state the core would not honour. A test that revoked and expected the product to be re-asked, or blocked, got neither.
+
+  Both `grantPermission()` and `revokePermission()` now write through to the core (`setPermissionAuthorizationStatus`), revoking to `NotDetermined` so the product is asked again rather than silently refused — pair it with `setPermissionBehavior('reject-all')` for a refusal. `initialState.grantedPermissions` is replayed into the core once the runtime is up, so a pre-granted permission is no longer prompted for either.
+
+  **Both are now `Promise<void>`.** The Playwright fixture already declared them async and awaits the evaluate, so fixture users see no change; a test driving `window.__TEST_HOST__` directly should `await` them.
+
 ### Added
 
 - **`TRUAPI_WIRE_SCHEMA_HASH`** (`462dacb6e0d1f504` for this release) — the wire schema the bundled core actually speaks, exported from the package root and stated in the README. The declared `@parity/truapi` version is weaker evidence: the core ships as a vendored `.wasm`, so the dependency says what the JS codecs were built against, not what the binary speaks. Answering "can my product talk to this host?" previously meant running `strings` over `dist/host/truapi_server_bg.wasm` — and that does not even work reliably, since the only 16-hex strings in the binary are Cargo path hashes. `build.mjs` now reads the value out of the compiled core through its own `wireSchemaHash()` export and fails the build if it disagrees with the constant, so a dependency bump cannot publish a stale one.

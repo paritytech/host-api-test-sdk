@@ -489,6 +489,7 @@ async function init(): Promise<void> {
       networks: config.networks,
       responder: responderFacade,
       store,
+      productId,
       identitySecret: () => session.identitySecret,
       runtime,
       iframeHost: host,
@@ -500,6 +501,13 @@ async function init(): Promise<void> {
         portProvider.dispose();
       },
     });
+
+    // `initialState.grantedPermissions` seeded the host's own set before the
+    // runtime existed. The core keeps the decision it acts on, so replay them
+    // into it now — otherwise a pre-granted permission is still prompted for.
+    for (const tag of state.grantedPermissions) {
+      await window.__TEST_HOST__.grantPermission(tag);
+    }
 
     console.log(
       '[test-host] Initialized:',
