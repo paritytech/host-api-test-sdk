@@ -1,5 +1,6 @@
 export { createTestHostServer } from './server.js';
 export { DEV_ACCOUNTS, DEV_ACCOUNT_NAMES } from './accounts.js';
+export { TRUAPI_WIRE_SCHEMA_HASH } from './types.js';
 export {
   DEFAULT_CHAIN,
   PASEO_ASSET_HUB,
@@ -35,6 +36,7 @@ export type {
   OperationEntry,
   PreimageEntry,
   ProductExecutionKind,
+  ProductStorageEntry,
   PermissionBehavior,
   PermissionDecision,
   PermissionLogEntry,

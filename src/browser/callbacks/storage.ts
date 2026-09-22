@@ -14,6 +14,39 @@ import type { CoreStorageKey } from '@parity/truapi-host';
 import { createPushChannel } from './passive.js';
 import type { HostState } from './state.js';
 
+/**
+ * The core namespaces every product-storage key before handing it to the host,
+ * as `truapi:product-storage:v1:<productIdLength>:<productId>:<localKey>`. The
+ * length prefix is what makes this unambiguous: a product id or a local key may
+ * itself contain `:`, so splitting on the separator would guess wrong, while
+ * counting `productIdLength` characters cannot.
+ *
+ * Returns `undefined` for anything that does not parse, rather than guessing —
+ * if the core ever moves to a `v2` layout, a test reading `localKey` sees it go
+ * missing instead of silently matching the wrong entry.
+ */
+const NAMESPACE_PREFIX = 'truapi:product-storage:v1:';
+
+export function parseProductStorageKey(
+  key: string,
+): { productId: string; localKey: string } | undefined {
+  if (!key.startsWith(NAMESPACE_PREFIX)) return undefined;
+  const rest = key.slice(NAMESPACE_PREFIX.length);
+  const separator = rest.indexOf(':');
+  if (separator <= 0) return undefined;
+  const digits = rest.slice(0, separator);
+  if (!/^\d+$/.test(digits)) return undefined;
+
+  const length = Number(digits);
+  const productId = rest.slice(separator + 1, separator + 1 + length);
+  if (productId.length !== length) return undefined;
+  // The character right after the id must be the separator before the local
+  // key; anything else means the length did not describe this key.
+  if (rest[separator + 1 + length] !== ':') return undefined;
+
+  return { productId, localKey: rest.slice(separator + 2 + length) };
+}
+
 function notify(state: HostState, key: string, value: Uint8Array | undefined): void {
   for (const listener of state.productStorageSubscribers.get(key) ?? []) listener(value);
 }

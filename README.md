@@ -9,6 +9,8 @@
 
 Lightweight test host for E2E testing embedded Polkadot products built on [TrUAPI](https://github.com/paritytech/truapi) — dev accounts that auto-sign with no prompts, no Docker, no wallet, and no network.
 
+> **Wire schema:** `462dacb6e0d1f504` — exported as `TRUAPI_WIRE_SCHEMA_HASH`. A product connects only to a host on the same schema, and this is the authority: the core ships as a vendored `.wasm`, so the `@parity/truapi` version below says what the JS codecs were built against, not what the binary speaks. The build fails if the two ever disagree.
+
 > **Upstream contract:** `0.15.x` runs the TrUAPI core itself — `@parity/truapi-host` `0.18.0` (the Rust core compiled to WebAssembly), `@parity/truapi-provider` `0.2.1` for chain transport, and `@parity/truapi` `0.18.0` for the protocol codecs. **Your product must boot through `@parity/truapi/sandbox` on the same `0.18` minor.** A product on an earlier truapi minor will not connect — both sides of the wire move together. If your product goes through `@parity/product-sdk`, check what `@parity/product-sdk-host` pins before upgrading: at the time of writing its newest release (`0.21.0`) pins `@parity/truapi` `^0.17.0`, which excludes `0.18`, so such a product needs a product-sdk release first. Stay on `0.13.x` until then.
 
 ## Why
@@ -265,6 +267,30 @@ product → signing.signRaw(...)                 → SSO round trip → signingL
 product → submit signed bytes                   → the core's broadcast gate     ❌ invisible
 ```
 
+## Observing an account switch
+
+`switchAccount()` does not reload the product iframe, which reads like the
+product cannot notice. It can — the core pushes the change down the product's
+own subscription:
+
+```ts
+// In the product:
+api.account.connectionStatusSubscribe().subscribe({ next: (status) => { /* … */ } });
+```
+
+A switch delivers `Disconnected` then `Connected` there, and the product keeps
+working across it: the same frame signs under the new identity with no reload.
+
+**Do not gate on `waitForConnection()` after a switch — it will hang.**
+`getConnectionStatus()` is the host's view of the *product* connection, and it
+only moves when a frame arrives from the product. A switch sends none, so the
+status sits at `'disconnected'` until the product next talks, however healthy
+the session is. `getChainStatus()` is the one that reports the host session, and
+it reads `'connected'` immediately.
+
+Gate on the product's own readiness instead — its account subscription, or
+whatever it renders once re-connected.
+
 ## Signing observability and `AutoSigning`
 
 **If `getSigningLog()` is empty after a signature you know happened, the product
@@ -408,6 +434,7 @@ The People chain is a **loopback statement store inside the page**: no node, no 
 | `testHost.getOperationLog()` / `getOpenOperations()` / `clearOperationLog()` | Pending operations a `Worker` product opened to hold its runtime up |
 | `testHost.getStatements()` / `getSubmittedStatements()` / `injectStatement(s)` / `clearStatements()` | The in-page statement store — see [Statement store testing](#statement-store-testing) |
 | `testHost.setResourceAllocationBehavior(b)` / `getResourceAllocationLog()` / `clearResourceAllocationLog()` | Which resources the host allocates — withhold `AutoSigning` to keep signing observable |
+| `testHost.getProductStorageEntries()` / `getProductStorageValue(localKey)` | Product storage addressed by the key the product itself used |
 | `testHost.getNotificationLog()` / `clearNotificationLog()` | Push notifications, including scheduled and cancelled ones |
 | `testHost.getChatRooms()` / `getChatBots()` / `getChatMessageLog()` / `clearChat()` | Chat state (needs `executionKind: 'Worker'`) |
 | `testHost.seedChatRoom(room)` / `seedChatBot(bot)` | Add a room/bot without the product creating it |
@@ -592,7 +619,7 @@ const { testHost } = createTestHostFixture({
 
 Two limitations worth knowing:
 
-- **`seedProductStorage` only replays a key `getProductStorage()` has reported.** The core namespaces product-storage keys per product, so a key is always round-tripped, never hand-constructed — seeding a key the product has never written is not supported. `initialState.productStorage` carries the same restriction.
+- **`seedProductStorage` only replays a key `getProductStorage()` has reported.** The core namespaces product-storage keys per product — `truapi:product-storage:v1:<productIdLength>:<productId>:<localKey>` — so a key written *back* is always round-tripped, never hand-constructed. `initialState.productStorage` carries the same restriction. For **reading**, you do not need the namespaced form: `getProductStorageValue(localKey)` and `getProductStorageEntries()` (which carries `localKey` alongside `key`) match on the product's own key. Prefer them to matching `getProductStorage()`'s keys by suffix, which is ambiguous when a local key contains `:` — the length prefix is exactly what disambiguates, and the parser returns `localKey: undefined` rather than guessing if the core ever moves to a new layout.
 - **A function-form behavior cannot cross `page.evaluate`.** `setNavigationBehavior` / `setNotificationBehavior` on the fixture, and the `behaviors` boot option, accept only `'approve-all' | 'reject-all'` — the `FixtureBehavior` type. `setPermissionBehavior` and `setUserConfirmationBehavior` accept `'approve-once'` as well — `FixtureConsentBehavior`. The function form — `(request) => boolean | PermissionDecision`, the last arm of `Behavior<Req>` / `DecisionBehavior<Req>` — works only in-page, via `window.__TEST_HOST__`.
 
 ### Built-in networks

@@ -1607,6 +1607,39 @@ test.describe('Local storage', () => {
     }
   });
 
+  test('an entry is addressable by the key the product itself used', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice'],
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+
+      // A local key containing `:` is what makes suffix matching ambiguous.
+      expectOk(
+        await product.evaluate(() => window.__TEST_PRODUCT__.localStorageWrite('demo:mykey', 'hello')),
+      );
+
+      expect(
+        await page.evaluate(() => window.__TEST_HOST__.getProductStorageValue('demo:mykey')),
+      ).toBe('hello');
+      expect(
+        await page.evaluate(() => window.__TEST_HOST__.getProductStorageValue('mykey')),
+      ).toBeUndefined();
+
+      const entries = await page.evaluate(() => window.__TEST_HOST__.getProductStorageEntries());
+      expect(entries).toHaveLength(1);
+      expect(entries[0].localKey).toBe('demo:mykey');
+      expect(entries[0].value).toBe('hello');
+      // The namespaced key is still there, and is what `seedProductStorage` takes.
+      expect(entries[0].key).toContain('test-product.dot');
+      expect(entries[0].key).not.toBe('demo:mykey');
+    } finally {
+      await host.close();
+    }
+  });
+
   test('a product resumes from a snapshot the test seeded back verbatim', async ({ page }) => {
     const host = await createTestHostServer({
       productUrl: productServer.url,
@@ -1698,6 +1731,90 @@ test.describe('Local storage', () => {
 
       await page.evaluate(() => window.__TEST_HOST__.clearProductStorage());
       await expectStorageItems(product, ['first', 'second', null]);
+    } finally {
+      await host.close();
+    }
+  });
+});
+
+// ── Account switching, observed from the product ────────────────────
+
+test.describe('Account switching', () => {
+
+  // `switchAccount` deliberately does not reload the iframe, which reads like
+  // the product cannot notice. It can: the core pushes the drop and the
+  // reconnect down the product's own account subscription.
+  test('a switch reaches a subscribed product as Disconnected then Connected', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice', 'bob'],
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+
+      await product.evaluate(() => window.__TEST_PRODUCT__.subscribeAccountStatus());
+      await expect
+        .poll(() => product.evaluate(() => window.__TEST_PRODUCT__.getReceivedAccountStatus()))
+        .toEqual(['Connected']);
+
+      await page.evaluate(() => window.__TEST_HOST__.switchAccount('bob'));
+
+      await expect
+        .poll(() => product.evaluate(() => window.__TEST_PRODUCT__.getReceivedAccountStatus()))
+        .toEqual(['Connected', 'Disconnected', 'Connected']);
+    } finally {
+      await host.close();
+    }
+  });
+
+  test('the product keeps working after a switch, with no reload', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice', 'bob'],
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+      await page.evaluate(() => window.__TEST_HOST__.switchAccount('bob'));
+
+      // No page.reload() anywhere: the same frame signs under the new identity.
+      expectOk(
+        await product.evaluate(() =>
+          window.__TEST_PRODUCT__.signRawProduct('test-product.dot', 0, '0x0102'),
+        ),
+      );
+    } finally {
+      await host.close();
+    }
+  });
+
+  // The trap behind "a test just hangs": the host's own view of the product
+  // connection only moves when a frame arrives, and a switch sends none.
+  test('getConnectionStatus stays disconnected until the product next talks', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice', 'bob'],
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+      await page.evaluate(() => window.__TEST_HOST__.switchAccount('bob'));
+
+      // The host session is up; only the product-traffic flag is not.
+      expect(await page.evaluate(() => window.__TEST_HOST__.getChainStatus())).toBe('connected');
+      expect(await page.evaluate(() => window.__TEST_HOST__.getConnectionStatus())).toBe(
+        'disconnected',
+      );
+
+      expectOk(
+        await product.evaluate(() =>
+          window.__TEST_PRODUCT__.signRawProduct('test-product.dot', 0, '0x0102'),
+        ),
+      );
+      expect(await page.evaluate(() => window.__TEST_HOST__.getConnectionStatus())).toBe(
+        'connected',
+      );
     } finally {
       await host.close();
     }

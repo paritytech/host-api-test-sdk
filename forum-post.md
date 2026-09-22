@@ -1286,3 +1286,32 @@ at the option that fixes it.
 
 Nothing to change — `'approve-all'` is the default. Add the boot option to any
 suite that asserts on signing.
+
+## Also in 0.15.0, from the same migration
+
+**Product storage is addressable by the key your product used.**
+`getProductStorage()` is keyed by the namespaced form the core hands the host —
+`truapi:product-storage:v1:<productIdLength>:<productId>:<localKey>` — so
+matching it meant suffix-matching, which is ambiguous the moment a local key
+contains a colon. `getProductStorageValue("mykey")` and
+`getProductStorageEntries()` (which carries `localKey` beside `key`) match
+exactly instead.
+
+**The package ships its CHANGELOG.** `files` was `["dist"]`, so npm carried the
+README and LICENSE but not the changelog — which is how you end up diffing
+`.d.ts` files across four published versions to find a breaking change.
+
+**`TRUAPI_WIRE_SCHEMA_HASH`**, `462dacb6e0d1f504` for this release, exported and
+stated in the README. The core ships as a vendored `.wasm`, so the declared
+`@parity/truapi` version tells you what the JS codecs were built against, not
+what the binary speaks — and the binary is what your product has to match. The
+build reads it out of the compiled core and fails if it drifts from the
+published constant.
+
+**An account switch is observable by the product** — this one needed no code
+change, only saying so. `account.connectionStatusSubscribe()` delivers
+`Disconnected` then `Connected` across a `switchAccount()`, and the product keeps
+working with no reload. What hangs is gating on `waitForConnection()` afterwards:
+`getConnectionStatus()` tracks the *product* connection and only moves when a
+frame arrives, so it sits at `'disconnected'` until the product next talks.
+`getChainStatus()` is the host-session one and reads `'connected'` immediately.

@@ -1,7 +1,7 @@
 {
   "name": "@parity/host-api-test-sdk",
   "version": "0.15.0",
-  "description": "Lightweight test host for Spektr product E2E testing — embeds dapps with auto-signing dev accounts, no Docker needed",
+  "description": "Lightweight test host for Spektr product E2E testing \u2014 embeds dapps with auto-signing dev accounts, no Docker needed",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -22,7 +22,8 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "CHANGELOG.md"
   ],
   "scripts": {
     "build:bundle": "node build.mjs",

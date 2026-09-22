@@ -1,7 +1,7 @@
 import type { Page, FrameLocator } from '@playwright/test';
 import { createTestHostServer } from '../server.js';
 import { DEFAULT_CHAIN } from '../networks.js';
-import type { AllocatableResourceTag, ChainEntry, ChatActionInput, ChatBot, ChatMessageLogEntry, ChatRoom, CreateTestHostOptions, DevAccountName, DevicePermissionStatus, HexString, HostDevicePermissionRequest, InitialBehaviors, InitialState, NavigationLogEntry, NotificationLogEntry, OperationEntry, PermissionLogEntry, PreimageEntry, ResourceAllocationLogEntry, SigningLogEntry, StatementEntry, StatementInput, TestHostAPI, Theme, ThemeInput, UserConfirmationLogEntry } from '../types.js';
+import type { AllocatableResourceTag, ChainEntry, ChatActionInput, ChatBot, ChatMessageLogEntry, ChatRoom, CreateTestHostOptions, DevAccountName, DevicePermissionStatus, HexString, HostDevicePermissionRequest, InitialBehaviors, InitialState, NavigationLogEntry, NotificationLogEntry, OperationEntry, PermissionLogEntry, PreimageEntry, ProductStorageEntry, ResourceAllocationLogEntry, SigningLogEntry, StatementEntry, StatementInput, TestHostAPI, Theme, ThemeInput, UserConfirmationLogEntry } from '../types.js';
 
 /**
  * What the fixture's behaviour setters accept. A `Behavior`'s function form
@@ -161,8 +161,19 @@ export interface TestHost {
    */
   seedProductStorage(key: string, value: string): Promise<void>;
 
-  /** Every product-storage entry, decoded as UTF-8. */
+  /**
+   * Every product-storage entry, decoded as UTF-8, keyed by the NAMESPACED key
+   * the core handed the host. Prefer the two below when a test knows the
+   * product's own key — suffix-matching this map is ambiguous when a local key
+   * contains `:`.
+   */
   getProductStorage(): Promise<Record<string, string>>;
+
+  /** Every entry with its key split both ways, so a test can match the local key exactly. */
+  getProductStorageEntries(): Promise<ProductStorageEntry[]>;
+
+  /** The value the product stored under `localKey`; an exact match, not a suffix match. */
+  getProductStorageValue(localKey: string): Promise<string | undefined>;
 
   /** Drop every product-storage entry. */
   clearProductStorage(): Promise<void>;
@@ -472,6 +483,14 @@ export function createTestHostFixture(defaults: TestHostFixtureOptions) {
 
         async getProductStorage() {
           return page.evaluate(() => window.__TEST_HOST__.getProductStorage());
+        },
+
+        async getProductStorageEntries() {
+          return page.evaluate(() => window.__TEST_HOST__.getProductStorageEntries());
+        },
+
+        async getProductStorageValue(localKey: string) {
+          return page.evaluate((k) => window.__TEST_HOST__.getProductStorageValue(k), localKey);
         },
 
         async clearProductStorage() {

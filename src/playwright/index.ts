@@ -17,6 +17,7 @@ export type {
   InitialState,
   OperationEntry,
   PermissionDecision,
+  ProductStorageEntry,
   ResourceAllocationBehavior,
   ResourceAllocationLogEntry,
   SigningLogEntry,
@@ -24,6 +25,7 @@ export type {
   StatementInput,
   UserConfirmationLogEntry,
 } from '../types.js';
+export { TRUAPI_WIRE_SCHEMA_HASH } from '../types.js';
 export {
   DEFAULT_CHAIN,
   PASEO_ASSET_HUB,

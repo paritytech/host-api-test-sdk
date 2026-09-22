@@ -9,7 +9,11 @@ import type { IframeHost, WorkerPairingHostRuntime } from '@parity/truapi-host/w
 import type { ChainRuntimeConfig } from './callbacks/chain.js';
 import { roomListSnapshot } from './callbacks/chat.js';
 import { derivedChains } from './callbacks/features.js';
-import { clearAllProductStorage, setProductStorage } from './callbacks/storage.js';
+import {
+  clearAllProductStorage,
+  parseProductStorageKey,
+  setProductStorage,
+} from './callbacks/storage.js';
 import type { HostState } from './callbacks/index.js';
 import type { LoopbackStore, StoredStatement } from './loopback-chain.js';
 import type { SsoResponder } from './sso/responder.js';
@@ -26,6 +30,7 @@ import type {
   NavigationBehavior,
   NotificationBehavior,
   PermissionBehavior,
+  ProductStorageEntry,
   ResourceAllocationBehavior,
   StatementEntry,
   StatementInput,
@@ -366,6 +371,22 @@ export function buildControlApi(options: ControlApiOptions): TestHostAPI {
       const out: Record<string, string> = {};
       for (const [key, value] of state.productStorage) out[key] = new TextDecoder().decode(value);
       return out;
+    },
+
+    getProductStorageEntries(): ProductStorageEntry[] {
+      return [...state.productStorage].map(([key, value]) => ({
+        key,
+        localKey: parseProductStorageKey(key)?.localKey,
+        value: new TextDecoder().decode(value),
+      }));
+    },
+
+    getProductStorageValue(localKey: string): string | undefined {
+      for (const [key, value] of state.productStorage) {
+        if (parseProductStorageKey(key)?.localKey !== localKey) continue;
+        return new TextDecoder().decode(value);
+      }
+      return undefined;
     },
 
     clearProductStorage() {

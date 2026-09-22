@@ -14,6 +14,20 @@ import type {
   ProductExecutionKind as CoreProductExecutionKind,
 } from '@parity/truapi-host';
 
+/**
+ * Wire-schema hash of the TrUAPI core this release bundles — what the host
+ * actually speaks, as `wireSchemaHash()` reports it from the compiled core.
+ *
+ * A product connects only to a host on the same schema. The declared
+ * `@parity/truapi` dependency is weaker evidence than this: the core ships as a
+ * vendored `.wasm`, so the package version says what the JS codecs were built
+ * against, not what the binary speaks.
+ *
+ * `build.mjs` reads the value out of the bundled `.wasm` and fails the build if
+ * it disagrees with this constant, so it cannot go stale on a dependency bump.
+ */
+export const TRUAPI_WIRE_SCHEMA_HASH = '462dacb6e0d1f504';
+
 /** A `0x`-prefixed hex string. */
 export type HexString = `0x${string}`;
 
@@ -303,6 +317,27 @@ export interface PreimageEntry {
   /** When true, this preimage was submitted by the product via hostApi.preimageSubmit. */
   fromProduct: boolean;
   timestamp: number;
+}
+
+/**
+ * One product-storage entry, with the key split both ways.
+ *
+ * The core namespaces every key before the host sees it, so `key` — what
+ * `getProductStorage()` is keyed by — carries an internal prefix. `localKey` is
+ * the key the product itself passed to `localStorage.write`, which is what a
+ * test actually knows.
+ */
+export interface ProductStorageEntry {
+  /** The namespaced key, as the core handed it over. Pass this to `seedProductStorage`. */
+  key: string;
+  /**
+   * The product's own key, parsed out of `key`. `undefined` when the prefix is
+   * not the layout this version knows, so an upstream change surfaces as a
+   * missing field rather than a wrong match.
+   */
+  localKey: string | undefined;
+  /** The stored bytes, decoded as UTF-8. */
+  value: string;
 }
 
 /** Host theme, as the `host_theme_subscribe` payload carries it. */
@@ -602,8 +637,24 @@ export interface TestHostAPI {
    * reported — a product-level key it never wrote is not resolvable here.
    */
   seedProductStorage(key: string, value: string): void;
-  /** Every product-storage entry, decoded as UTF-8. */
+  /**
+   * Every product-storage entry, decoded as UTF-8, keyed by the NAMESPACED key
+   * the core handed the host — `truapi:product-storage:v1:<n>:<productId>:<key>`.
+   * Prefer `getProductStorageEntries()` or `getProductStorageValue()` when a
+   * test knows the product's own key: matching this map's keys by suffix is
+   * ambiguous when a local key contains `:`.
+   */
   getProductStorage(): Record<string, string>;
+  /**
+   * Every entry with its key split both ways, so a test can match on the
+   * product's own key without hand-parsing the namespace.
+   */
+  getProductStorageEntries(): ProductStorageEntry[];
+  /**
+   * The value the product stored under `localKey`, or `undefined` if it stored
+   * none. An exact match on the parsed key, not a suffix match.
+   */
+  getProductStorageValue(localKey: string): string | undefined;
   /** Drop every product-storage entry. Live `subscribeStorage` streams are pushed the clear. */
   clearProductStorage(): void;
 

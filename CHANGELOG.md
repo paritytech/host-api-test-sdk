@@ -24,15 +24,27 @@ regression: it is what the capability does. The host can now withhold it.
 
   Prefer the boot option over the setter: a product that asks at its first frame already holds the grant by the time a setter could run.
 
+- **`getSigningLog()`'s documented contract now holds for `signRaw`.** The README calls it the oracle for "did signing happen" in four places; with auto-signing granted it silently was not. The core's own docs say so in passing — `account.signVrf` is documented as "local when `AutoSigning` covers the account, otherwise a per-call user confirmation" — but nothing here said it, and nothing made it adjustable. Both are fixed.
+
+- **Product storage is addressable by the key the product actually used.** `getProductStorage()` is keyed by the namespaced form the core hands the host, `truapi:product-storage:v1:<productIdLength>:<productId>:<localKey>`, which is not the key a test knows. Matching it by suffix — the only option before — is ambiguous whenever a local key contains `:`: a product id of `demo` and a local key of `demo:mykey` are indistinguishable that way. **`getProductStorageValue(localKey)`** looks a value up by exact local key, and **`getProductStorageEntries()`** returns `{ key, localKey, value }` for every entry. The length prefix in the format is what makes the split exact, and the parser answers `localKey: undefined` rather than guessing if the core ever moves to a layout it does not know. `getProductStorage()` is unchanged.
+
+- **The published package now contains its CHANGELOG.** `files` was `["dist"]`, so npm shipped the README and LICENSE but not this file — consumers tracing a breaking change had to `npm pack` each version and diff the `.d.ts` by hand.
+
 ### Added
+
+- **`TRUAPI_WIRE_SCHEMA_HASH`** (`462dacb6e0d1f504` for this release) — the wire schema the bundled core actually speaks, exported from the package root and stated in the README. The declared `@parity/truapi` version is weaker evidence: the core ships as a vendored `.wasm`, so the dependency says what the JS codecs were built against, not what the binary speaks. Answering "can my product talk to this host?" previously meant running `strings` over `dist/host/truapi_server_bg.wasm` — and that does not even work reliably, since the only 16-hex strings in the binary are Cargo path hashes. `build.mjs` now reads the value out of the compiled core through its own `wireSchemaHash()` export and fails the build if it disagrees with the constant, so a dependency bump cannot publish a stale one.
 
 - **`getResourceAllocationLog()` / `clearResourceAllocationLog()`** — every resource a product asked for, which product asked, and whether the host allocated it. This is the accessor that was missing: an empty signing log is now explained by an `{ resource: 'AutoSigning', granted: true }` entry sitting in front of it, rather than looking like a broken API.
 - New exported types `AllocatableResourceTag`, `ResourceAllocationBehavior` and `ResourceAllocationLogEntry`. `AllocatableResourceTag` carries a compile-time guard against the core's own resource union, so a resource added upstream fails to compile here.
 - `SigningLogEntry`'s doc comment now says what does **not** reach it, and points at the option that fixes it.
 
+### Documented, not changed
+
+- **An account switch *is* observable by the product**, through its own `account.connectionStatusSubscribe()` — a switch delivers `Disconnected` then `Connected` there, and the product keeps working across it with no reload. What does not work is gating on `waitForConnection()` afterwards: `getConnectionStatus()` reports the *product* connection and only moves when a frame arrives from the product, so it sits at `'disconnected'` until the product next talks, however healthy the session is. `getChainStatus()` reports the host session and reads `'connected'` at once. A test that reloads the page to work around this is testing a plain reconnect instead of a live switch; three integration tests now pin the live path.
+
 ### Internal
 
-- Unit coverage 183 → 197: a new `src/types.spec.ts` for `decideResource` and `parseResourceAllocationBehavior`, plus a `sso responder resource policy` suite pinning the per-resource verdicts, the one-outcome-per-resource rule and the recording. Integration 77 → 81, including one test that *documents the trap* — granting `AutoSigning` and asserting the logs go empty — so the behaviour cannot change silently.
+- Unit coverage 183 → 203: a new `src/types.spec.ts` for `decideResource` and `parseResourceAllocationBehavior`, plus a `sso responder resource policy` suite pinning the per-resource verdicts, the one-outcome-per-resource rule and the recording. Integration 77 → 81, including one test that *documents the trap* — granting `AutoSigning` and asserting the logs go empty — so the behaviour cannot change silently.
 - The page-config validation for `resourceAllocation` lives in `types.ts` beside the type it parses, rather than in `host-runtime.ts`: an unknown resource key throws naming the key, and that is checked by a unit test rather than by scraping a browser console.
 
 ## 0.14.0
