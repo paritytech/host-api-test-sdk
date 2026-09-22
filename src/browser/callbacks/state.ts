@@ -7,7 +7,9 @@ import type { AuthState, DevicePermissionStatus, HostChainEntry } from '@parity/
 import type {
   NavigationBehavior,
   NotificationBehavior,
+  OperationEntry,
   PermissionBehavior,
+  PermissionDecision,
   UserConfirmationBehavior,
   UserConfirmationLogEntry,
 } from '../../types.js';
@@ -17,7 +19,9 @@ export type { PermissionBehavior };
 export interface PermissionLogEntry {
   tag: string;
   value: unknown;
+  /** `false` only for `'Deny'`: a one-use grant is still an approval. */
   approved: boolean;
+  decision: PermissionDecision;
   timestamp: number;
 }
 
@@ -115,6 +119,19 @@ export interface HostState {
 
   /** What `productStorage` serves; seedable so a product can resume from prior state. */
   productStorage: Map<string, Uint8Array>;
+  /**
+   * Listeners on one product-storage key, keyed exactly as the core namespaced
+   * it — the same spelling `productStorage` uses, since the core namespaces
+   * before calling either.
+   */
+  productStorageSubscribers: Map<string, Set<(value: Uint8Array | undefined) => void>>;
+
+  /** Pending operations still open, by id. `endOperation` removes an entry. */
+  openOperations: Map<number, OperationEntry>;
+  /** Every operation opened, in order, sharing its entry object with `openOperations`. */
+  operationLog: OperationEntry[];
+  /** Next id `beginOperation` hands out. Ids are never reused within a run. */
+  nextOperationId: number;
 
   /** One flat namespace: chat state is not partitioned per product. */
   chatRooms: Map<string, ChatRoom>;
@@ -155,6 +172,11 @@ export function createHostState(): HostState {
     supportedChainsOverride: undefined,
 
     productStorage: new Map(),
+    productStorageSubscribers: new Map(),
+
+    openOperations: new Map(),
+    operationLog: [],
+    nextOperationId: 1,
 
     chatRooms: new Map(),
     chatBots: new Map(),

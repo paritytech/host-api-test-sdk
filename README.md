@@ -9,7 +9,7 @@
 
 Lightweight test host for E2E testing embedded Polkadot products built on [TrUAPI](https://github.com/paritytech/truapi) — dev accounts that auto-sign with no prompts, no Docker, no wallet, and no network.
 
-> **Upstream contract:** `0.13.x` runs the TrUAPI core itself — `@parity/truapi-host` `0.17.0` (the Rust core compiled to WebAssembly), `@parity/truapi-provider` `0.2.0` for chain transport, and `@parity/truapi` `0.17.0` for the protocol codecs. **Your product must boot through `@parity/truapi/sandbox` on the same `0.17` minor.** A product on `@novasamatech/host-api-wrapper`, or on any earlier truapi minor, will not connect: the old `@novasamatech/host-container` protocol is gone entirely.
+> **Upstream contract:** `0.14.x` runs the TrUAPI core itself — `@parity/truapi-host` `0.18.0` (the Rust core compiled to WebAssembly), `@parity/truapi-provider` `0.2.1` for chain transport, and `@parity/truapi` `0.18.0` for the protocol codecs. **Your product must boot through `@parity/truapi/sandbox` on the same `0.18` minor.** A product on an earlier truapi minor will not connect — both sides of the wire move together. If your product goes through `@parity/product-sdk`, check what `@parity/product-sdk-host` pins before upgrading: at the time of writing its newest release (`0.21.0`) pins `@parity/truapi` `^0.17.0`, which excludes `0.18`, so such a product needs a product-sdk release first. Stay on `0.13.x` until then.
 
 ## Why
 
@@ -149,7 +149,7 @@ So a test that exercises preimage submission needs a network with `chain: 'Bulle
 
 ## Permission testing
 
-The test host auto-approves all permission requests by default. You can change this per test to verify your product handles rejections correctly:
+The test host auto-approves all permission requests by default, and approves them **for good** — the core stores the answer and stops asking. You can change this per test to verify your product handles rejections correctly:
 
 ```ts
 test("handles permission rejection", async ({ testHost }) => {
@@ -182,6 +182,51 @@ test("selective permissions", async ({ page, testHost }) => {
 });
 ```
 
+### Grant lifetimes
+
+A permission answer carries a lifetime as well as a verdict, and the core acts on
+it: a lasting grant is asked for once, a **one-use** grant is consumed by a
+single permission-gated operation and the next request prompts again. The three
+named modes map onto the core's `PermissionDecision`:
+
+| Mode | Decision | Effect |
+| --- | --- | --- |
+| `'approve-all'` (default) | `AllowAlways` | Prompted once; every later request is answered from the stored grant |
+| `'approve-once'` | `AllowOnce` | Prompted again on every request |
+| `'reject-all'` | `Deny` | Prompted once; the stored denial refuses every later request |
+
+`'approve-once'` is how you test a product that must survive being re-prompted:
+
+```ts
+test("re-asks for a one-use grant", async ({ page, testHost }) => {
+  await testHost.setPermissionBehavior("approve-once");
+
+  // ... drive the product twice ...
+
+  const log = await testHost.getPermissionLog();
+  expect(log).toHaveLength(2);           // asked each time
+  expect(log.every((e) => e.approved)).toBe(true);
+  expect(log[0].decision).toBe("AllowOnce");
+});
+```
+
+Every entry carries both readings: `approved` is `false` only for `Deny`, so a
+one-use grant reads as an approval, and `decision` is the lifetime itself. The
+in-page function form can return either — `true` means `'AllowAlways'`, and a
+`PermissionDecision` string is taken verbatim:
+
+```ts
+window.__TEST_HOST__.setPermissionBehavior((request) =>
+  request.tag === "ChainSubmit" ? "AllowOnce" : "Deny",
+);
+```
+
+The same three modes and the same log shape apply to `setUserConfirmationBehavior`,
+because the core asks for identity and account disclosures through a review that
+carries a lifetime too. `confirmUserAction` — the review entry point that takes
+only a verdict — reads a one-use answer as a plain approval; the log still records
+which it was, and `lifetimeAsked` says which entry point asked.
+
 Without the Playwright fixture, use `page.evaluate` directly:
 
 ```ts
@@ -198,6 +243,14 @@ const log = await page.evaluate(() =>
 
 The permission log is narrower than the name suggests. It records the two prompts the host is actually asked to answer — **remote permission requests** (`RemotePermission`, one entry per request, with its `tag` and `value`) and **device permission requests** (`Camera`, `Microphone`, `Location`, `Bluetooth`, recorded under the request name with `value: undefined`). A granted device permission also updates the iframe's `allow` attribute, matching how a real host delegates browser-level access.
 
+It also records **`OpenUrl`**, the device permission the core gates outbound
+navigation on. `system.navigateTo` reaches the host's navigation callback only
+once that grant is in place — except for the dotNS app-handoff schemes
+(`polkadot:`, `dot:`), which are never gated and arrive at the host normalized to
+`polkadot://…` rather than rewritten to an `https://` form. Everything else,
+`mailto:` included, goes through `OpenUrl`, and the grant is device-wide rather
+than per-host: approving it once covers every later URL.
+
 It does **not** record:
 
 - **Signing requests.** Signing is not gated behind a permission here, deliberately: real hosts do not gate it either. A signing request leaves for the paired signer over the SSO channel and comes back as a signature. Use `getSigningLog()` as the oracle for "did signing happen".
@@ -210,6 +263,57 @@ product → requestRemotePermission(ChainSubmit) → host callback → permissio
 product → signing.signRaw(...)                 → SSO round trip → signingLog   ✅
 product → submit signed bytes                   → the core's broadcast gate     ❌ invisible
 ```
+
+## Statement store testing
+
+The host serves a real statement store in-page: a submitted statement is
+retained, delivered to every live subscription whose topic filter matches, and
+**replayed to a subscription opened later**. That last part is what makes the
+surface deterministic — the protocol's `isComplete` flag exists precisely to mark
+the historical dump, so a test can seed before the product subscribes without
+racing it.
+
+```ts
+test("renders a statement it did not submit", async ({ testHost }) => {
+  // Seeded first: the product has not subscribed yet, and does not have to have.
+  await testHost.injectStatement({ topics: [TOPIC], data: "0xdead" });
+
+  const frame = testHost.productFrame();
+  await frame.getByRole("button", { name: "Watch topic" }).click();
+
+  await expect(frame.getByText("0xdead")).toBeVisible();
+});
+
+test("publishes what the user typed", async ({ testHost }) => {
+  const frame = testHost.productFrame();
+  await frame.getByRole("button", { name: "Publish" }).click();
+
+  const submitted = await testHost.getSubmittedStatements();
+  expect(submitted).toHaveLength(1);
+  expect(submitted[0].data).toBe("0xcafe");
+  expect(submitted[0].topics).toEqual([TOPIC]);
+});
+```
+
+`getStatements()` is everything the store holds, oldest first;
+`getSubmittedStatements()` narrows it to `fromProduct` — what the product
+published, as opposed to what a test seeded. `clearStatements()` drops the
+retained set; live subscriptions stay open and keep receiving.
+
+Three things worth knowing:
+
+- **An injected statement is signed for you**, with the active session identity
+  (it follows `switchAccount`). The core validates the proof and drops an
+  unproven statement silently, so this is not optional — it is why
+  `injectStatement` takes topics and data rather than a whole `SignedStatement`.
+- **Signing traffic is not in here.** The host's SSO channel rides the same
+  store, and its statements are excluded from the retained set and from
+  delivery — otherwise every read would be a stream of encrypted session frames,
+  and a re-subscribing session would be replayed stale signing requests.
+  `getSigningLog()` is the oracle for signing.
+- **Identical statements are one statement.** Topics, data and proof encode to
+  the same bytes, so the core treats a repeat as a duplicate. Vary `data` when a
+  test needs two distinct deliveries.
 
 ## How it works
 
@@ -250,10 +354,12 @@ The People chain is a **loopback statement store inside the page**: no node, no 
 | `testHost.setAccounts(names)` | Replace the roster; the first name becomes the active identity |
 | `testHost.getSigningLog()` | All auto-signed requests since last clear |
 | `testHost.clearSigningLog()` | Reset the signing log |
-| `testHost.setPermissionBehavior(behavior)` | `'approve-all'` or `'reject-all'`; the `(request) => boolean` form works in-page only |
+| `testHost.setPermissionBehavior(behavior)` | `'approve-all'`, `'approve-once'` or `'reject-all'`; the function form works in-page only |
 | `testHost.grantPermission(tag)` / `revokePermission(tag)` / `getGrantedPermissions()` | Pre-grant, revoke, inspect |
 | `testHost.getPermissionLog()` / `clearPermissionLog()` | Permission requests and outcomes |
 | `testHost.getNavigationLog()` / `clearNavigationLog()` | `navigateTo` attempts from the product |
+| `testHost.getOperationLog()` / `getOpenOperations()` / `clearOperationLog()` | Pending operations a `Worker` product opened to hold its runtime up |
+| `testHost.getStatements()` / `getSubmittedStatements()` / `injectStatement(s)` / `clearStatements()` | The in-page statement store — see [Statement store testing](#statement-store-testing) |
 | `testHost.getNotificationLog()` / `clearNotificationLog()` | Push notifications, including scheduled and cancelled ones |
 | `testHost.getChatRooms()` / `getChatBots()` / `getChatMessageLog()` / `clearChat()` | Chat state (needs `executionKind: 'Worker'`) |
 | `testHost.seedChatRoom(room)` / `seedChatBot(bot)` | Add a room/bot without the product creating it |
@@ -394,7 +500,7 @@ Theme, above, is one instance of a general pattern: every ambient condition the 
 Two families cover the whole surface:
 
 - **Ambient data** — what the host reports. `get<Thing>()` reads it, `set<Thing>()` / `seed<Thing>()` writes it, `clear<Thing>()` resets it.
-- **Decisions** — how the host answers a request the product makes. `set<Thing>Behavior(b)` picks the policy — `'approve-all'` (default) or `'reject-all'`, or, in-page only, a function `(request) => boolean`. `get<Thing>Log()` / `clear<Thing>Log()` inspect what was asked and how it was answered.
+- **Decisions** — how the host answers a request the product makes. `set<Thing>Behavior(b)` picks the policy — `'approve-all'` (default) or `'reject-all'`, or, in-page only, a function `(request) => boolean`. `get<Thing>Log()` / `clear<Thing>Log()` inspect what was asked and how it was answered. The two *consent* decisions — permission and user confirmation — take a third mode, `'approve-once'`, and their function form may answer with a `PermissionDecision` instead of a boolean; see [Grant lifetimes](#grant-lifetimes).
 
 | Member | Family | Description |
 |--------|--------|-------------|
@@ -403,8 +509,10 @@ Two families cover the whole surface:
 | `getLocale()` / `setLocale(languageTag)` | data | The BCP 47 tag the host reports to products |
 | `setFeatureSupport(feature, supported)` / `getFeatureSupport()` | data | Force `featureSupported` for one feature tag; `undefined` restores the derived answer |
 | `setSupportedChains(chains)` / `getSupportedChains()` | data | Replace the advertised chain set (`ChainEntry[]`); `undefined` restores the one derived from `networks`, which the getter also reports |
-| `seedProductStorage(key, value)` / `getProductStorage()` / `clearProductStorage()` | data | Pre-populate, read, or wipe product-storage entries (see limitation below) |
-| `setUserConfirmationBehavior(b)` / `getUserConfirmationLog()` / `clearUserConfirmationLog()` | decision | How the host answers `confirmUserAction` |
+| `seedProductStorage(key, value)` / `getProductStorage()` / `clearProductStorage()` | data | Pre-populate, read, or wipe product-storage entries; a live `localStorage.subscribe` in the product sees these writes (see limitation below) |
+| `getOperationLog()` / `getOpenOperations()` / `clearOperationLog()` | data | Pending operations a `Worker` product opened through `worker.beginOperation` to keep its runtime alive |
+| `injectStatement(s)` / `getStatements()` / `getSubmittedStatements()` / `clearStatements()` | data | The in-page statement store: seed, read, and wipe (see [Statement store testing](#statement-store-testing)) |
+| `setUserConfirmationBehavior(b)` / `getUserConfirmationLog()` / `clearUserConfirmationLog()` | decision | How the host answers `confirmUserAction` and `confirmPermission` |
 | `setNavigationBehavior(b)` | decision | How the host answers `navigateTo` (log: `getNavigationLog()` / `clearNavigationLog()`, above) |
 | `setNotificationBehavior(b)` | decision | How the host answers `pushNotification`; the function form sees `{ text, deeplink, scheduledAt }` (log: `getNotificationLog()` / `clearNotificationLog()`, above) |
 
@@ -425,6 +533,8 @@ const { testHost } = createTestHostFixture({
   },
   behaviors: {
     userConfirmation: "reject-all",
+    // 'approve-all' | 'approve-once' | 'reject-all' for the two consent decisions.
+    permission: "approve-once",
   },
 });
 ```
@@ -432,7 +542,7 @@ const { testHost } = createTestHostFixture({
 Two limitations worth knowing:
 
 - **`seedProductStorage` only replays a key `getProductStorage()` has reported.** The core namespaces product-storage keys per product, so a key is always round-tripped, never hand-constructed — seeding a key the product has never written is not supported. `initialState.productStorage` carries the same restriction.
-- **A function-form behavior cannot cross `page.evaluate`.** `setUserConfirmationBehavior` / `setNavigationBehavior` / `setNotificationBehavior` on the fixture, and the `behaviors` boot option, accept only `'approve-all' | 'reject-all'` — the `FixtureBehavior` type. The function form — `(request) => boolean`, the third arm of `Behavior<Req>` — works only in-page, via `window.__TEST_HOST__`.
+- **A function-form behavior cannot cross `page.evaluate`.** `setNavigationBehavior` / `setNotificationBehavior` on the fixture, and the `behaviors` boot option, accept only `'approve-all' | 'reject-all'` — the `FixtureBehavior` type. `setPermissionBehavior` and `setUserConfirmationBehavior` accept `'approve-once'` as well — `FixtureConsentBehavior`. The function form — `(request) => boolean | PermissionDecision`, the last arm of `Behavior<Req>` / `DecisionBehavior<Req>` — works only in-page, via `window.__TEST_HOST__`.
 
 ### Built-in networks
 
@@ -506,6 +616,42 @@ The build produces three kinds of output:
 1. **Browser assets** (`dist/host/`) — ESM chunks built with esbuild, plus the two `.wasm` payloads, served by the test host's own HTTP server
 2. **ESM modules** (`dist/*.js`) — the Node-side API compiled with `tsc`
 3. **CJS bundles** (`dist/index.cjs`, `dist/playwright.cjs`) — the same API for CommonJS consumers
+
+## Migrating from 0.13.x to 0.14.0
+
+0.14 moves the upstream stack to truapi `0.18`. The core changed how it asks for
+consent, added two host services and changed what `navigateTo` hands the host.
+
+- **Your product must be on `@parity/truapi` `0.18`** and boot through
+  `@parity/truapi/sandbox`. Both sides of the wire move together, so a `0.17`
+  product will not connect at all. A product on `@parity/product-sdk` depends on
+  `@parity/product-sdk-host`, which at the time of writing still pins
+  `@parity/truapi` `^0.17.0` — stay on `0.13.x` until a product-sdk release moves
+  to `0.18`.
+- **`permissionLog` entries gained `decision`**, and `userConfirmationLog` entries
+  gained `decision` and `lifetimeAsked`. `approved` still means what it did — it
+  is `false` only for a denial — so an assertion on `approved` or `tag` is
+  unaffected. An assertion that deep-equals a whole log entry needs the new
+  fields. See [Grant lifetimes](#grant-lifetimes).
+- **`navigateTo` no longer rewrites a dotNS link to `https://`.** A
+  `polkadot://foo.dot` request reaches the host as `polkadot://foo.dot`, and a
+  `dot://` one is normalized to the same spelling. If a test asserts on
+  `getNavigationLog()[n].url` for a dotNS URL, change the expectation.
+- **An external URL is now gated by the `OpenUrl` device permission**, so
+  `navigateTo('https://…')` under `setPermissionBehavior('reject-all')` fails with
+  `PermissionDenied` and never reaches `getNavigationLog()`. The dotNS schemes are
+  not gated. A test that refused permissions and still expected an external
+  navigation to be logged needs updating.
+- **Nothing was removed.** The three new modes (`'approve-once'`), the two new
+  services (`localStorage.subscribe`, `worker.beginOperation` / `endOperation`)
+  and the new controls (`getOperationLog`, `getOpenOperations`,
+  `clearOperationLog`) are additions.
+- **The statement-store controls dropped in 0.13.0 are back**, and the store
+  behind them now retains and replays rather than relaying. If you kept a test
+  on 0.12.x for this, `getSubmittedStatements()`, `injectStatement()` and
+  `clearStatements()` work again — `injectStatement` now takes
+  `{ topics, data }` and signs for you, rather than a whole raw statement. See
+  [Statement store testing](#statement-store-testing).
 
 ## Migrating from 0.13.0 to 0.13.1
 

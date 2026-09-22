@@ -2,25 +2,85 @@
  * Product and core storage: both in-memory `Map`s, never persisted, so every
  * run starts clean. `productStorage` keys arrive already namespaced by the
  * core, so no scoping is added here.
+ *
+ * Every product-storage mutation goes through `setProductStorage` /
+ * `clearProductStorage` rather than touching the `Map`, because
+ * `subscribeStorage` has to see a test's seed and a product's write alike.
  */
+import { ok } from 'neverthrow';
+import { type GenericError, type HostLocalStorageChangeItem, type Result, scale } from '@parity/truapi';
 import { encodeCoreStorageKey } from '@parity/truapi-host';
 import type { CoreStorageKey } from '@parity/truapi-host';
+import { createPushChannel } from './passive.js';
 import type { HostState } from './state.js';
+
+function notify(state: HostState, key: string, value: Uint8Array | undefined): void {
+  for (const listener of state.productStorageSubscribers.get(key) ?? []) listener(value);
+}
+
+/** Write one product-storage entry and push it to that key's subscribers. */
+export function setProductStorage(state: HostState, key: string, value: Uint8Array): void {
+  state.productStorage.set(key, value);
+  notify(state, key, value);
+}
+
+/** Drop one product-storage entry and push the clear to that key's subscribers. */
+export function clearProductStorage(state: HostState, key: string): void {
+  state.productStorage.delete(key);
+  notify(state, key, undefined);
+}
+
+/**
+ * Drop every entry. Only the keys that held a value are pushed a clear: a
+ * subscriber on a key that was already empty has nothing new to hear.
+ */
+export function clearAllProductStorage(state: HostState): void {
+  const keys = [...state.productStorage.keys()];
+  state.productStorage.clear();
+  for (const key of keys) notify(state, key, undefined);
+}
 
 export function createProductStorageCallbacks(state: HostState): {
   read(key: string): Promise<Uint8Array | undefined>;
   write(key: string, value: Uint8Array): Promise<void>;
   clear(key: string): Promise<void>;
+  subscribeStorage(key: string): AsyncIterable<Result<HostLocalStorageChangeItem, GenericError>>;
 } {
   return {
     async read(key: string): Promise<Uint8Array | undefined> {
       return state.productStorage.get(key);
     },
     async write(key: string, value: Uint8Array): Promise<void> {
-      state.productStorage.set(key, value);
+      setProductStorage(state, key, value);
     },
     async clear(key: string): Promise<void> {
-      state.productStorage.delete(key);
+      clearProductStorage(state, key);
+    },
+    /**
+     * Emits the current value (`undefined` for a miss) first, then every later
+     * change to that key — the same subscribe-then-replay shape as
+     * `lookupPreimage`. Repeats are not filtered here; the core drops an item
+     * that repeats the value it last delivered.
+     */
+    subscribeStorage(key: string) {
+      const listener = (value: Uint8Array | undefined) =>
+        channel.push(ok({ value: value === undefined ? undefined : scale.bytesToHex(value) }));
+      const channel = createPushChannel<Result<HostLocalStorageChangeItem, GenericError>>(() => {
+        const subs = state.productStorageSubscribers.get(key);
+        if (!subs) return;
+        subs.delete(listener);
+        if (subs.size === 0) state.productStorageSubscribers.delete(key);
+      });
+
+      let subs = state.productStorageSubscribers.get(key);
+      if (!subs) {
+        subs = new Set();
+        state.productStorageSubscribers.set(key, subs);
+      }
+      subs.add(listener);
+
+      listener(state.productStorage.get(key));
+      return channel.iterable;
     },
   };
 }

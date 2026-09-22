@@ -70,6 +70,10 @@ function storeSpy(): { store: LoopbackStore; closes: () => number } {
       connect: () => ({ send() {}, close }),
       publish() {},
       onSubmit: () => () => {},
+      markSessionTopic() {},
+      statements: () => [],
+      inject() {},
+      clear() {},
     },
     closes: () => close.mock.calls.length,
   };

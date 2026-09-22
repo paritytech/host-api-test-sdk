@@ -153,11 +153,21 @@ declare global {
       localStorageWrite(key: string, value: string): Promise<Outcome>;
       localStorageRead(key: string): Promise<Outcome<{ value: string | null }>>;
       localStorageClear(key: string): Promise<Outcome>;
+      subscribeLocalStorage(key: string): { unsubscribe(): void };
+      /** Every value `subscribeLocalStorage` has delivered; `null` for a cleared key. */
+      getReceivedLocalStorage(): Array<string | null>;
+      beginOperation(label?: string): Promise<Outcome<{ id: number }>>;
+      endOperation(id: number): Promise<Outcome>;
       createTransaction(dotnsId: string, index: number): Promise<TransactionResult>;
       createTransactionLegacy(publicKeyHex: string): Promise<TransactionResult>;
       accountCreateProof(dotnsId: string, index: number): Promise<Outcome<{ proofHex: HexString; alias: HexString }>>;
       statementCreateProof(dotnsId: string, index: number, dataHex: string): Promise<Outcome<{ proof: StatementProof }>>;
       statementCreateProofAuthorized(dataHex: string): Promise<Outcome<{ proof: StatementProof }>>;
+      /** Proves and submits a statement carrying `topicHex` and `dataHex`. */
+      statementSubmit(topicHex: string, dataHex: string): Promise<Outcome>;
+      subscribeStatements(topicHex: string): { unsubscribe(): void };
+      /** One entry per delivered page: its statements' data, and `isComplete`. */
+      getReceivedStatements(): Array<{ data: Array<string | undefined>; isComplete: boolean }>;
     };
   }
 }
@@ -166,6 +176,8 @@ const receivedChatActions: HostChatActionSubscribeItem[] = [];
 const receivedChatRooms: string[][] = [];
 const receivedThemes: HostThemeSubscribeItem[] = [];
 const receivedLocales: string[] = [];
+const receivedLocalStorage: Array<string | null> = [];
+const receivedStatements: Array<{ data: Array<string | undefined>; isComplete: boolean }> = [];
 
 let status: ConnectionStatus = 'disconnected';
 subscribeConnectionStatus((next) => {
@@ -372,6 +384,21 @@ async function init(): Promise<void> {
 
     localStorageClear: (key) => call(() => api.localStorage.clear({ key }), () => ({})),
 
+    subscribeLocalStorage: (key) =>
+      collect(api.localStorage.subscribe({ request: { key } }), receivedLocalStorage, (item) =>
+        item.value === undefined ? null : new TextDecoder().decode(scale.hexToBytes(item.value)),
+      ),
+
+    getReceivedLocalStorage: () => [...receivedLocalStorage],
+
+    beginOperation: (label) =>
+      call(
+        () => api.worker.beginOperation({ label }),
+        (value) => ({ id: value.id }),
+      ),
+
+    endOperation: (id) => call(() => api.worker.endOperation({ id }), () => ({})),
+
     createTransaction: (dotnsId, derivationIndex) =>
       call(
         () =>
@@ -429,6 +456,36 @@ async function init(): Promise<void> {
         (value) => ({ proof: value.proof }),
       );
     },
+
+    statementSubmit: async (topicHex, dataHex) => {
+      const statement: Statement = {
+        topics: [scale.toHexString(topicHex)],
+        data: scale.toHexString(dataHex),
+      };
+      const proved = await call(
+        () => api.statementStore.createProofAuthorized(statement),
+        (value) => ({ proof: value.proof }),
+      );
+      if (!proved.ok) return proved;
+      return call(
+        () => api.statementStore.submit({ ...statement, proof: proved.proof }),
+        () => ({}),
+      );
+    },
+
+    subscribeStatements: (topicHex) =>
+      collect(
+        api.statementStore.subscribe({
+          request: { tag: 'MatchAll', value: [scale.toHexString(topicHex)] },
+        }),
+        receivedStatements,
+        (item) => ({
+          data: item.statements.map((statement) => statement.data),
+          isComplete: item.isComplete,
+        }),
+      ),
+
+    getReceivedStatements: () => [...receivedStatements],
   };
 
   function requestRemotePermission(permission: RemotePermission) {

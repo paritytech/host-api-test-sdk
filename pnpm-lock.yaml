@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       '@parity/truapi':
-        specifier: 0.17.0
-        version: 0.17.0
+        specifier: 0.18.0
+        version: 0.18.0
       '@playwright/test':
         specifier: '>=1.0.0'
         version: 1.58.2
@@ -25,11 +25,11 @@ importers:
         specifier: 2.4.0
         version: 2.4.0
       '@parity/truapi-host':
-        specifier: 0.17.0
-        version: 0.17.0
+        specifier: 0.18.0
+        version: 0.18.0
       '@parity/truapi-provider':
-        specifier: 0.2.0
-        version: 0.2.0
+        specifier: 0.2.1
+        version: 0.2.1
       '@polkadot-labs/hdkd-helpers':
         specifier: 0.0.34
         version: 0.0.34
@@ -275,14 +275,14 @@ packages:
   '@oxc-project/types@0.150.0':
     resolution: {integrity: sha512-rDS5/31E9HfPl/CIzGrn0DOlvBbXFseQ5URJ9sYMfstbKLD/c6Gm9vmRzRGDdAXyOIL4zmO37lc9RIwYqVruZw==}
 
-  '@parity/truapi-host@0.17.0':
-    resolution: {integrity: sha512-z7J4dIpofwlFuApIq4xz1QBs7UYrdvlaraaL8c7RJrobAZcfS8Ge9r2XBhMHgzroJkbSz/CQwhv7PlZ+sZv1YA==}
+  '@parity/truapi-host@0.18.0':
+    resolution: {integrity: sha512-RNfq4O5v1Dw+tjKTCMDBVHFy9PCfzb4rLnTweiUglgpAQHFWOgqJc0YXj+buJT68qqcxpVmjLrW4mcdu5xwH7g==}
 
-  '@parity/truapi-provider@0.2.0':
-    resolution: {integrity: sha512-rw09aF/OeVbKgCLftLqcw/4IqLXRhrNxd4MOuR+l5nd7M1RzKSPc2BU05jBD3a7h+EwsRk3cZG0cN1PbLZvEiw==}
+  '@parity/truapi-provider@0.2.1':
+    resolution: {integrity: sha512-cj3gnPfwhW2HzsRiPhB4BeSoT6RmdWb+VIvGQd8P7xK52h19jiFvP7MVR7opndh9WzkP16P/6iJvy7uMj1/MiA==}
 
-  '@parity/truapi@0.17.0':
-    resolution: {integrity: sha512-IwJqcTyNSBrigGZjGhco7OqKg6V+wXnXzf/FxngGdEU9jcwzomku7D+9a/CUVYWnolz4pmwb4E8NgYoY/b+nxg==}
+  '@parity/truapi@0.18.0':
+    resolution: {integrity: sha512-q0Hgr9kX+ctHwd4JEuIs+q+l6YB1sJ/PwYOPuxzinZ2P1qudVNNvWj7Hxav8tJb0OO20CrGOrTolg6F5exZf1A==}
 
   '@playwright/test@1.58.2':
     resolution: {integrity: sha512-akea+6bHYBBfA9uQqSYmlJXn61cTa+jbO87xVLCWbTqbWadRVmhxlXATaOjOgcBaWU4ePo0wB41KMFv3o35IXA==}
@@ -1519,13 +1519,13 @@ snapshots:
 
   '@oxc-project/types@0.150.0': {}
 
-  '@parity/truapi-host@0.17.0':
+  '@parity/truapi-host@0.18.0':
     dependencies:
-      '@parity/truapi': 0.17.0
+      '@parity/truapi': 0.18.0
 
-  '@parity/truapi-provider@0.2.0': {}
+  '@parity/truapi-provider@0.2.1': {}
 
-  '@parity/truapi@0.17.0':
+  '@parity/truapi@0.18.0':
     dependencies:
       '@noble/hashes': 2.4.0
       neverthrow: 8.2.0

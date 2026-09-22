@@ -79,7 +79,7 @@ function toDevicePermissionStatus(value: string): DevicePermissionStatus {
 }
 
 /** Read off the published type, so a mode added there fails to compile here. */
-type BehaviorMode = NonNullable<InitialBehaviors['permission']>;
+type BehaviorMode = NonNullable<InitialBehaviors['navigation']>;
 
 const BEHAVIOR_MODES: Record<BehaviorMode, true> = { 'approve-all': true, 'reject-all': true };
 
@@ -87,6 +87,22 @@ const BEHAVIOR_MODES: Record<BehaviorMode, true> = { 'approve-all': true, 'rejec
 function toBehaviorMode(name: string, value: string): BehaviorMode {
   if (Object.hasOwn(BEHAVIOR_MODES, value)) {
     return value as BehaviorMode;
+  }
+  throw new Error(`invalid ${name} behavior: "${value}"`);
+}
+
+/** The consent prompts take a third mode, because their answer carries a lifetime. */
+type ConsentMode = NonNullable<InitialBehaviors['permission']>;
+
+const CONSENT_MODES: Record<ConsentMode, true> = {
+  'approve-all': true,
+  'approve-once': true,
+  'reject-all': true,
+};
+
+function toConsentMode(name: string, value: string): ConsentMode {
+  if (Object.hasOwn(CONSENT_MODES, value)) {
+    return value as ConsentMode;
   }
   throw new Error(`invalid ${name} behavior: "${value}"`);
 }
@@ -110,10 +126,10 @@ function applyInitialConfig(state: HostState, config: HostConfig): void {
 
   const behaviors = config.behaviors;
   if (behaviors?.permission) {
-    state.permissionBehavior = toBehaviorMode('permission', behaviors.permission);
+    state.permissionBehavior = toConsentMode('permission', behaviors.permission);
   }
   if (behaviors?.userConfirmation) {
-    state.userConfirmationBehavior = toBehaviorMode('userConfirmation', behaviors.userConfirmation);
+    state.userConfirmationBehavior = toConsentMode('userConfirmation', behaviors.userConfirmation);
   }
   if (behaviors?.navigation) {
     state.navigationBehavior = toBehaviorMode('navigation', behaviors.navigation);
@@ -296,7 +312,18 @@ async function init(): Promise<void> {
       derivationIndex,
     );
 
+  /**
+   * Both halves of the channel, so the store can tell the host's own signing
+   * traffic from a product's statements. Registered before the responder opens,
+   * because a statement that arrives untagged is retained as a product's.
+   */
+  function markSessionTopics(minted: ResponderSession): void {
+    store.markSessionTopic(minted.sessionIdOwn);
+    store.markSessionTopic(minted.sessionIdPeer);
+  }
+
   let session = mintSession(deriveFromUri(accounts[0].uri), usernameOf(accounts[0]));
+  markSessionTopics(session);
   let responder = createSsoResponder({ store, session, resolveAccount });
   /** Signing recorded by responders retired by an account switch. */
   const retiredSigningLog: SigningLogEntry[] = [];
@@ -390,6 +417,9 @@ async function init(): Promise<void> {
       retiredSigningLog.push(...responder.getSigningLog());
       responder.dispose();
       session = mintSession(deriveFromUri(accounts[0].uri), usernameOf(accounts[0]));
+      // A switch mints fresh ids; the retired ones stay marked, so statements
+      // already in flight on them are still read as session traffic.
+      markSessionTopics(session);
       responder = createSsoResponder({ store, session, resolveAccount });
 
       // No unwind: if activation then fails, the core has already reported the
@@ -432,6 +462,8 @@ async function init(): Promise<void> {
       state,
       networks: config.networks,
       responder: responderFacade,
+      store,
+      identitySecret: () => session.identitySecret,
       runtime,
       iframeHost: host,
       provider: (): TrUApiProductProvider => provider,

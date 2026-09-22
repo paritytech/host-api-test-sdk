@@ -9,6 +9,7 @@ import type {
 import type {
   DevicePermissionStatus as CoreDevicePermissionStatus,
   HostChainEntry,
+  PermissionDecision as CorePermissionDecision,
   ProductExecutionKind as CoreProductExecutionKind,
 } from '@parity/truapi-host';
 
@@ -51,6 +52,18 @@ export type DevicePermissionStatus = 'Granted' | 'Denied' | 'NotDetermined' | 'N
 /** Compile-time guard: this mirror must equal the core's device-permission status. */
 type _DevicePermissionStatusMirrorsCore = Expect<
   Equal<DevicePermissionStatus, CoreDevicePermissionStatus>
+>;
+
+/**
+ * A consent answer and how long it lasts. `AllowOnce` is held in memory until
+ * one permission-gated operation consumes it, so the next request prompts
+ * again; `AllowAlways` and `Deny` are the lasting answers a real host persists.
+ */
+export type PermissionDecision = 'AllowOnce' | 'AllowAlways' | 'Deny';
+
+/** Compile-time guard: this mirror must equal the core's decision enum. */
+type _PermissionDecisionMirrorsCore = Expect<
+  Equal<PermissionDecision, CorePermissionDecision>
 >;
 
 export interface NetworkConfig {
@@ -148,8 +161,28 @@ export interface SigningLogEntry {
 export interface PermissionLogEntry {
   tag: string;
   value: unknown;
+  /** `false` only for `'Deny'`: a one-use grant is still an approval. */
   approved: boolean;
+  /** The answer's lifetime, as the core now records it. */
+  decision: PermissionDecision;
   timestamp: number;
+}
+
+/**
+ * One pending operation a `Worker` product opened to keep its runtime alive.
+ * The core holds a worker reference for as long as the operation is open, so an
+ * operation never ended is a product leaking its own runtime.
+ */
+export interface OperationEntry {
+  /** Host-assigned id, unique among this product's open operations. */
+  id: number;
+  /** The product that opened it, as the core's `ProductContext` names it. */
+  productId: string;
+  /** Label for host logs and UI; empty when the product gave none. */
+  label: string;
+  startedAt: number;
+  /** Epoch-ms when `endOperation` closed it; `undefined` while still open. */
+  endedAt: number | undefined;
 }
 
 export interface NavigationLogEntry {
@@ -190,6 +223,31 @@ export interface ChatMessageLogEntry {
   timestamp: number;
 }
 
+/**
+ * One statement the loopback store holds — submitted by the product, or seeded
+ * by a test with `injectStatement`. The host's own SSO signing traffic is not
+ * in here: it never reaches the store's retained set.
+ */
+export interface StatementEntry {
+  /** Topics the statement carries, `0x`-hex, in the order encoded. */
+  topics: HexString[];
+  /** The statement's payload, or `undefined` when it carries none. */
+  data: HexString | undefined;
+  /** The sr25519 proof, `0x`-hex, when the statement is signed. */
+  proof: { signature: HexString; signer: HexString } | undefined;
+  /** True when the product submitted it, false when a test injected it. */
+  fromProduct: boolean;
+  timestamp: number;
+}
+
+/** A statement to inject. Every field is optional but `topics`, which may be empty. */
+export interface StatementInput {
+  /** Up to four `0x`-hex topics. More throws, as the statement codec does. */
+  topics: HexString[];
+  /** `0x`-hex payload. */
+  data?: HexString;
+}
+
 export interface PreimageEntry {
   /** Hex-encoded blake2b-256 hash of the value. */
   key: HexString;
@@ -221,19 +279,60 @@ export function decideBehavior<Req>(behavior: Behavior<Req>, request: Req): bool
   return behavior(request);
 }
 
-/** How the test host answers remote permission requests; `'approve-all'` is the default. */
-export type PermissionBehavior = Behavior<{ tag: string; value: unknown }>;
+/**
+ * How the host answers a consent prompt whose answer carries a lifetime as well
+ * as a verdict. `'approve-once'` returns the one-use grant the core holds only
+ * until a permission-gated operation consumes it, so the product is prompted
+ * again next time. The function form may answer with a bare boolean — `true`
+ * reads as `'AllowAlways'`, `false` as `'Deny'` — or with the decision itself.
+ */
+export type DecisionBehavior<Req> =
+  | 'approve-all'
+  | 'approve-once'
+  | 'reject-all'
+  | ((request: Req) => boolean | PermissionDecision);
 
-/** One `confirmUserAction` review the host was asked to answer. */
+/** The one reading of a `DecisionBehavior`, mirroring `decideBehavior`. */
+export function decideConsent<Req>(
+  behavior: DecisionBehavior<Req>,
+  request: Req,
+): PermissionDecision {
+  if (behavior === 'approve-all') return 'AllowAlways';
+  if (behavior === 'approve-once') return 'AllowOnce';
+  if (behavior === 'reject-all') return 'Deny';
+  const answer = behavior(request);
+  if (answer === true) return 'AllowAlways';
+  if (answer === false) return 'Deny';
+  return answer;
+}
+
+/**
+ * How the test host answers remote permission requests; `'approve-all'` is the
+ * default. A function returning `true` grants for good — return `'AllowOnce'`
+ * to exercise the core's one-use grant.
+ */
+export type PermissionBehavior = DecisionBehavior<{ tag: string; value: unknown }>;
+
+/** One review the host was asked to confirm, through either entry point. */
 export interface UserConfirmationLogEntry {
   /** The review's variant tag, e.g. `SignRaw`. */
   tag: string;
+  /** `false` only for `'Deny'`: a one-use grant is still an approval. */
   approved: boolean;
+  /** The answer's lifetime. `confirmUserAction` can only ever yield a lasting one. */
+  decision: PermissionDecision;
+  /** True when the core asked through `confirmPermission` rather than `confirmUserAction`. */
+  lifetimeAsked: boolean;
   timestamp: number;
 }
 
-/** How the host answers `confirmUserAction`; `'approve-all'` is the default. */
-export type UserConfirmationBehavior = Behavior<{ tag: string; value: unknown }>;
+/**
+ * How the host answers `confirmUserAction` and `confirmPermission`;
+ * `'approve-all'` is the default. `confirmUserAction` takes only the verdict, so
+ * `'approve-once'` and a returned `'AllowOnce'` read as an approval there and
+ * carry their lifetime only through `confirmPermission`.
+ */
+export type UserConfirmationBehavior = DecisionBehavior<{ tag: string; value: unknown }>;
 
 /** How the host answers `navigateTo`; `'approve-all'` is the default. */
 export type NavigationBehavior = Behavior<{ url: string }>;
@@ -266,8 +365,8 @@ export interface InitialState {
  * cannot cross into the page config, so only the two named modes are accepted.
  */
 export interface InitialBehaviors {
-  permission?: 'approve-all' | 'reject-all';
-  userConfirmation?: 'approve-all' | 'reject-all';
+  permission?: 'approve-all' | 'approve-once' | 'reject-all';
+  userConfirmation?: 'approve-all' | 'approve-once' | 'reject-all';
   navigation?: 'approve-all' | 'reject-all';
   notification?: 'approve-all' | 'reject-all';
 }
@@ -343,6 +442,30 @@ export interface TestHostAPI {
   seedPreimage(value: Uint8Array): HexString;
   /** Clear all preimages. */
   clearPreimages(): void;
+
+  /**
+   * Every statement the loopback store holds, oldest first: what the product
+   * submitted, plus anything `injectStatement` seeded. The host's own SSO
+   * signing traffic is excluded — use `getSigningLog()` for that.
+   */
+  getStatements(): StatementEntry[];
+  /**
+   * Statements the PRODUCT submitted, in order — `getStatements()` narrowed to
+   * `fromProduct`. The oracle for "did the product publish what it should".
+   */
+  getSubmittedStatements(): StatementEntry[];
+  /**
+   * Seed a statement: retained like a submission, delivered at once to every
+   * live subscription whose topic filter matches, and replayed to one opened
+   * later. Returns the entry as `getStatements()` reports it.
+   */
+  injectStatement(statement: StatementInput): StatementEntry;
+  /**
+   * Drop every retained statement. Live subscriptions stay open and keep
+   * receiving; a subscription opened afterwards starts from empty. Signing is
+   * unaffected — the SSO channel is not in the retained set.
+   */
+  clearStatements(): void;
   /** Get the current theme. */
   getTheme(): Theme;
   /** Set the theme and notify subscribers. */
@@ -377,8 +500,18 @@ export interface TestHostAPI {
   seedProductStorage(key: string, value: string): void;
   /** Every product-storage entry, decoded as UTF-8. */
   getProductStorage(): Record<string, string>;
-  /** Drop every product-storage entry. */
+  /** Drop every product-storage entry. Live `subscribeStorage` streams are pushed the clear. */
   clearProductStorage(): void;
+
+  /**
+   * Every pending operation a `Worker` product opened, in the order opened —
+   * still-open ones and those already ended.
+   */
+  getOperationLog(): OperationEntry[];
+  /** Just the operations still open: what is holding the product's worker runtime up. */
+  getOpenOperations(): OperationEntry[];
+  /** Drop the log. Operations still open stay open and can still be ended. */
+  clearOperationLog(): void;
 
   dispose(): void;
 }

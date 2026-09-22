@@ -1025,3 +1025,188 @@ One consequence to be aware of: `chain: 'AssetHub'` now has an effect too. The c
 ## Upgrading
 
 Nothing to change. Set `productId` if your product signs under its own dotNS name, and add a `chain: 'Bulletin'` network if you test preimage submission.
+
+---
+
+# host-api-test-sdk 0.14.0
+
+truapi `0.18`. The core changed how it asks the host for consent, added two
+services every host has to implement, and stopped rewriting dotNS links on their
+way out to `navigateTo`.
+
+**Before you upgrade:** both sides of the wire move together, so your product
+must be on `@parity/truapi` `0.18` and boot through `@parity/truapi/sandbox`. If
+it goes through `@parity/product-sdk` instead, check first — `@parity/product-sdk-host`
+pins `@parity/truapi` `^0.17.0` as of `0.21.0`, the newest release at the time of
+writing, and a caret on a `0.x` version excludes `0.18`. Stay on `0.13.x` until a
+product-sdk release moves over.
+
+## A permission answer now has a lifetime
+
+The core used to take a yes or a no. It now takes `'AllowOnce'`, `'AllowAlways'`
+or `'Deny'`, and it acts on the difference: a lasting grant is stored and the
+product is never prompted again, a one-use grant is consumed by a single
+permission-gated operation and the next request prompts afresh.
+
+That is a real branch in your product's code — the second request after a one-use
+grant goes back through the prompt — and it was not testable before. Now it is:
+
+```ts
+test("survives being re-prompted", async ({ testHost }) => {
+  await testHost.setPermissionBehavior("approve-once");
+
+  // ... drive the product through two gated operations ...
+
+  const log = await testHost.getPermissionLog();
+  expect(log).toHaveLength(2);                      // asked each time
+  expect(log.every((e) => e.approved)).toBe(true);
+  expect(log[0].decision).toBe("AllowOnce");
+});
+```
+
+`'approve-all'` (still the default) and `'reject-all'` keep behaving as they did —
+one prompt, then the stored answer. The third mode is the new one.
+
+Log entries carry both readings. `approved` means what it always did: `false`
+only for a denial, so a one-use grant reads as an approval. `decision` is the
+lifetime itself. **If you deep-equal a whole log entry, that assertion needs the
+new field**; an assertion on `approved` or `tag` is untouched.
+
+The in-page function form takes either answer, so a test can be selective about
+lifetimes as well as verdicts:
+
+```ts
+window.__TEST_HOST__.setPermissionBehavior((request) =>
+  request.tag === "ChainSubmit" ? "AllowOnce" : "Deny",
+);
+```
+
+All of the above applies to `setUserConfirmationBehavior` too, because the core
+asks for identity and account disclosures through a review that keeps its
+lifetime — a second entry point, `confirmPermission`, which the host now serves.
+One behavior answers both, so you set a policy once. `lifetimeAsked` on the log
+entry says which way the core asked.
+
+## `navigateTo`: dotNS links pass through, external URLs are gated
+
+Two changes, and the first one will break an assertion if you have it.
+
+A dotNS link is no longer rewritten. `polkadot://foo.dot` reaches the host as
+`polkadot://foo.dot` — where it used to arrive as `https://foo.dot` — because the
+core now treats the dotNS schemes as app handoffs for the host's own URL handler
+rather than web addresses. `dot://foo.dot` is normalized to the `polkadot://`
+spelling. If a test asserts on `getNavigationLog()[n].url` for such a URL, change
+what it expects.
+
+Second: an external URL is now gated by a new device permission, `OpenUrl`. It
+prompts on first use, and under a denial `navigateTo('https://…')` fails with
+`PermissionDenied` and never reaches the navigation log at all:
+
+```ts
+await testHost.setPermissionBehavior("reject-all");
+
+// Refused, and not logged as a navigation.
+expect(await product.navigateTo("https://example.com/page")).toMatchObject({
+  ok: false,
+  error: "PermissionDenied",
+});
+
+// A dotNS link is not gated, so it still arrives.
+await product.navigateTo("polkadot://ok.dot");
+expect(await testHost.getNavigationLog()).toHaveLength(1);
+```
+
+The grant is device-wide rather than per-host, so approving it once covers every
+later URL. Worth knowing because the generated doc on `navigateTo` says
+`mailto:` and `tel:` consume no grant — as far as this host can observe, only the
+dotNS pair behaves that way; a `mailto:` URL goes through `OpenUrl` like any
+other.
+
+## Two new services the host now answers
+
+**`localStorage.subscribe`.** The core's storage trait gained a subscription:
+your product can watch one key and get its current value, then every later write
+or clear. The host serves it off the same in-memory map product storage already
+used — which means a test's own `seedProductStorage(key, value)` and
+`clearProductStorage()` reach a subscribed product exactly as the product's own
+writes do. A cleared key arrives as an absent value; the stream stays open.
+
+**`worker.beginOperation` / `endOperation`.** How a `Worker` product tells the
+core it has work pending, so the runtime is held up until it finishes. The host
+records them rather than acting on them, and hands you the record:
+
+```ts
+const open = await testHost.getOpenOperations();
+expect(open).toEqual([]);           // nothing is holding the runtime up
+```
+
+`getOpenOperations()` is the oracle for a product leaking its own runtime —
+anything still listed after the work should have finished was never ended.
+`getOperationLog()` is every operation in the order opened, with `endedAt` set
+once closed, and `clearOperationLog()` drops the log while leaving open
+operations endable. Nothing is ever refused: a real host's `TooManyOpen` is
+back-pressure, and a test host imposing its own limit would fail products for
+reasons production never reproduces.
+
+## The statement store works again
+
+This one is a regression fix, and it goes back to 0.13.0.
+
+When the host moved onto the TrUAPI core, statement traffic moved with it — onto
+the in-page People loopback that also carries signing. Three test controls were
+dropped in that move and never replaced: `getSubmittedStatements`,
+`injectStatement` and `clearStatements`. What took over was a relay rather than a
+store, and it showed in two ways. A submitted statement reached the SSO responder
+and stopped — no subscriber ever got it. And a subscribe got an id and nothing
+else, where the protocol promises a historical dump first; that is what
+`isComplete` on a subscription item marks. So seeding a statement before the
+product subscribed lost it, and seeding after was a race.
+
+All of it is back, and the store is a store:
+
+```ts
+// Seeded first. The product has not subscribed yet, and does not have to have —
+// a subscription opened later is replayed everything that matches.
+await testHost.injectStatement({ topics: [TOPIC], data: "0xdead" });
+
+const frame = testHost.productFrame();
+await frame.getByRole("button", { name: "Watch topic" }).click();
+await expect(frame.getByText("0xdead")).toBeVisible();
+
+// And the other direction: what did the product publish?
+const submitted = await testHost.getSubmittedStatements();
+expect(submitted[0].data).toBe("0xcafe");
+```
+
+`getStatements()` is everything the store holds, `getSubmittedStatements()` is
+the `fromProduct` subset, and `clearStatements()` wipes the retained set while
+leaving live subscriptions open.
+
+Two differences from the pre-0.13 version, both forced by the core being real
+now. An injected statement is **signed for you** with the active session
+identity — the core validates the proof and silently drops an unproven statement,
+so `injectStatement` takes `{ topics, data }` rather than a raw statement. And
+the host's **own signing traffic is excluded** from the log and from delivery: it
+rides the same store, so without that exclusion every read would be a stream of
+encrypted session frames, and a re-subscribing session would be replayed stale
+signing requests. `getSigningLog()` is still the oracle for signing.
+
+One gotcha: identical topics, data and proof encode to identical bytes, and the
+core treats a repeat as a duplicate. Vary `data` when a test needs two distinct
+deliveries.
+
+## Upgrading
+
+Move your product to truapi `0.18` first — or stay here until product-sdk does.
+Then, in your suite:
+
+- Change any expectation on a dotNS `navigateTo` URL from the `https://` form to
+  `polkadot://`.
+- If a test denies permissions and expects an external navigation to be logged,
+  it no longer is.
+- If a test deep-equals a permission or confirmation log entry, add `decision`
+  (and `lifetimeAsked` for confirmations).
+- If you worked around the missing statement-store controls — or parked a test
+  because of them — pick them back up.
+
+Everything else is additive.

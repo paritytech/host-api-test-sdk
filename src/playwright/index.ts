@@ -1,5 +1,5 @@
 export { createTestHostFixture } from './fixture.js';
-export type { FixtureBehavior, TestHost, TestHostFixtureOptions } from './fixture.js';
+export type { FixtureBehavior, FixtureConsentBehavior, TestHost, TestHostFixtureOptions } from './fixture.js';
 
 export type {
   Account,
@@ -14,7 +14,11 @@ export type {
   HostDevicePermissionRequest,
   InitialBehaviors,
   InitialState,
+  OperationEntry,
+  PermissionDecision,
   SigningLogEntry,
+  StatementEntry,
+  StatementInput,
   UserConfirmationLogEntry,
 } from '../types.js';
 export {
