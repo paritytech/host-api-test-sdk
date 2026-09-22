@@ -245,6 +245,13 @@ const log = await page.evaluate(() =>
 
 The permission log is narrower than the name suggests. It records the two prompts the host is actually asked to answer — **remote permission requests** (`RemotePermission`, one entry per request, with its `tag` and `value`) and **device permission requests** (`Camera`, `Microphone`, `Location`, `Bluetooth`, recorded under the request name with `value: undefined`). A granted device permission also updates the iframe's `allow` attribute, matching how a real host delegates browser-level access.
 
+**`ChainSubmit` is requested by signing, not by connecting.** A suite that
+connects, allocates resources and then reads `permissionLog` sees an empty log
+for that reason alone — the entry appears once the product actually signs. The
+`ResourceAllocation` confirmation a product triggers at connect is a separate
+decision, in `getUserConfirmationLog()`, and is not `ChainSubmit` arriving by
+another route.
+
 It also records **`OpenUrl`**, the device permission the core gates outbound
 navigation on. `system.navigateTo` reaches the host's navigation callback only
 once that grant is in place — except for the dotNS app-handoff schemes
@@ -320,6 +327,23 @@ keeps working.
 
 **Use the boot option, not the setter,** when the product asks at startup: by the
 time `setResourceAllocationBehavior` could run, the grant is already made.
+
+### Two gates, and which one to use
+
+An allocation passes two host decisions, and they behave differently:
+
+1. **A `ResourceAllocation` user confirmation**, answered by
+   `setUserConfirmationBehavior`. It is all-or-nothing: denying it fails the
+   product's whole `resourceAllocation.request` with an error. The review names
+   the resources, so the in-page function form can be selective —
+   `(review) => review.tag !== 'ResourceAllocation'` is the blunt version.
+2. **The allocation itself**, answered by `setResourceAllocationBehavior`. This
+   one answers **per resource** with a well-formed `Rejected` outcome, so the
+   product gets a successful response that simply does not carry the resource.
+
+Prefer the second: refusing one resource while granting the rest is what a real
+host does, and it is the only form that survives `page.evaluate` and works from
+the boot config.
 
 `getResourceAllocationLog()` shows what was asked and what was answered, which is
 the quickest way to confirm the diagnosis:

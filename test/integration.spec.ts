@@ -1920,6 +1920,86 @@ test.describe('Resource allocation policy', () => {
     }
   });
 
+  // Two gates sit in front of an allocation, and they behave differently.
+  // The confirmation is all-or-nothing and fails the product's whole request;
+  // the resource behavior answers per resource with a well-formed outcome.
+  test('denying the ResourceAllocation confirmation fails the whole request', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice'],
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+
+      await page.evaluate(() =>
+        window.__TEST_HOST__.setUserConfirmationBehavior(
+          (review) => review.tag !== 'ResourceAllocation',
+        ),
+      );
+
+      const refused = await allocate(product, ['AutoSigning']);
+      expect(refused.ok).toBe(false);
+
+      // And with the grant never made, signing is observable again — the same
+      // outcome as `resourceAllocation`, reached through the older lever.
+      const { logs } = await signAndReadLogs(page, product);
+      expect(logs.signing).toEqual(['raw']);
+    } finally {
+      await host.close();
+    }
+  });
+
+  // The review names the resources, so a test can be selective at this gate too.
+  test('the ResourceAllocation review carries the resources being asked for', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice'],
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+      await allocate(product, ['AutoSigning', 'BulletinAllowance']);
+
+      const tags = await page.evaluate(() =>
+        window.__TEST_HOST__.getUserConfirmationLog().map((entry) => entry.tag),
+      );
+      expect(tags).toContain('ResourceAllocation');
+    } finally {
+      await host.close();
+    }
+  });
+
+  // `ChainSubmit` is requested on the signing path, not at connect and not by
+  // an allocation. A suite that connects, allocates and then reads
+  // `getPermissionLog()` sees an empty log for that reason alone.
+  test('ChainSubmit is requested by signing, not by connecting or allocating', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice'],
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+
+      expect(await page.evaluate(() => window.__TEST_HOST__.getPermissionLog())).toEqual([]);
+
+      expectOk(await allocate(product, ['StatementStoreAllowance']));
+      expect(await page.evaluate(() => window.__TEST_HOST__.getPermissionLog())).toEqual([]);
+
+      expectOk(
+        await product.evaluate(() =>
+          window.__TEST_PRODUCT__.signRawProduct('test-product.dot', 0, '0x0102'),
+        ),
+      );
+      expect(
+        await page.evaluate(() => window.__TEST_HOST__.getPermissionLog().map((e) => e.tag)),
+      ).toEqual(['ChainSubmit']);
+    } finally {
+      await host.close();
+    }
+  });
+
   test('the allocation log records what was asked and what was answered', async ({ page }) => {
     const host = await createTestHostServer({
       productUrl: productServer.url,
