@@ -1,7 +1,7 @@
 import type { Page, FrameLocator } from '@playwright/test';
 import { createTestHostServer } from '../server.js';
 import { DEFAULT_CHAIN } from '../networks.js';
-import type { ChainEntry, ChatActionInput, ChatBot, ChatMessageLogEntry, ChatRoom, CreateTestHostOptions, DevAccountName, DevicePermissionStatus, HexString, HostDevicePermissionRequest, InitialBehaviors, InitialState, NavigationLogEntry, NotificationLogEntry, OperationEntry, PermissionLogEntry, PreimageEntry, SigningLogEntry, StatementEntry, StatementInput, TestHostAPI, Theme, ThemeInput, UserConfirmationLogEntry } from '../types.js';
+import type { AllocatableResourceTag, ChainEntry, ChatActionInput, ChatBot, ChatMessageLogEntry, ChatRoom, CreateTestHostOptions, DevAccountName, DevicePermissionStatus, HexString, HostDevicePermissionRequest, InitialBehaviors, InitialState, NavigationLogEntry, NotificationLogEntry, OperationEntry, PermissionLogEntry, PreimageEntry, ResourceAllocationLogEntry, SigningLogEntry, StatementEntry, StatementInput, TestHostAPI, Theme, ThemeInput, UserConfirmationLogEntry } from '../types.js';
 
 /**
  * What the fixture's behaviour setters accept. A `Behavior`'s function form
@@ -200,6 +200,26 @@ export interface TestHost {
 
   /** Drop every retained statement. Live subscriptions and signing are unaffected. */
   clearStatements(): Promise<void>;
+
+  /**
+   * Choose which resources the host allocates: `'approve-all'` (the default),
+   * `'reject-all'`, or a record that grants anything it does not mention.
+   *
+   * **`{ AutoSigning: false }` is what makes signing observable.** A product
+   * granted auto-signing is signed for inside the core, which holds its subtree
+   * secret from then on, so no request reaches the host and `getSigningLog()`
+   * stays empty. Prefer `behaviors.resourceAllocation` when the product asks at
+   * boot — by the time this setter runs it may already hold the grant.
+   */
+  setResourceAllocationBehavior(
+    behavior: 'approve-all' | 'reject-all' | Partial<Record<AllocatableResourceTag, boolean>>,
+  ): Promise<void>;
+
+  /** Every resource a product asked for, and whether the host allocated it. */
+  getResourceAllocationLog(): Promise<ResourceAllocationLogEntry[]>;
+
+  /** Drop the resource-allocation log. */
+  clearResourceAllocationLog(): Promise<void>;
 
   /**
    * Wait until the product has actually talked to the host. This is the
@@ -484,6 +504,20 @@ export function createTestHostFixture(defaults: TestHostFixtureOptions) {
 
         async clearStatements() {
           await page.evaluate(() => window.__TEST_HOST__.clearStatements());
+        },
+
+        async setResourceAllocationBehavior(
+          behavior: 'approve-all' | 'reject-all' | Partial<Record<AllocatableResourceTag, boolean>>,
+        ) {
+          await page.evaluate((b) => window.__TEST_HOST__.setResourceAllocationBehavior(b), behavior);
+        },
+
+        async getResourceAllocationLog() {
+          return page.evaluate(() => window.__TEST_HOST__.getResourceAllocationLog());
+        },
+
+        async clearResourceAllocationLog() {
+          await page.evaluate(() => window.__TEST_HOST__.clearResourceAllocationLog());
         },
 
         async waitForConnection(timeout = 30_000) {

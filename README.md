@@ -9,7 +9,7 @@
 
 Lightweight test host for E2E testing embedded Polkadot products built on [TrUAPI](https://github.com/paritytech/truapi) — dev accounts that auto-sign with no prompts, no Docker, no wallet, and no network.
 
-> **Upstream contract:** `0.14.x` runs the TrUAPI core itself — `@parity/truapi-host` `0.18.0` (the Rust core compiled to WebAssembly), `@parity/truapi-provider` `0.2.1` for chain transport, and `@parity/truapi` `0.18.0` for the protocol codecs. **Your product must boot through `@parity/truapi/sandbox` on the same `0.18` minor.** A product on an earlier truapi minor will not connect — both sides of the wire move together. If your product goes through `@parity/product-sdk`, check what `@parity/product-sdk-host` pins before upgrading: at the time of writing its newest release (`0.21.0`) pins `@parity/truapi` `^0.17.0`, which excludes `0.18`, so such a product needs a product-sdk release first. Stay on `0.13.x` until then.
+> **Upstream contract:** `0.15.x` runs the TrUAPI core itself — `@parity/truapi-host` `0.18.0` (the Rust core compiled to WebAssembly), `@parity/truapi-provider` `0.2.1` for chain transport, and `@parity/truapi` `0.18.0` for the protocol codecs. **Your product must boot through `@parity/truapi/sandbox` on the same `0.18` minor.** A product on an earlier truapi minor will not connect — both sides of the wire move together. If your product goes through `@parity/product-sdk`, check what `@parity/product-sdk-host` pins before upgrading: at the time of writing its newest release (`0.21.0`) pins `@parity/truapi` `^0.17.0`, which excludes `0.18`, so such a product needs a product-sdk release first. Stay on `0.13.x` until then.
 
 ## Why
 
@@ -253,6 +253,7 @@ than per-host: approving it once covers every later URL.
 
 It does **not** record:
 
+- **Anything a product with `AutoSigning` signs.** That capability hands the core the product's subtree secret, and the core then signs in-process — nothing reaches the host at all. See [Signing observability and `AutoSigning`](#signing-observability-and-autosigning).
 - **Signing requests.** Signing is not gated behind a permission here, deliberately: real hosts do not gate it either. A signing request leaves for the paired signer over the SSO channel and comes back as a signature. Use `getSigningLog()` as the oracle for "did signing happen".
 - **Transaction broadcast denials.** `ChainSubmit` is enforced by the core itself, at `transaction_broadcast`, after signing. It never reaches the host's permission callback, so it never lands in `permissionLog`. The oracle for "broadcast was denied" is whatever error your product surfaces.
 
@@ -263,6 +264,52 @@ product → requestRemotePermission(ChainSubmit) → host callback → permissio
 product → signing.signRaw(...)                 → SSO round trip → signingLog   ✅
 product → submit signed bytes                   → the core's broadcast gate     ❌ invisible
 ```
+
+## Signing observability and `AutoSigning`
+
+**If `getSigningLog()` is empty after a signature you know happened, the product
+holds the `AutoSigning` capability.** It is not a broken accessor.
+
+`AutoSigning` hands the core `productRootPrivateKey` — the product's whole
+subtree secret. From that moment the core derives every product account and signs
+**in its own worker**: no SSO round trip, so no host callback runs, and
+`getSigningLog()`, `getUserConfirmationLog()` and `getPermissionLog()` all stay
+empty around a perfectly valid signature. The host cannot observe those
+signatures, because it gave away the key.
+
+A suite that asserts on signing has to decline the grant:
+
+```ts
+const { testHost } = createTestHostFixture({
+  productUrl: "http://localhost:3000",
+  behaviors: { resourceAllocation: { AutoSigning: false } },
+});
+```
+
+The core then falls back to asking the host per signature, and every one lands in
+`getSigningLog()` again. The record form grants anything it does not mention, so
+the allowances a product actually needs — `StatementStoreAllowance`,
+`BulletinAllowance` — are untouched, and `statementStore.createProofAuthorized`
+keeps working.
+
+**Use the boot option, not the setter,** when the product asks at startup: by the
+time `setResourceAllocationBehavior` could run, the grant is already made.
+
+`getResourceAllocationLog()` shows what was asked and what was answered, which is
+the quickest way to confirm the diagnosis:
+
+```ts
+expect(await testHost.getResourceAllocationLog()).toEqual([
+  { productId: "myapp.dot", resource: "AutoSigning", granted: false, timestamp: expect.any(Number) },
+]);
+```
+
+| Mode | Effect |
+| --- | --- |
+| `'approve-all'` (default) | Every resource allocated — what every release before 0.15 did |
+| `'reject-all'` | Every resource refused with `Rejected` |
+| `{ AutoSigning: false }` | Refuse the ones listed `false`, allocate everything else |
+| `(resource) => boolean` | In-page only, via `window.__TEST_HOST__` |
 
 ## Statement store testing
 
@@ -360,6 +407,7 @@ The People chain is a **loopback statement store inside the page**: no node, no 
 | `testHost.getNavigationLog()` / `clearNavigationLog()` | `navigateTo` attempts from the product |
 | `testHost.getOperationLog()` / `getOpenOperations()` / `clearOperationLog()` | Pending operations a `Worker` product opened to hold its runtime up |
 | `testHost.getStatements()` / `getSubmittedStatements()` / `injectStatement(s)` / `clearStatements()` | The in-page statement store — see [Statement store testing](#statement-store-testing) |
+| `testHost.setResourceAllocationBehavior(b)` / `getResourceAllocationLog()` / `clearResourceAllocationLog()` | Which resources the host allocates — withhold `AutoSigning` to keep signing observable |
 | `testHost.getNotificationLog()` / `clearNotificationLog()` | Push notifications, including scheduled and cancelled ones |
 | `testHost.getChatRooms()` / `getChatBots()` / `getChatMessageLog()` / `clearChat()` | Chat state (needs `executionKind: 'Worker'`) |
 | `testHost.seedChatRoom(room)` / `seedChatBot(bot)` | Add a room/bot without the product creating it |
@@ -512,6 +560,7 @@ Two families cover the whole surface:
 | `seedProductStorage(key, value)` / `getProductStorage()` / `clearProductStorage()` | data | Pre-populate, read, or wipe product-storage entries; a live `localStorage.subscribe` in the product sees these writes (see limitation below) |
 | `getOperationLog()` / `getOpenOperations()` / `clearOperationLog()` | data | Pending operations a `Worker` product opened through `worker.beginOperation` to keep its runtime alive |
 | `injectStatement(s)` / `getStatements()` / `getSubmittedStatements()` / `clearStatements()` | data | The in-page statement store: seed, read, and wipe (see [Statement store testing](#statement-store-testing)) |
+| `setResourceAllocationBehavior(b)` / `getResourceAllocationLog()` / `clearResourceAllocationLog()` | decision | Which resources `resourceAllocation.request` allocates. Takes the record form as well as the named modes, so it works through the fixture (see [Signing observability](#signing-observability-and-autosigning)) |
 | `setUserConfirmationBehavior(b)` / `getUserConfirmationLog()` / `clearUserConfirmationLog()` | decision | How the host answers `confirmUserAction` and `confirmPermission` |
 | `setNavigationBehavior(b)` | decision | How the host answers `navigateTo` (log: `getNavigationLog()` / `clearNavigationLog()`, above) |
 | `setNotificationBehavior(b)` | decision | How the host answers `pushNotification`; the function form sees `{ text, deeplink, scheduledAt }` (log: `getNotificationLog()` / `clearNotificationLog()`, above) |
@@ -535,6 +584,8 @@ const { testHost } = createTestHostFixture({
     userConfirmation: "reject-all",
     // 'approve-all' | 'approve-once' | 'reject-all' for the two consent decisions.
     permission: "approve-once",
+    // Keeps signing observable — see below.
+    resourceAllocation: { AutoSigning: false },
   },
 });
 ```
@@ -616,6 +667,21 @@ The build produces three kinds of output:
 1. **Browser assets** (`dist/host/`) — ESM chunks built with esbuild, plus the two `.wasm` payloads, served by the test host's own HTTP server
 2. **ESM modules** (`dist/*.js`) — the Node-side API compiled with `tsc`
 3. **CJS bundles** (`dist/index.cjs`, `dist/playwright.cjs`) — the same API for CommonJS consumers
+
+## Migrating from 0.14.0 to 0.15.0
+
+Nothing to change: `'approve-all'` is the default, which is what 0.14.0 and every
+release before it did unconditionally.
+
+One thing starts being explainable. If a test asserts on `getSigningLog()` and
+gets `[]` for a signature that demonstrably happened, the product holds the
+`AutoSigning` capability and the core is signing in-process. Withhold it:
+
+```ts
+behaviors: { resourceAllocation: { AutoSigning: false } }
+```
+
+See [Signing observability and `AutoSigning`](#signing-observability-and-autosigning).
 
 ## Migrating from 0.13.x to 0.14.0
 

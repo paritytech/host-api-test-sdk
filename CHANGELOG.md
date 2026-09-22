@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.15.0
+
+`getSigningLog()` came back empty for a product that had been granted
+auto-signing — reported from a product-sdk migration, where the empty log was
+indistinguishable from a broken accessor. It was neither a broken accessor nor a
+regression: it is what the capability does. The host can now withhold it.
+
+### Fixed
+
+- **A product granted `AutoSigning` was signed for with no host-visible evidence at all.** `getSigningLog()`, `getUserConfirmationLog()` and `getPermissionLog()` all returned `[]` around a `signRaw()` that demonstrably succeeded. The cause is the capability itself: `AutoSigning` hands the core `productRootPrivateKey` — the product's whole subtree secret — and from that moment the core derives every product account and signs **in-process**, in its own worker. No SSO round trip is made, so no host callback runs and there is nothing for any log to record. It has been this way since 0.13.0 wired the capability; it went unnoticed because nothing here granted auto-signing and then asserted on signing.
+
+  The host cannot observe an in-core signature — it gave away the key — so the fix is to let a suite decline the grant. **`setResourceAllocationBehavior(behavior)`** and **`behaviors.resourceAllocation`** choose which resources are allocated: `'approve-all'` (the default, and what every earlier release did unconditionally), `'reject-all'`, a record that grants anything it does not mention, or — in-page only — a function. `{ AutoSigning: false }` is the one that matters:
+
+  ```ts
+  createTestHostFixture({
+    productUrl: "http://localhost:3000",
+    behaviors: { resourceAllocation: { AutoSigning: false } },
+  });
+  ```
+
+  With the grant withheld the core falls back to the SSO round trip, and every signature lands in `getSigningLog()` and `getUserConfirmationLog()` again. A refused resource is answered `Rejected` rather than skipped — the core reads one outcome per requested resource — and withholding auto-signing leaves the allowances a product needs intact, so `statementStore.createProofAuthorized` keeps working.
+
+  Prefer the boot option over the setter: a product that asks at its first frame already holds the grant by the time a setter could run.
+
+### Added
+
+- **`getResourceAllocationLog()` / `clearResourceAllocationLog()`** — every resource a product asked for, which product asked, and whether the host allocated it. This is the accessor that was missing: an empty signing log is now explained by an `{ resource: 'AutoSigning', granted: true }` entry sitting in front of it, rather than looking like a broken API.
+- New exported types `AllocatableResourceTag`, `ResourceAllocationBehavior` and `ResourceAllocationLogEntry`. `AllocatableResourceTag` carries a compile-time guard against the core's own resource union, so a resource added upstream fails to compile here.
+- `SigningLogEntry`'s doc comment now says what does **not** reach it, and points at the option that fixes it.
+
+### Internal
+
+- Unit coverage 183 → 197: a new `src/types.spec.ts` for `decideResource` and `parseResourceAllocationBehavior`, plus a `sso responder resource policy` suite pinning the per-resource verdicts, the one-outcome-per-resource rule and the recording. Integration 77 → 81, including one test that *documents the trap* — granting `AutoSigning` and asserting the logs go empty — so the behaviour cannot change silently.
+- The page-config validation for `resourceAllocation` lives in `types.ts` beside the type it parses, rather than in `host-runtime.ts`: an unknown resource key throws naming the key, and that is checked by a unit test rather than by scraping a browser console.
+
 ## 0.14.0
 
 The upstream stack moves to truapi `0.18`. The core changed how it asks the host

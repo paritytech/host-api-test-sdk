@@ -1704,6 +1704,132 @@ test.describe('Local storage', () => {
   });
 });
 
+// ── Resource allocation and signing observability ───────────────────
+
+test.describe('Resource allocation policy', () => {
+  /** The reporter's sequence: clear every log, sign, then read all three back. */
+  async function signAndReadLogs(page: Page, product: Frame) {
+    await page.evaluate(() => {
+      window.__TEST_HOST__.clearSigningLog();
+      window.__TEST_HOST__.clearUserConfirmationLog();
+      window.__TEST_HOST__.clearPermissionLog();
+    });
+    const signed = expectOk(
+      await product.evaluate(() =>
+        window.__TEST_PRODUCT__.signRawProduct('test-product.dot', 0, '0x0102'),
+      ),
+    );
+    const logs = await page.evaluate(() => ({
+      signing: window.__TEST_HOST__.getSigningLog().map((entry) => entry.type),
+      confirmation: window.__TEST_HOST__.getUserConfirmationLog().map((entry) => entry.tag),
+    }));
+    return { signed, logs };
+  }
+
+  const allocate = (product: Frame, tags: string[]) =>
+    product.evaluate(
+      (names) =>
+        window.__TEST_PRODUCT__.requestResourceAllocation(
+          names.map((tag) => ({ tag })) as never,
+        ),
+      tags,
+    );
+
+  // Documents the trap rather than asserting it is fine: a product holding
+  // AutoSigning is signed for inside the core, so the host sees nothing.
+  test('granting AutoSigning makes signing invisible to the host', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice'],
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+
+      const before = await signAndReadLogs(page, product);
+      expect(before.logs.signing).toEqual(['raw']);
+
+      expectOk(await allocate(product, ['AutoSigning']));
+
+      const after = await signAndReadLogs(page, product);
+      // The signature is real; the host simply never saw the request.
+      expect(after.signed.signature).toMatch(/^0x[0-9a-f]+$/);
+      expect(after.logs).toEqual({ signing: [], confirmation: [] });
+    } finally {
+      await host.close();
+    }
+  });
+
+  test('withholding AutoSigning keeps every signature in the signing log', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice'],
+      behaviors: { resourceAllocation: { AutoSigning: false } },
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+
+      const outcomes = expectOk(await allocate(product, ['AutoSigning', 'StatementStoreAllowance']));
+      // Selective: the allowance a product needs is still granted.
+      expect(outcomes.outcomes).toEqual(['Rejected', 'Allocated']);
+
+      const { signed, logs } = await signAndReadLogs(page, product);
+      expect(signed.signature).toMatch(/^0x[0-9a-f]+$/);
+      expect(logs).toEqual({ signing: ['raw'], confirmation: ['SignRaw'] });
+    } finally {
+      await host.close();
+    }
+  });
+
+  test('a withheld AutoSigning grant leaves authorized statement proofs working', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice'],
+      behaviors: { resourceAllocation: { AutoSigning: false } },
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+      expectOk(await allocate(product, ['StatementStoreAllowance']));
+
+      expectOk(
+        await product.evaluate(() =>
+          window.__TEST_PRODUCT__.statementCreateProofAuthorized('0xaabb'),
+        ),
+      );
+    } finally {
+      await host.close();
+    }
+  });
+
+  test('the allocation log records what was asked and what was answered', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice'],
+      behaviors: { resourceAllocation: { AutoSigning: false } },
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+      await allocate(product, ['AutoSigning', 'BulletinAllowance']);
+
+      const log = await page.evaluate(() => window.__TEST_HOST__.getResourceAllocationLog());
+      expect(log.map((entry) => [entry.resource, entry.granted])).toEqual([
+        ['AutoSigning', false],
+        ['BulletinAllowance', true],
+      ]);
+      expect(log[0].productId).toBe('test-product.dot');
+
+      await page.evaluate(() => window.__TEST_HOST__.clearResourceAllocationLog());
+      expect(await page.evaluate(() => window.__TEST_HOST__.getResourceAllocationLog())).toEqual([]);
+    } finally {
+      await host.close();
+    }
+  });
+
+});
+
 // ── Statement store ─────────────────────────────────────────────────
 
 test.describe('Statement store', () => {

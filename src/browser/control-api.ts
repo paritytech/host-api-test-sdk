@@ -26,6 +26,7 @@ import type {
   NavigationBehavior,
   NotificationBehavior,
   PermissionBehavior,
+  ResourceAllocationBehavior,
   StatementEntry,
   StatementInput,
   TestHostAPI,
@@ -377,6 +378,18 @@ export function buildControlApi(options: ControlApiOptions): TestHostAPI {
 
     getOpenOperations() {
       return [...state.openOperations.values()].map((entry) => ({ ...entry }));
+    },
+
+    setResourceAllocationBehavior(behavior: ResourceAllocationBehavior) {
+      state.resourceAllocationBehavior = behavior;
+    },
+
+    getResourceAllocationLog() {
+      return [...state.resourceAllocationLog];
+    },
+
+    clearResourceAllocationLog() {
+      state.resourceAllocationLog.length = 0;
     },
 
     clearOperationLog() {

@@ -1,4 +1,5 @@
 import type {
+  AllocatableResource as CoreAllocatableResource,
   ChainIdentifier,
   ChatActionPayload,
   HostChatActionSubscribeItem,
@@ -65,6 +66,44 @@ export type PermissionDecision = 'AllowOnce' | 'AllowAlways' | 'Deny';
 type _PermissionDecisionMirrorsCore = Expect<
   Equal<PermissionDecision, CorePermissionDecision>
 >;
+
+/** Which resource an `resourceAllocation.request` names, e.g. `'AutoSigning'`. */
+export type AllocatableResourceTag =
+  | 'StatementStoreAllowance'
+  | 'BulletinAllowance'
+  | 'SmartContractAllowance'
+  | 'AutoSigning';
+
+/** Compile-time guard: this mirror must equal the core's resource union. */
+type _AllocatableResourceTagMirrorsCore = Expect<
+  Equal<AllocatableResourceTag, CoreAllocatableResource['tag']>
+>;
+
+/**
+ * Which resources the host allocates. `'approve-all'` is the default and what
+ * every release before 0.15 did unconditionally.
+ *
+ * The record form grants anything it does not mention, so
+ * `{ AutoSigning: false }` means "everything except auto-signing". It is the
+ * only selective form that crosses `page.evaluate`, so it is what the Playwright
+ * fixture and the `behaviors` boot option accept; the function form is in-page
+ * only, like every other behavior here.
+ */
+export type ResourceAllocationBehavior =
+  | 'approve-all'
+  | 'reject-all'
+  | Partial<Record<AllocatableResourceTag, boolean>>
+  | ((resource: { tag: AllocatableResourceTag; productId: string }) => boolean);
+
+/** One resource a product asked the host to allocate, and what it answered. */
+export interface ResourceAllocationLogEntry {
+  /** The product that asked, as its `callingProductId` named it. */
+  productId: string;
+  resource: AllocatableResourceTag;
+  /** False means the host answered `Rejected`. */
+  granted: boolean;
+  timestamp: number;
+}
 
 export interface NetworkConfig {
   id: string;
@@ -152,6 +191,15 @@ export interface CreateTestHostOptions {
   behaviors?: InitialBehaviors;
 }
 
+/**
+ * One signing action the host was asked to perform.
+ *
+ * A product granted `AutoSigning` is signed for **inside the core**, which holds
+ * the product's subtree secret from that moment on — no request reaches the host
+ * and nothing lands here. A suite that asserts on signing must withhold that
+ * resource: see `setResourceAllocationBehavior` and
+ * `behaviors.resourceAllocation`.
+ */
 export interface SigningLogEntry {
   type: 'payload' | 'raw' | 'createTransaction';
   payload: unknown;
@@ -334,6 +382,52 @@ export interface UserConfirmationLogEntry {
  */
 export type UserConfirmationBehavior = DecisionBehavior<{ tag: string; value: unknown }>;
 
+/**
+ * The one reading of a `ResourceAllocationBehavior`. A record grants anything
+ * it does not mention, so the common case — withhold auto-signing, allow the
+ * allowances a product needs to function — is one key.
+ */
+export function decideResource(
+  behavior: ResourceAllocationBehavior,
+  resource: { tag: AllocatableResourceTag; productId: string },
+): boolean {
+  if (behavior === 'approve-all') return true;
+  if (behavior === 'reject-all') return false;
+  if (typeof behavior === 'function') return behavior(resource);
+  return behavior[resource.tag] ?? true;
+}
+
+const RESOURCE_TAGS: Record<AllocatableResourceTag, true> = {
+  StatementStoreAllowance: true,
+  BulletinAllowance: true,
+  SmartContractAllowance: true,
+  AutoSigning: true,
+};
+
+/**
+ * Read a `behaviors.resourceAllocation` off the page config, which a plain-JS
+ * caller can put anything on. A misspelled resource key would silently grant
+ * the resource it was meant to withhold — which is the exact bug this option
+ * exists to fix — so an unknown key throws rather than being ignored.
+ */
+export function parseResourceAllocationBehavior(value: unknown): ResourceAllocationBehavior {
+  if (value === 'approve-all' || value === 'reject-all') return value;
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error(`invalid resourceAllocation behavior: ${JSON.stringify(value)}`);
+  }
+  const record: Partial<Record<AllocatableResourceTag, boolean>> = {};
+  for (const [key, granted] of Object.entries(value)) {
+    if (!Object.hasOwn(RESOURCE_TAGS, key)) {
+      throw new Error(`invalid resourceAllocation resource: "${key}"`);
+    }
+    if (typeof granted !== 'boolean') {
+      throw new Error(`resourceAllocation."${key}" must be a boolean`);
+    }
+    record[key as AllocatableResourceTag] = granted;
+  }
+  return record;
+}
+
 /** How the host answers `navigateTo`; `'approve-all'` is the default. */
 export type NavigationBehavior = Behavior<{ url: string }>;
 
@@ -369,6 +463,16 @@ export interface InitialBehaviors {
   userConfirmation?: 'approve-all' | 'approve-once' | 'reject-all';
   navigation?: 'approve-all' | 'reject-all';
   notification?: 'approve-all' | 'reject-all';
+  /**
+   * Which resources the host allocates. Takes the record form as well as the
+   * two named modes, because withholding `AutoSigning` has to be settable
+   * before the product's first frame — a product that asks for it at boot has
+   * already been granted it by the time a setter could run.
+   */
+  resourceAllocation?:
+    | 'approve-all'
+    | 'reject-all'
+    | Partial<Record<AllocatableResourceTag, boolean>>;
 }
 
 /** Shape of window.__TEST_HOST__ — shared between browser bundle and Playwright fixture. */
@@ -512,6 +616,16 @@ export interface TestHostAPI {
   getOpenOperations(): OperationEntry[];
   /** Drop the log. Operations still open stay open and can still be ended. */
   clearOperationLog(): void;
+
+  /**
+   * Choose which resources the host allocates. Withholding `AutoSigning` is
+   * what makes signing observable: see `getSigningLog()`.
+   */
+  setResourceAllocationBehavior(behavior: ResourceAllocationBehavior): void;
+  /** Every resource a product asked for, and whether the host allocated it. */
+  getResourceAllocationLog(): ResourceAllocationLogEntry[];
+  /** Drop the resource-allocation log. */
+  clearResourceAllocationLog(): void;
 
   dispose(): void;
 }

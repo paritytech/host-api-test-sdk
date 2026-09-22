@@ -9,6 +9,7 @@ export {
 } from './networks.js';
 export type {
   Account,
+  AllocatableResourceTag,
   Behavior,
   ChainEntry,
   ChainIdentifier,
@@ -37,6 +38,8 @@ export type {
   PermissionBehavior,
   PermissionDecision,
   PermissionLogEntry,
+  ResourceAllocationBehavior,
+  ResourceAllocationLogEntry,
   SigningLogEntry,
   StatementEntry,
   StatementInput,

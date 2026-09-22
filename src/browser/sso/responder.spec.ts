@@ -13,6 +13,7 @@ import {
   StatementData,
 } from './messages.js';
 import { createSsoResponder } from './responder.js';
+import type { ResourcePolicy } from './responder.js';
 import { decodeStatement, encodeStatement, signStatement } from './statement.js';
 
 const topic = (fill: number) => new Uint8Array(32).fill(fill);
@@ -25,7 +26,11 @@ const ACCOUNT = { dotNsIdentifier: PRODUCT, derivationIndex: INDEX_0 };
 
 type ResolveAccountFn = (dotNsIdentifier: string, derivationIndex: unknown) => ReturnType<typeof deriveDev>;
 
-function harness(failWith?: string, overrideResolve?: ResolveAccountFn) {
+function harness(
+  failWith?: string,
+  overrideResolve?: ResolveAccountFn,
+  resourcePolicy?: ResourcePolicy,
+) {
   const alice = deriveDev('Alice');
   const hostEncSecret = x25519.utils.randomSecretKey();
   const peerEncSecret = x25519.utils.randomSecretKey();
@@ -57,6 +62,7 @@ function harness(failWith?: string, overrideResolve?: ResolveAccountFn) {
     store,
     session,
     resolveAccount: overrideResolve ?? resolveAccount,
+    resourcePolicy,
   });
   const key = sessionAeadKey(hostEncSecret, session.peerEncPubkey);
   return { alice, store, session, responder, key, resolveAccount };
@@ -797,5 +803,85 @@ describe('sso responder', () => {
         resolveAccount: h.resolveAccount,
       }),
     ).toThrow(/identitySecret/);
+  });
+});
+
+describe('sso responder resource policy', () => {
+  /** Records what the policy was asked, and answers from a fixed verdict map. */
+  function policy(verdicts: Record<string, boolean>) {
+    const recorded: Array<{ resource: string; granted: boolean }> = [];
+    const spec: ResourcePolicy = {
+      allows: (resource) => verdicts[resource.tag] ?? true,
+      record: (entry) => recorded.push({ resource: entry.resource, granted: entry.granted }),
+    };
+    return { spec, recorded };
+  }
+
+  const request = (h: Harness, resources: Array<{ tag: string; value: undefined }>) =>
+    submitRequest(h, 'req-alloc', [
+      envelope('m-alloc', 'ResourceAllocationRequest', {
+        callingProductId: PRODUCT,
+        resources: resources as never,
+        onExisting: { tag: 'ignore', value: undefined },
+      }),
+    ]);
+
+  const outcomeTags = (frames: ReturnType<typeof listen>): string[] => {
+    const [reply] = replyValues(frames);
+    const payload = (
+      reply.value as { payload: { value: Array<{ tag: string }> } }
+    ).payload;
+    return payload.value.map((outcome) => outcome.tag);
+  };
+
+  it('allocates everything when no policy is supplied', () => {
+    const h = harness();
+    const frames = listen(h);
+    request(h, [{ tag: 'AutoSigning', value: undefined }]);
+
+    expect(outcomeTags(frames)).toEqual(['allocated']);
+  });
+
+  // The whole point: a product granted AutoSigning is signed for inside the
+  // core, so withholding it is the only way signing stays observable.
+  it('rejects a resource the policy withholds, and allocates the rest', () => {
+    const { spec, recorded } = policy({ AutoSigning: false });
+    const h = harness(undefined, undefined, spec);
+    const frames = listen(h);
+
+    request(h, [
+      { tag: 'AutoSigning', value: undefined },
+      { tag: 'StatementStoreAllowance', value: undefined },
+    ]);
+
+    expect(outcomeTags(frames)).toEqual(['rejected', 'allocated']);
+    expect(recorded).toEqual([
+      { resource: 'AutoSigning', granted: false },
+      { resource: 'StatementStoreAllowance', granted: true },
+    ]);
+  });
+
+  // The core reads one outcome per requested resource; a short vector would
+  // desynchronise it against the request.
+  it('answers one outcome per resource even when all are refused', () => {
+    const { spec } = policy({ AutoSigning: false, StatementStoreAllowance: false });
+    const h = harness(undefined, undefined, spec);
+    const frames = listen(h);
+
+    request(h, [
+      { tag: 'AutoSigning', value: undefined },
+      { tag: 'StatementStoreAllowance', value: undefined },
+    ]);
+
+    expect(outcomeTags(frames)).toEqual(['rejected', 'rejected']);
+  });
+
+  it('records a grant the policy allows', () => {
+    const { spec, recorded } = policy({});
+    const h = harness(undefined, undefined, spec);
+    listen(h);
+    request(h, [{ tag: 'BulletinAllowance', value: undefined }]);
+
+    expect(recorded).toEqual([{ resource: 'BulletinAllowance', granted: true }]);
   });
 });

@@ -3,6 +3,7 @@ export type { FixtureBehavior, FixtureConsentBehavior, TestHost, TestHostFixture
 
 export type {
   Account,
+  AllocatableResourceTag,
   ChainEntry,
   ChatActionInput,
   ChatActionPayload,
@@ -16,6 +17,8 @@ export type {
   InitialState,
   OperationEntry,
   PermissionDecision,
+  ResourceAllocationBehavior,
+  ResourceAllocationLogEntry,
   SigningLogEntry,
   StatementEntry,
   StatementInput,

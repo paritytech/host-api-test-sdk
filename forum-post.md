@@ -1210,3 +1210,79 @@ Then, in your suite:
   because of them — pick them back up.
 
 Everything else is additive.
+
+---
+
+# host-api-test-sdk 0.15.0
+
+One fix, from a report out of a product-sdk migration: `getSigningLog()` came
+back empty for a `signRaw()` that demonstrably succeeded. So did
+`getUserConfirmationLog()` and `getPermissionLog()`. Cleared right before the
+call, dumped right after — all three `[]`, while the product UI rendered a valid
+signature.
+
+It was not a broken accessor, and not a regression in the accessor's shape.
+
+## Why the logs were empty
+
+The product had been granted **`AutoSigning`**.
+
+That capability hands the core `productRootPrivateKey` — the product's whole
+subtree secret. From that moment the core derives every product account and signs
+**inside its own worker**. There is no SSO round trip, so no host callback runs,
+so there is nothing for any log to record. The host cannot see those signatures
+because it gave the key away.
+
+This has been true since 0.13.0 wired the capability. It went unnoticed here
+because nothing in this repo granted auto-signing and *then* asserted on signing
+— a product-sdk product asks for it at boot, which is how the report surfaced it.
+
+## The fix: decline the grant
+
+The host cannot observe an in-core signature, so the only honest fix is to let a
+suite refuse the capability. `behaviors.resourceAllocation` and
+`setResourceAllocationBehavior()` choose what gets allocated:
+
+```ts
+const { testHost } = createTestHostFixture({
+  productUrl: "http://localhost:3000",
+  behaviors: { resourceAllocation: { AutoSigning: false } },
+});
+```
+
+The core then falls back to asking the host per signature, and every one lands in
+`getSigningLog()` and `getUserConfirmationLog()` again — verified end to end, in
+both directions, in the integration suite.
+
+The record form grants anything it does not mention, so this withholds
+auto-signing and leaves `StatementStoreAllowance` and `BulletinAllowance`
+untouched; `statementStore.createProofAuthorized` keeps working. `'approve-all'`
+(the default, and what every earlier release did) and `'reject-all'` are there
+too, and in-page you can pass a function.
+
+**Use the boot option rather than the setter** when the product asks at startup:
+by the time a setter could run, the grant is already made.
+
+## And an accessor so this is diagnosable
+
+The deeper problem was that an empty log looked identical to a broken API. It no
+longer does:
+
+```ts
+expect(await testHost.getResourceAllocationLog()).toEqual([
+  { productId: "myapp.dot", resource: "AutoSigning", granted: true, timestamp: expect.any(Number) },
+]);
+```
+
+An empty signing log now has that entry sitting in front of it, saying exactly
+why. `clearResourceAllocationLog()` resets it. New exported types:
+`AllocatableResourceTag`, `ResourceAllocationBehavior`,
+`ResourceAllocationLogEntry`.
+
+`SigningLogEntry`'s own doc comment now states what does not reach it, and points
+at the option that fixes it.
+
+## Upgrading
+
+Nothing to change — `'approve-all'` is the default. Add the boot option to any
+suite that asserts on signing.

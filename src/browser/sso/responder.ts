@@ -32,6 +32,7 @@ import {
 import type { ExternalSessionOptions } from './session-blob.js';
 import { type Statement, matchesTopics, signStatement } from './statement.js';
 import { type ResolveAccount, createRingVrfRegistry } from './ring-vrf.js';
+import type { AllocatableResourceTag } from '../../types.js';
 
 /** One signing action observed by the control API. */
 export interface SigningLogEntry {
@@ -47,6 +48,16 @@ export interface ResponderSession extends ExternalSessionOptions {
   identitySecret: Uint8Array;
 }
 
+/**
+ * Which resources this host allocates, and where the answers are recorded.
+ * Injected rather than read off `HostState` so the responder keeps depending on
+ * nothing above `sso/`.
+ */
+export interface ResourcePolicy {
+  allows(resource: { tag: AllocatableResourceTag; productId: string }): boolean;
+  record(entry: { productId: string; resource: AllocatableResourceTag; granted: boolean }): void;
+}
+
 export interface ResponderOptions {
   store: LoopbackStore;
   session: ResponderSession;
@@ -55,6 +66,8 @@ export interface ResponderOptions {
    * accounts never reach this callback — only the session identity answers those.
    */
   resolveAccount: ResolveAccount;
+  /** Absent allocates everything, which is what every release before 0.15 did. */
+  resourcePolicy?: ResourcePolicy;
 }
 
 export interface SsoResponder {
@@ -71,6 +84,12 @@ type AllocationOutcome = Extract<
 type AllocatedResource = Extract<AllocationOutcome, { tag: 'allocated' }>['value'];
 
 const allocated = (value: AllocatedResource): AllocationOutcome => ({ tag: 'allocated', value });
+
+/**
+ * `Rejected`, not `NotAvailable`: the host can serve every one of these and is
+ * declining this request, which is what a user refusing a prompt looks like.
+ */
+const REJECTED: AllocationOutcome = { tag: 'rejected', value: undefined };
 
 /** The `HostSignPayloadData` carried by `SignRequest::Payload`. */
 type SignPayloadData = Extract<
@@ -168,7 +187,7 @@ function signPayloadData(keypair: DevKeypair, payload: SignPayloadData): HexStri
 }
 
 export function createSsoResponder(options: ResponderOptions): SsoResponder {
-  const { store, session, resolveAccount } = options;
+  const { store, session, resolveAccount, resourcePolicy } = options;
   const channelKey = sessionAeadKey(session.encSecret, session.peerEncPubkey);
   const signingLog: SigningLogEntry[] = [];
   const ringVrf = createRingVrfRegistry(resolveAccount);
@@ -281,6 +300,13 @@ export function createSsoResponder(options: ResponderOptions): SsoResponder {
   ): RemoteMessageValue {
     const product = request.callingProductId;
     const outcomes = request.resources.map((resource) => {
+      const tag = resource.tag as AllocatableResourceTag;
+      const granted = resourcePolicy?.allows({ tag, productId: product }) ?? true;
+      resourcePolicy?.record({ productId: product, resource: tag, granted });
+      // A refused resource is answered, not skipped: the core reads one outcome
+      // per requested resource and a short vector desynchronises the pairing.
+      if (!granted) return REJECTED;
+
       switch (resource.tag) {
         case 'StatementStoreAllowance':
           return allocated({
