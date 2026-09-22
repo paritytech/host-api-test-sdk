@@ -1301,12 +1301,11 @@ exactly instead.
 README and LICENSE but not the changelog — which is how you end up diffing
 `.d.ts` files across four published versions to find a breaking change.
 
-**`TRUAPI_WIRE_SCHEMA_HASH`**, `462dacb6e0d1f504` for this release, exported and
-stated in the README. The core ships as a vendored `.wasm`, so the declared
-`@parity/truapi` version tells you what the JS codecs were built against, not
-what the binary speaks — and the binary is what your product has to match. The
-build reads it out of the compiled core and fails if it drifts from the
-published constant.
+**`TRUAPI_WIRE_SCHEMA_HASH`**, exported from the package root. The core ships as
+a vendored `.wasm`, so the declared `@parity/truapi` version tells you what the
+JS codecs were built against, not what the binary speaks — and the binary is
+what your product has to match. The build reads the value out of the compiled
+core and fails if it drifts from the constant, so the export cannot go stale.
 
 **An account switch is observable by the product** — this one needed no code
 change, only saying so. `account.connectionStatusSubscribe()` delivers
