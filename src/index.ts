@@ -1,5 +1,6 @@
 export { createTestHostServer } from './server.js';
 export { DEV_ACCOUNTS, DEV_ACCOUNT_NAMES } from './accounts.js';
+export { TRUAPI_WIRE_SCHEMA_HASH } from './types.js';
 export {
   DEFAULT_CHAIN,
   PASEO_ASSET_HUB,
@@ -9,6 +10,7 @@ export {
 } from './networks.js';
 export type {
   Account,
+  AllocatableResourceTag,
   Behavior,
   ChainEntry,
   ChainIdentifier,
@@ -34,9 +36,12 @@ export type {
   OperationEntry,
   PreimageEntry,
   ProductExecutionKind,
+  ProductStorageEntry,
   PermissionBehavior,
   PermissionDecision,
   PermissionLogEntry,
+  ResourceAllocationBehavior,
+  ResourceAllocationLogEntry,
   SigningLogEntry,
   StatementEntry,
   StatementInput,

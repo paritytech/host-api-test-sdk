@@ -1,5 +1,6 @@
 import { build } from 'esbuild';
 import { copyFileSync, mkdirSync, rmSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -115,3 +116,31 @@ await Promise.all([
 ]);
 
 console.log('CJS bundles built: dist/index.cjs, dist/playwright.cjs');
+
+/**
+ * Drift guard for the published wire-schema hash.
+ *
+ * The core ships as a vendored `.wasm`, so the `@parity/truapi` version in
+ * `package.json` says what the JS codecs were built against, not what the
+ * binary speaks. Consumers need the latter to answer "can my product talk to
+ * this host?", so the value is published — and a bump that changes the core
+ * without changing the constant would publish a lie.
+ */
+{
+  const wasm = await import('@parity/truapi-host/wasm/web');
+  await wasm.default({
+    module_or_path: await readFile(
+      new URL('node_modules/@parity/truapi-host/dist/wasm/web/truapi_server_bg.wasm', import.meta.url),
+    ),
+  });
+  const actual = wasm.wireSchemaHash();
+  const source = await readFile(new URL('src/types.ts', import.meta.url), 'utf8');
+  const declared = /TRUAPI_WIRE_SCHEMA_HASH = '([^']+)'/.exec(source)?.[1];
+  if (declared !== actual) {
+    throw new Error(
+      `TRUAPI_WIRE_SCHEMA_HASH is ${declared ?? 'missing'}, but the bundled core speaks ${actual}. ` +
+        'Update the constant in src/types.ts and say so in the CHANGELOG.',
+    );
+  }
+  console.log(`Wire schema hash verified: ${actual}`);
+}

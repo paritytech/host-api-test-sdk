@@ -1,4 +1,5 @@
 import type {
+  AllocatableResource as CoreAllocatableResource,
   ChainIdentifier,
   ChatActionPayload,
   HostChatActionSubscribeItem,
@@ -12,6 +13,20 @@ import type {
   PermissionDecision as CorePermissionDecision,
   ProductExecutionKind as CoreProductExecutionKind,
 } from '@parity/truapi-host';
+
+/**
+ * Wire-schema hash of the TrUAPI core this release bundles — what the host
+ * actually speaks, as `wireSchemaHash()` reports it from the compiled core.
+ *
+ * A product connects only to a host on the same schema. The declared
+ * `@parity/truapi` dependency is weaker evidence than this: the core ships as a
+ * vendored `.wasm`, so the package version says what the JS codecs were built
+ * against, not what the binary speaks.
+ *
+ * `build.mjs` reads the value out of the bundled `.wasm` and fails the build if
+ * it disagrees with this constant, so it cannot go stale on a dependency bump.
+ */
+export const TRUAPI_WIRE_SCHEMA_HASH = '462dacb6e0d1f504';
 
 /** A `0x`-prefixed hex string. */
 export type HexString = `0x${string}`;
@@ -65,6 +80,44 @@ export type PermissionDecision = 'AllowOnce' | 'AllowAlways' | 'Deny';
 type _PermissionDecisionMirrorsCore = Expect<
   Equal<PermissionDecision, CorePermissionDecision>
 >;
+
+/** Which resource an `resourceAllocation.request` names, e.g. `'AutoSigning'`. */
+export type AllocatableResourceTag =
+  | 'StatementStoreAllowance'
+  | 'BulletinAllowance'
+  | 'SmartContractAllowance'
+  | 'AutoSigning';
+
+/** Compile-time guard: this mirror must equal the core's resource union. */
+type _AllocatableResourceTagMirrorsCore = Expect<
+  Equal<AllocatableResourceTag, CoreAllocatableResource['tag']>
+>;
+
+/**
+ * Which resources the host allocates. `'approve-all'` is the default and what
+ * every release before 0.15 did unconditionally.
+ *
+ * The record form grants anything it does not mention, so
+ * `{ AutoSigning: false }` means "everything except auto-signing". It is the
+ * only selective form that crosses `page.evaluate`, so it is what the Playwright
+ * fixture and the `behaviors` boot option accept; the function form is in-page
+ * only, like every other behavior here.
+ */
+export type ResourceAllocationBehavior =
+  | 'approve-all'
+  | 'reject-all'
+  | Partial<Record<AllocatableResourceTag, boolean>>
+  | ((resource: { tag: AllocatableResourceTag; productId: string }) => boolean);
+
+/** One resource a product asked the host to allocate, and what it answered. */
+export interface ResourceAllocationLogEntry {
+  /** The product that asked, as its `callingProductId` named it. */
+  productId: string;
+  resource: AllocatableResourceTag;
+  /** False means the host answered `Rejected`. */
+  granted: boolean;
+  timestamp: number;
+}
 
 export interface NetworkConfig {
   id: string;
@@ -152,6 +205,15 @@ export interface CreateTestHostOptions {
   behaviors?: InitialBehaviors;
 }
 
+/**
+ * One signing action the host was asked to perform.
+ *
+ * A product granted `AutoSigning` is signed for **inside the core**, which holds
+ * the product's subtree secret from that moment on — no request reaches the host
+ * and nothing lands here. A suite that asserts on signing must withhold that
+ * resource: see `setResourceAllocationBehavior` and
+ * `behaviors.resourceAllocation`.
+ */
 export interface SigningLogEntry {
   type: 'payload' | 'raw' | 'createTransaction';
   payload: unknown;
@@ -257,6 +319,27 @@ export interface PreimageEntry {
   timestamp: number;
 }
 
+/**
+ * One product-storage entry, with the key split both ways.
+ *
+ * The core namespaces every key before the host sees it, so `key` — what
+ * `getProductStorage()` is keyed by — carries an internal prefix. `localKey` is
+ * the key the product itself passed to `localStorage.write`, which is what a
+ * test actually knows.
+ */
+export interface ProductStorageEntry {
+  /** The namespaced key, as the core handed it over. Pass this to `seedProductStorage`. */
+  key: string;
+  /**
+   * The product's own key, parsed out of `key`. `undefined` when the prefix is
+   * not the layout this version knows, so an upstream change surfaces as a
+   * missing field rather than a wrong match.
+   */
+  localKey: string | undefined;
+  /** The stored bytes, decoded as UTF-8. */
+  value: string;
+}
+
 /** Host theme, as the `host_theme_subscribe` payload carries it. */
 export type Theme = {
   name: { tag: 'Default'; value: undefined } | { tag: 'Custom'; value: string };
@@ -334,6 +417,52 @@ export interface UserConfirmationLogEntry {
  */
 export type UserConfirmationBehavior = DecisionBehavior<{ tag: string; value: unknown }>;
 
+/**
+ * The one reading of a `ResourceAllocationBehavior`. A record grants anything
+ * it does not mention, so the common case — withhold auto-signing, allow the
+ * allowances a product needs to function — is one key.
+ */
+export function decideResource(
+  behavior: ResourceAllocationBehavior,
+  resource: { tag: AllocatableResourceTag; productId: string },
+): boolean {
+  if (behavior === 'approve-all') return true;
+  if (behavior === 'reject-all') return false;
+  if (typeof behavior === 'function') return behavior(resource);
+  return behavior[resource.tag] ?? true;
+}
+
+const RESOURCE_TAGS: Record<AllocatableResourceTag, true> = {
+  StatementStoreAllowance: true,
+  BulletinAllowance: true,
+  SmartContractAllowance: true,
+  AutoSigning: true,
+};
+
+/**
+ * Read a `behaviors.resourceAllocation` off the page config, which a plain-JS
+ * caller can put anything on. A misspelled resource key would silently grant
+ * the resource it was meant to withhold — which is the exact bug this option
+ * exists to fix — so an unknown key throws rather than being ignored.
+ */
+export function parseResourceAllocationBehavior(value: unknown): ResourceAllocationBehavior {
+  if (value === 'approve-all' || value === 'reject-all') return value;
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error(`invalid resourceAllocation behavior: ${JSON.stringify(value)}`);
+  }
+  const record: Partial<Record<AllocatableResourceTag, boolean>> = {};
+  for (const [key, granted] of Object.entries(value)) {
+    if (!Object.hasOwn(RESOURCE_TAGS, key)) {
+      throw new Error(`invalid resourceAllocation resource: "${key}"`);
+    }
+    if (typeof granted !== 'boolean') {
+      throw new Error(`resourceAllocation."${key}" must be a boolean`);
+    }
+    record[key as AllocatableResourceTag] = granted;
+  }
+  return record;
+}
+
 /** How the host answers `navigateTo`; `'approve-all'` is the default. */
 export type NavigationBehavior = Behavior<{ url: string }>;
 
@@ -369,6 +498,16 @@ export interface InitialBehaviors {
   userConfirmation?: 'approve-all' | 'approve-once' | 'reject-all';
   navigation?: 'approve-all' | 'reject-all';
   notification?: 'approve-all' | 'reject-all';
+  /**
+   * Which resources the host allocates. Takes the record form as well as the
+   * two named modes, because withholding `AutoSigning` has to be settable
+   * before the product's first frame — a product that asks for it at boot has
+   * already been granted it by the time a setter could run.
+   */
+  resourceAllocation?:
+    | 'approve-all'
+    | 'reject-all'
+    | Partial<Record<AllocatableResourceTag, boolean>>;
 }
 
 /** Shape of window.__TEST_HOST__ — shared between browser bundle and Playwright fixture. */
@@ -391,10 +530,32 @@ export interface TestHostAPI {
   getChainStatus(): string;
   /** Set how the host responds to remote permission requests. */
   setPermissionBehavior(behavior: PermissionBehavior): void;
-  /** Pre-grant a permission without the product requesting it. */
-  grantPermission(tag: string): void;
-  /** Revoke a previously granted permission. */
-  revokePermission(tag: string): void;
+  /**
+   * Pre-grant a permission without the product requesting it, in the core as
+   * well as in the host's own view — the core is what actually gates the
+   * product. Awaitable: the core write is a round trip to the worker.
+   *
+   * `value` is the permission's payload, needed only by the variants that carry
+   * one. `Remote` is the only such permission today, and the domains are part of
+   * what the core stores the decision under:
+   * `grantPermission('Remote', { domains: ['example.dot'] })`. Rejects on an
+   * unknown tag, or on a payload-carrying one given without its payload, rather
+   * than writing an authorization the core will never match.
+   */
+  grantPermission(tag: string, value?: unknown): Promise<void>;
+  /**
+   * Revoke a permission, returning the product to being asked the next time it
+   * needs one. Combine with `setPermissionBehavior('reject-all')` to make that
+   * asking end in a refusal.
+   *
+   * Takes `value` on the same terms as `grantPermission`, and must be given the
+   * same payload the grant used — it addresses one stored decision, not a tag.
+   *
+   * Before 0.15 this touched only the host's own set, so `getGrantedPermissions()`
+   * changed while the core kept the decision it had stored and went on serving
+   * the product without asking again.
+   */
+  revokePermission(tag: string, value?: unknown): Promise<void>;
   /** List currently granted permissions. */
   getGrantedPermissions(): string[];
   /** Get the log of all permission requests and their outcomes. */
@@ -498,8 +659,24 @@ export interface TestHostAPI {
    * reported — a product-level key it never wrote is not resolvable here.
    */
   seedProductStorage(key: string, value: string): void;
-  /** Every product-storage entry, decoded as UTF-8. */
+  /**
+   * Every product-storage entry, decoded as UTF-8, keyed by the NAMESPACED key
+   * the core handed the host — `truapi:product-storage:v1:<n>:<productId>:<key>`.
+   * Prefer `getProductStorageEntries()` or `getProductStorageValue()` when a
+   * test knows the product's own key: matching this map's keys by suffix is
+   * ambiguous when a local key contains `:`.
+   */
   getProductStorage(): Record<string, string>;
+  /**
+   * Every entry with its key split both ways, so a test can match on the
+   * product's own key without hand-parsing the namespace.
+   */
+  getProductStorageEntries(): ProductStorageEntry[];
+  /**
+   * The value the product stored under `localKey`, or `undefined` if it stored
+   * none. An exact match on the parsed key, not a suffix match.
+   */
+  getProductStorageValue(localKey: string): string | undefined;
   /** Drop every product-storage entry. Live `subscribeStorage` streams are pushed the clear. */
   clearProductStorage(): void;
 
@@ -512,6 +689,16 @@ export interface TestHostAPI {
   getOpenOperations(): OperationEntry[];
   /** Drop the log. Operations still open stay open and can still be ended. */
   clearOperationLog(): void;
+
+  /**
+   * Choose which resources the host allocates. Withholding `AutoSigning` is
+   * what makes signing observable: see `getSigningLog()`.
+   */
+  setResourceAllocationBehavior(behavior: ResourceAllocationBehavior): void;
+  /** Every resource a product asked for, and whether the host allocated it. */
+  getResourceAllocationLog(): ResourceAllocationLogEntry[];
+  /** Drop the resource-allocation log. */
+  clearResourceAllocationLog(): void;
 
   dispose(): void;
 }

@@ -1,6 +1,6 @@
 {
   "name": "@parity/host-api-test-sdk",
-  "version": "0.14.0",
+  "version": "0.15.0",
   "description": "Lightweight test host for Spektr product E2E testing — embeds dapps with auto-signing dev accounts, no Docker needed",
   "license": "MIT",
   "repository": {
@@ -22,7 +22,8 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "CHANGELOG.md"
   ],
   "scripts": {
     "build:bundle": "node build.mjs",
@@ -30,7 +31,7 @@
     "build": "pnpm run build:bundle && pnpm run build:tsc",
     "clean": "rm -rf dist",
     "test": "node --test test-exports-esm.mjs test-exports-cjs.cjs",
-    "test:integration": "node test/build-test-product.mjs && pnpm exec playwright test --config test/playwright.config.ts",
+    "test:integration": "pnpm run build:bundle && node test/build-test-product.mjs && pnpm exec playwright test --config test/playwright.config.ts",
     "test:unit": "vitest run",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.browser.json"
   },

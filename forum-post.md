@@ -1210,3 +1210,88 @@ Then, in your suite:
   because of them — pick them back up.
 
 Everything else is additive.
+
+---
+
+# host-api-test-sdk 0.15.0
+
+## `getSigningLog()` was empty and the API was not broken
+
+Reported from a product-sdk migration: `signRaw()` succeeded, and
+`getSigningLog()`, `getUserConfirmationLog()` and `getPermissionLog()` were all
+empty afterwards.
+
+That is what `AutoSigning` does. The capability hands the core the product's
+subtree secret, so the core signs in its own worker — no SSO round trip, no host
+callback, nothing to log. The host cannot observe those signatures; it gave away
+the key.
+
+So a suite that asserts on signing has to decline the grant:
+
+```ts
+createTestHostFixture({
+  productUrl: "http://localhost:3000",
+  behaviors: { resourceAllocation: { AutoSigning: false } },
+});
+```
+
+Signing then goes back through the host and lands in the logs again. The record
+form grants anything it does not mention, so `StatementStoreAllowance` and
+`BulletinAllowance` are untouched and `createProofAuthorized` keeps working.
+`'approve-all'` (the default) and `'reject-all'` also work, and in-page you can
+pass a function. Use the boot option rather than `setResourceAllocationBehavior()`
+when the product asks at startup — by then the grant is made.
+
+`getResourceAllocationLog()` shows what was asked and what was answered, so an
+empty signing log now has an entry in front of it explaining why.
+
+## `revokePermission()` did not revoke
+
+Found while comparing notes on the above. It deleted the tag from the host's own
+set. The core keeps its own authorization store, and that is the one it acts on —
+so a revoked permission kept working, nothing was logged, and
+`getGrantedPermissions()` reported a state the core would not honour. Any test
+that revoked and expected a re-prompt was asserting nothing.
+
+Both `grantPermission()` and `revokePermission()` now write the core's decision,
+and **both are `Promise<void>`**. The fixture already declared them async; code
+driving `window.__TEST_HOST__` directly needs to `await` them.
+
+```ts
+await testHost.revokePermission("ChainSubmit");
+await testHost.setPermissionBehavior("reject-all");
+// the next signing attempt is asked, refused, and fails
+```
+
+Revoking writes *undetermined*, not denied — it means "ask again", and the
+behavior decides the answer.
+
+Two smaller ones fell out of that. A grant the core could not store used to fail
+inside a `catch` that only logged, so an unknown tag sat in
+`getGrantedPermissions()` and nowhere else; unknown tags now reject. And `Remote`
+is stored under its domain list, so it takes one:
+`grantPermission("Remote", { domains: ["example.dot"] })`.
+
+## Also in 0.15.0
+
+- **Product storage by the key your product used.** `getProductStorage()` is
+  keyed by the namespaced form, and suffix-matching it breaks when a local key
+  contains a colon. `getProductStorageValue("mykey")` and
+  `getProductStorageEntries()` match exactly.
+- **The package ships its CHANGELOG.** `files` was `["dist"]`.
+- **`TRUAPI_WIRE_SCHEMA_HASH`**, exported from the package root. The package
+  version tells you what the JS codecs were built against, not what the vendored
+  `.wasm` speaks. The build fails if the two drift.
+- **An account switch is observable by the product** via
+  `account.connectionStatusSubscribe()` — `Disconnected` then `Connected`, no
+  reload needed. Do not gate on `waitForConnection()` afterwards: it tracks the
+  product connection and only moves when a frame arrives, so it hangs until the
+  product next talks. `getChainStatus()` is the host session.
+- **`pnpm test:integration` rebuilds the host bundle**, so local runs stop
+  testing the previous build. Contributors only; CI always built first.
+
+## Upgrading
+
+Await `grantPermission()` and `revokePermission()` if you call them on
+`window.__TEST_HOST__` directly. Otherwise nothing to change — `'approve-all'`
+stays the default. Add the boot option to any suite that asserts on signing.

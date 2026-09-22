@@ -27,11 +27,22 @@ import { deriveDev, deriveFromUri } from './dev-accounts.js';
 import { createHostWorker } from './host-worker.js';
 import { createLoopbackStore } from './loopback-chain.js';
 import { resolveProductAccount } from './product-accounts.js';
-import type { ResponderSession, SigningLogEntry, SsoResponder } from './sso/responder.js';
+import type {
+  ResourcePolicy,
+  ResponderSession,
+  SigningLogEntry,
+  SsoResponder,
+} from './sso/responder.js';
 import { createSsoResponder } from './sso/responder.js';
 import type { ResolveAccount } from './sso/ring-vrf.js';
 import { encodeExternalPairedSession } from './sso/session-blob.js';
-import type { DevicePermissionStatus, InitialBehaviors, InitialState, TestHostAPI } from '../types.js';
+import { decideResource, parseResourceAllocationBehavior } from '../types.js';
+import type {
+  DevicePermissionStatus,
+  InitialBehaviors,
+  InitialState,
+  TestHostAPI,
+} from '../types.js';
 
 interface AccountConfig {
   name: string;
@@ -136,6 +147,9 @@ function applyInitialConfig(state: HostState, config: HostConfig): void {
   }
   if (behaviors?.notification) {
     state.notificationBehavior = toBehaviorMode('notification', behaviors.notification);
+  }
+  if (behaviors?.resourceAllocation) {
+    state.resourceAllocationBehavior = parseResourceAllocationBehavior(behaviors.resourceAllocation);
   }
 }
 
@@ -322,9 +336,21 @@ async function init(): Promise<void> {
     store.markSessionTopic(minted.sessionIdPeer);
   }
 
+  /**
+   * Read through `state` on every request rather than captured, so a mid-test
+   * `setResourceAllocationBehavior` applies to the next allocation — and so an
+   * account switch, which builds a fresh responder, keeps the same policy.
+   */
+  const resourcePolicy: ResourcePolicy = {
+    allows: (resource) => decideResource(state.resourceAllocationBehavior, resource),
+    record: (entry) => {
+      state.resourceAllocationLog.push({ ...entry, timestamp: Date.now() });
+    },
+  };
+
   let session = mintSession(deriveFromUri(accounts[0].uri), usernameOf(accounts[0]));
   markSessionTopics(session);
-  let responder = createSsoResponder({ store, session, resolveAccount });
+  let responder = createSsoResponder({ store, session, resolveAccount, resourcePolicy });
   /** Signing recorded by responders retired by an account switch. */
   const retiredSigningLog: SigningLogEntry[] = [];
 
@@ -420,7 +446,7 @@ async function init(): Promise<void> {
       // A switch mints fresh ids; the retired ones stay marked, so statements
       // already in flight on them are still read as session traffic.
       markSessionTopics(session);
-      responder = createSsoResponder({ store, session, resolveAccount });
+      responder = createSsoResponder({ store, session, resolveAccount, resourcePolicy });
 
       // No unwind: if activation then fails, the core has already reported the
       // drop and `getChainStatus()` reads `'disconnected'`.
@@ -463,6 +489,7 @@ async function init(): Promise<void> {
       networks: config.networks,
       responder: responderFacade,
       store,
+      productId,
       identitySecret: () => session.identitySecret,
       runtime,
       iframeHost: host,
@@ -474,6 +501,27 @@ async function init(): Promise<void> {
         portProvider.dispose();
       },
     });
+
+    // `initialState.grantedPermissions` seeded the host's own set before the
+    // runtime existed. The core keeps the decision it acts on, so replay them
+    // into it now — otherwise a pre-granted permission is still prompted for.
+    //
+    // A tag the core does not know throws, and that must not take the whole
+    // host down: the seed is a plain `string[]`, so a typo here is a config
+    // mistake to report, not a reason for `window.__TEST_HOST__` to never
+    // finish booting. The tag stays in the host's own set, and the message
+    // says the core did not take it.
+    for (const tag of state.grantedPermissions) {
+      try {
+        await window.__TEST_HOST__.grantPermission(tag);
+      } catch (error) {
+        console.error(
+          `[test-host] initialState.grantedPermissions: "${tag}" was not granted in the core, ` +
+            'so the product will still be asked for it:',
+          error,
+        );
+      }
+    }
 
     console.log(
       '[test-host] Initialized:',

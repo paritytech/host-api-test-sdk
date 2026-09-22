@@ -10,6 +10,8 @@ import type {
   OperationEntry,
   PermissionBehavior,
   PermissionDecision,
+  ResourceAllocationBehavior,
+  ResourceAllocationLogEntry,
   UserConfirmationBehavior,
   UserConfirmationLogEntry,
 } from '../../types.js';
@@ -126,6 +128,15 @@ export interface HostState {
    */
   productStorageSubscribers: Map<string, Set<(value: Uint8Array | undefined) => void>>;
 
+  /**
+   * Which resources `resourceAllocation.request` allocates; `'approve-all'` by
+   * default. Withholding `AutoSigning` keeps signing observable, because the
+   * core signs in-process once it holds the product's subtree secret.
+   */
+  resourceAllocationBehavior: ResourceAllocationBehavior;
+  /** Every resource a product asked for, and what the host answered. */
+  resourceAllocationLog: ResourceAllocationLogEntry[];
+
   /** Pending operations still open, by id. `endOperation` removes an entry. */
   openOperations: Map<number, OperationEntry>;
   /** Every operation opened, in order, sharing its entry object with `openOperations`. */
@@ -173,6 +184,9 @@ export function createHostState(): HostState {
 
     productStorage: new Map(),
     productStorageSubscribers: new Map(),
+
+    resourceAllocationBehavior: 'approve-all',
+    resourceAllocationLog: [],
 
     openOperations: new Map(),
     operationLog: [],

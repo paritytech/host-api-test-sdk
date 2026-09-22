@@ -156,6 +156,9 @@ declare global {
       subscribeLocalStorage(key: string): { unsubscribe(): void };
       /** Every value `subscribeLocalStorage` has delivered; `null` for a cleared key. */
       getReceivedLocalStorage(): Array<string | null>;
+      subscribeAccountStatus(): { unsubscribe(): void };
+      /** Every account connection status the core has pushed, in order. */
+      getReceivedAccountStatus(): string[];
       beginOperation(label?: string): Promise<Outcome<{ id: number }>>;
       endOperation(id: number): Promise<Outcome>;
       createTransaction(dotnsId: string, index: number): Promise<TransactionResult>;
@@ -178,6 +181,7 @@ const receivedThemes: HostThemeSubscribeItem[] = [];
 const receivedLocales: string[] = [];
 const receivedLocalStorage: Array<string | null> = [];
 const receivedStatements: Array<{ data: Array<string | undefined>; isComplete: boolean }> = [];
+const receivedAccountStatus: string[] = [];
 
 let status: ConnectionStatus = 'disconnected';
 subscribeConnectionStatus((next) => {
@@ -390,6 +394,11 @@ async function init(): Promise<void> {
       ),
 
     getReceivedLocalStorage: () => [...receivedLocalStorage],
+
+    subscribeAccountStatus: () =>
+      collect(api.account.connectionStatusSubscribe(), receivedAccountStatus, (item) => item),
+
+    getReceivedAccountStatus: () => [...receivedAccountStatus],
 
     beginOperation: (label) =>
       call(

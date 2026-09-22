@@ -1607,6 +1607,39 @@ test.describe('Local storage', () => {
     }
   });
 
+  test('an entry is addressable by the key the product itself used', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice'],
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+
+      // A local key containing `:` is what makes suffix matching ambiguous.
+      expectOk(
+        await product.evaluate(() => window.__TEST_PRODUCT__.localStorageWrite('demo:mykey', 'hello')),
+      );
+
+      expect(
+        await page.evaluate(() => window.__TEST_HOST__.getProductStorageValue('demo:mykey')),
+      ).toBe('hello');
+      expect(
+        await page.evaluate(() => window.__TEST_HOST__.getProductStorageValue('mykey')),
+      ).toBeUndefined();
+
+      const entries = await page.evaluate(() => window.__TEST_HOST__.getProductStorageEntries());
+      expect(entries).toHaveLength(1);
+      expect(entries[0].localKey).toBe('demo:mykey');
+      expect(entries[0].value).toBe('hello');
+      // The namespaced key is still there, and is what `seedProductStorage` takes.
+      expect(entries[0].key).toContain('test-product.dot');
+      expect(entries[0].key).not.toBe('demo:mykey');
+    } finally {
+      await host.close();
+    }
+  });
+
   test('a product resumes from a snapshot the test seeded back verbatim', async ({ page }) => {
     const host = await createTestHostServer({
       productUrl: productServer.url,
@@ -1702,6 +1735,498 @@ test.describe('Local storage', () => {
       await host.close();
     }
   });
+});
+
+// ── Account switching, observed from the product ────────────────────
+
+test.describe('Account switching', () => {
+
+  // `switchAccount` deliberately does not reload the iframe, which reads like
+  // the product cannot notice. It can: the core pushes the drop and the
+  // reconnect down the product's own account subscription.
+  test('a switch reaches a subscribed product as Disconnected then Connected', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice', 'bob'],
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+
+      await product.evaluate(() => window.__TEST_PRODUCT__.subscribeAccountStatus());
+      await expect
+        .poll(() => product.evaluate(() => window.__TEST_PRODUCT__.getReceivedAccountStatus()))
+        .toEqual(['Connected']);
+
+      await page.evaluate(() => window.__TEST_HOST__.switchAccount('bob'));
+
+      await expect
+        .poll(() => product.evaluate(() => window.__TEST_PRODUCT__.getReceivedAccountStatus()))
+        .toEqual(['Connected', 'Disconnected', 'Connected']);
+    } finally {
+      await host.close();
+    }
+  });
+
+  test('the product keeps working after a switch, with no reload', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice', 'bob'],
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+      await page.evaluate(() => window.__TEST_HOST__.switchAccount('bob'));
+
+      // No page.reload() anywhere: the same frame signs under the new identity.
+      expectOk(
+        await product.evaluate(() =>
+          window.__TEST_PRODUCT__.signRawProduct('test-product.dot', 0, '0x0102'),
+        ),
+      );
+    } finally {
+      await host.close();
+    }
+  });
+
+  // The trap behind "a test just hangs": the host's own view of the product
+  // connection only moves when a frame arrives, and a switch sends none.
+  test('getConnectionStatus stays disconnected until the product next talks', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice', 'bob'],
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+      await page.evaluate(() => window.__TEST_HOST__.switchAccount('bob'));
+
+      // The host session is up; only the product-traffic flag is not.
+      expect(await page.evaluate(() => window.__TEST_HOST__.getChainStatus())).toBe('connected');
+      expect(await page.evaluate(() => window.__TEST_HOST__.getConnectionStatus())).toBe(
+        'disconnected',
+      );
+
+      expectOk(
+        await product.evaluate(() =>
+          window.__TEST_PRODUCT__.signRawProduct('test-product.dot', 0, '0x0102'),
+        ),
+      );
+      expect(await page.evaluate(() => window.__TEST_HOST__.getConnectionStatus())).toBe(
+        'connected',
+      );
+    } finally {
+      await host.close();
+    }
+  });
+});
+
+// ── Resource allocation and signing observability ───────────────────
+
+test.describe('Resource allocation policy', () => {
+  /** The reporter's sequence: clear every log, sign, then read all three back. */
+  async function signAndReadLogs(page: Page, product: Frame) {
+    await page.evaluate(() => {
+      window.__TEST_HOST__.clearSigningLog();
+      window.__TEST_HOST__.clearUserConfirmationLog();
+      window.__TEST_HOST__.clearPermissionLog();
+    });
+    const signed = expectOk(
+      await product.evaluate(() =>
+        window.__TEST_PRODUCT__.signRawProduct('test-product.dot', 0, '0x0102'),
+      ),
+    );
+    const logs = await page.evaluate(() => ({
+      signing: window.__TEST_HOST__.getSigningLog().map((entry) => entry.type),
+      confirmation: window.__TEST_HOST__.getUserConfirmationLog().map((entry) => entry.tag),
+    }));
+    return { signed, logs };
+  }
+
+  const allocate = (product: Frame, tags: string[]) =>
+    product.evaluate(
+      (names) =>
+        window.__TEST_PRODUCT__.requestResourceAllocation(
+          names.map((tag) => ({ tag })) as never,
+        ),
+      tags,
+    );
+
+  // Documents the trap rather than asserting it is fine: a product holding
+  // AutoSigning is signed for inside the core, so the host sees nothing.
+  test('granting AutoSigning makes signing invisible to the host', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice'],
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+
+      const before = await signAndReadLogs(page, product);
+      expect(before.logs.signing).toEqual(['raw']);
+
+      expectOk(await allocate(product, ['AutoSigning']));
+
+      const after = await signAndReadLogs(page, product);
+      // The signature is real; the host simply never saw the request.
+      expect(after.signed.signature).toMatch(/^0x[0-9a-f]+$/);
+      expect(after.logs).toEqual({ signing: [], confirmation: [] });
+    } finally {
+      await host.close();
+    }
+  });
+
+  test('withholding AutoSigning keeps every signature in the signing log', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice'],
+      behaviors: { resourceAllocation: { AutoSigning: false } },
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+
+      const outcomes = expectOk(await allocate(product, ['AutoSigning', 'StatementStoreAllowance']));
+      // Selective: the allowance a product needs is still granted.
+      expect(outcomes.outcomes).toEqual(['Rejected', 'Allocated']);
+
+      const { signed, logs } = await signAndReadLogs(page, product);
+      expect(signed.signature).toMatch(/^0x[0-9a-f]+$/);
+      expect(logs).toEqual({ signing: ['raw'], confirmation: ['SignRaw'] });
+    } finally {
+      await host.close();
+    }
+  });
+
+  test('a withheld AutoSigning grant leaves authorized statement proofs working', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice'],
+      behaviors: { resourceAllocation: { AutoSigning: false } },
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+      expectOk(await allocate(product, ['StatementStoreAllowance']));
+
+      expectOk(
+        await product.evaluate(() =>
+          window.__TEST_PRODUCT__.statementCreateProofAuthorized('0xaabb'),
+        ),
+      );
+    } finally {
+      await host.close();
+    }
+  });
+
+  // Two gates sit in front of an allocation, and they behave differently.
+  // The confirmation is all-or-nothing and fails the product's whole request;
+  // the resource behavior answers per resource with a well-formed outcome.
+  test('denying the ResourceAllocation confirmation fails the whole request', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice'],
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+
+      await page.evaluate(() =>
+        window.__TEST_HOST__.setUserConfirmationBehavior(
+          (review) => review.tag !== 'ResourceAllocation',
+        ),
+      );
+
+      const refused = await allocate(product, ['AutoSigning']);
+      expect(refused.ok).toBe(false);
+
+      // And with the grant never made, signing is observable again — the same
+      // outcome as `resourceAllocation`, reached through the older lever.
+      const { logs } = await signAndReadLogs(page, product);
+      expect(logs.signing).toEqual(['raw']);
+    } finally {
+      await host.close();
+    }
+  });
+
+  // The review names the resources, so a test can be selective at this gate too.
+  test('the ResourceAllocation review carries the resources being asked for', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice'],
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+      await allocate(product, ['AutoSigning', 'BulletinAllowance']);
+
+      const tags = await page.evaluate(() =>
+        window.__TEST_HOST__.getUserConfirmationLog().map((entry) => entry.tag),
+      );
+      expect(tags).toContain('ResourceAllocation');
+    } finally {
+      await host.close();
+    }
+  });
+
+  // The core triggers `ChainSubmit` implicitly, on the business call that needs
+  // it. A product may ALSO request it explicitly at connect — product-sdk's
+  // signer does, by default — which this test product deliberately does not, so
+  // what is pinned here is the core's own timing.
+  test('the core requests ChainSubmit on the signing call, not at connect', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice'],
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+
+      expect(await page.evaluate(() => window.__TEST_HOST__.getPermissionLog())).toEqual([]);
+
+      expectOk(await allocate(product, ['StatementStoreAllowance']));
+      expect(await page.evaluate(() => window.__TEST_HOST__.getPermissionLog())).toEqual([]);
+
+      expectOk(
+        await product.evaluate(() =>
+          window.__TEST_PRODUCT__.signRawProduct('test-product.dot', 0, '0x0102'),
+        ),
+      );
+      expect(
+        await page.evaluate(() => window.__TEST_HOST__.getPermissionLog().map((e) => e.tag)),
+      ).toEqual(['ChainSubmit']);
+    } finally {
+      await host.close();
+    }
+  });
+
+  // A grant the core has stored is not re-asked, so a test that revokes and
+  // expects a fresh prompt is really testing whether the revoke reached the
+  // core at all. Before 0.15 it did not.
+  test('revoking returns the product to being asked', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice'],
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+      const tags = () =>
+        page.evaluate(() => window.__TEST_HOST__.getPermissionLog().map((e) => e.tag));
+
+      expectOk(
+        await product.evaluate(() =>
+          window.__TEST_PRODUCT__.signRawProduct('test-product.dot', 0, '0x01'),
+        ),
+      );
+      expect(await tags()).toEqual(['ChainSubmit']);
+
+      // Signing again reuses the stored grant: no second prompt.
+      await page.evaluate(() => window.__TEST_HOST__.clearPermissionLog());
+      expectOk(
+        await product.evaluate(() =>
+          window.__TEST_PRODUCT__.signRawProduct('test-product.dot', 0, '0x02'),
+        ),
+      );
+      expect(await tags()).toEqual([]);
+
+      // After a revoke it is asked again.
+      await page.evaluate(async () => {
+        await window.__TEST_HOST__.revokePermission('ChainSubmit');
+        window.__TEST_HOST__.clearPermissionLog();
+      });
+      expectOk(
+        await product.evaluate(() =>
+          window.__TEST_PRODUCT__.signRawProduct('test-product.dot', 0, '0x03'),
+        ),
+      );
+      expect(await tags()).toEqual(['ChainSubmit']);
+    } finally {
+      await host.close();
+    }
+  });
+
+  test('a revoked permission the host then denies actually blocks the product', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice'],
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+
+      expectOk(
+        await product.evaluate(() =>
+          window.__TEST_PRODUCT__.signRawProduct('test-product.dot', 0, '0x01'),
+        ),
+      );
+
+      await page.evaluate(async () => {
+        window.__TEST_HOST__.setPermissionBehavior('reject-all');
+        await window.__TEST_HOST__.revokePermission('ChainSubmit');
+        window.__TEST_HOST__.clearPermissionLog();
+      });
+
+      const refused = await product.evaluate(() =>
+        window.__TEST_PRODUCT__.signRawProduct('test-product.dot', 0, '0x02'),
+      );
+      expect(refused.ok).toBe(false);
+      expect(
+        await page.evaluate(() =>
+          window.__TEST_HOST__.getPermissionLog().map((e) => `${e.tag}:${e.decision}`),
+        ),
+      ).toEqual(['ChainSubmit:Deny']);
+    } finally {
+      await host.close();
+    }
+  });
+
+  // The complement of the revoke tests: a grant the host makes on the product's
+  // behalf has to land in the core too, or the product is asked anyway. This
+  // one comes in through `initialState`, which is replayed after the runtime
+  // starts — the only path that writes the core before the product's first frame.
+  test('a permission pre-granted at boot is never asked for', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice'],
+      initialState: { grantedPermissions: ['ChainSubmit'] },
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+
+      expectOk(
+        await product.evaluate(() =>
+          window.__TEST_PRODUCT__.signRawProduct('test-product.dot', 0, '0x0102'),
+        ),
+      );
+
+      // Signing needs `ChainSubmit`, and the stored grant answered for it.
+      expect(await page.evaluate(() => window.__TEST_HOST__.getPermissionLog())).toEqual([]);
+      expect(await page.evaluate(() => window.__TEST_HOST__.getGrantedPermissions())).toContain(
+        'ChainSubmit',
+      );
+    } finally {
+      await host.close();
+    }
+  });
+
+  // A grant the core cannot store must fail loudly. It used to be swallowed:
+  // `getGrantedPermissions()` gained the tag, the core gained nothing.
+  test('granting a permission the core does not know rejects', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice'],
+    });
+
+    try {
+      await loadHostAndProduct(page, host.url, productServer.url);
+
+      const failure = await page.evaluate(async () => {
+        try {
+          await window.__TEST_HOST__.grantPermission('TransactionSubmit');
+          return null;
+        } catch (error) {
+          return String(error);
+        }
+      });
+      expect(failure).toMatch(/unknown permission "TransactionSubmit"/);
+      // And the host's own view did not drift: the write failed, so neither moved.
+      expect(await page.evaluate(() => window.__TEST_HOST__.getGrantedPermissions())).not.toContain(
+        'TransactionSubmit',
+      );
+    } finally {
+      await host.close();
+    }
+  });
+
+  // `Remote` is the one permission whose stored decision includes a payload.
+  test('a payload-carrying permission needs its payload', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice'],
+    });
+
+    try {
+      await loadHostAndProduct(page, host.url, productServer.url);
+
+      const attempt = (value?: unknown) =>
+        page.evaluate(async (v) => {
+          try {
+            await window.__TEST_HOST__.grantPermission('Remote', v);
+            return null;
+          } catch (error) {
+            return String(error);
+          }
+        }, value);
+
+      expect(await attempt()).toMatch(/carries a payload/);
+      expect(await attempt({ domains: ['example.dot'] })).toBeNull();
+      expect(await page.evaluate(() => window.__TEST_HOST__.getGrantedPermissions())).toContain(
+        'Remote',
+      );
+    } finally {
+      await host.close();
+    }
+  });
+
+  // The setter validates on the same terms as the boot option: a misspelled key
+  // would otherwise grant the resource it was written to withhold.
+  test('setResourceAllocationBehavior refuses an unknown resource', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice'],
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+
+      const failure = await page.evaluate(() => {
+        try {
+          window.__TEST_HOST__.setResourceAllocationBehavior({ AutoSignin: false } as never);
+          return null;
+        } catch (error) {
+          return String(error);
+        }
+      });
+      expect(failure).toMatch(/invalid resourceAllocation resource: "AutoSignin"/);
+
+      // The rejected call left the previous behavior in place, rather than a
+      // half-applied one: auto-signing is still allocated.
+      expectOk(await allocate(product, ['AutoSigning']));
+      const log = await page.evaluate(() => window.__TEST_HOST__.getResourceAllocationLog());
+      expect(log.map((entry) => [entry.resource, entry.granted])).toEqual([['AutoSigning', true]]);
+    } finally {
+      await host.close();
+    }
+  });
+
+  test('the allocation log records what was asked and what was answered', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice'],
+      behaviors: { resourceAllocation: { AutoSigning: false } },
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+      await allocate(product, ['AutoSigning', 'BulletinAllowance']);
+
+      const log = await page.evaluate(() => window.__TEST_HOST__.getResourceAllocationLog());
+      expect(log.map((entry) => [entry.resource, entry.granted])).toEqual([
+        ['AutoSigning', false],
+        ['BulletinAllowance', true],
+      ]);
+      expect(log[0].productId).toBe('test-product.dot');
+
+      await page.evaluate(() => window.__TEST_HOST__.clearResourceAllocationLog());
+      expect(await page.evaluate(() => window.__TEST_HOST__.getResourceAllocationLog())).toEqual([]);
+    } finally {
+      await host.close();
+    }
+  });
+
 });
 
 // ── Statement store ─────────────────────────────────────────────────

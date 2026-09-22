@@ -1,7 +1,7 @@
 import type { Page, FrameLocator } from '@playwright/test';
 import { createTestHostServer } from '../server.js';
 import { DEFAULT_CHAIN } from '../networks.js';
-import type { ChainEntry, ChatActionInput, ChatBot, ChatMessageLogEntry, ChatRoom, CreateTestHostOptions, DevAccountName, DevicePermissionStatus, HexString, HostDevicePermissionRequest, InitialBehaviors, InitialState, NavigationLogEntry, NotificationLogEntry, OperationEntry, PermissionLogEntry, PreimageEntry, SigningLogEntry, StatementEntry, StatementInput, TestHostAPI, Theme, ThemeInput, UserConfirmationLogEntry } from '../types.js';
+import type { AllocatableResourceTag, ChainEntry, ChatActionInput, ChatBot, ChatMessageLogEntry, ChatRoom, CreateTestHostOptions, DevAccountName, DevicePermissionStatus, HexString, HostDevicePermissionRequest, InitialBehaviors, InitialState, NavigationLogEntry, NotificationLogEntry, OperationEntry, PermissionLogEntry, PreimageEntry, ProductStorageEntry, ResourceAllocationLogEntry, SigningLogEntry, StatementEntry, StatementInput, TestHostAPI, Theme, ThemeInput, UserConfirmationLogEntry } from '../types.js';
 
 /**
  * What the fixture's behaviour setters accept. A `Behavior`'s function form
@@ -46,11 +46,26 @@ export interface TestHost {
   /** Set how the host responds to remote and device permission requests. */
   setPermissionBehavior(behavior: FixtureConsentBehavior): Promise<void>;
 
-  /** Pre-grant a permission without the product requesting it */
-  grantPermission(tag: string): Promise<void>;
+  /**
+   * Pre-grant a permission without the product requesting it — in the core,
+   * which is what gates the product, as well as in `getGrantedPermissions()`.
+   *
+   * `value` is the permission's payload, needed only by the variants that carry
+   * one: `grantPermission('Remote', { domains: ['example.dot'] })`. Rejects on
+   * an unknown tag, or on a payload-carrying one given without its payload.
+   */
+  grantPermission(tag: string, value?: unknown): Promise<void>;
 
-  /** Revoke a previously granted permission */
-  revokePermission(tag: string): Promise<void>;
+  /**
+   * Revoke a permission, returning the product to being asked the next time it
+   * needs one — in the core, which is what actually gates the product, not only
+   * in `getGrantedPermissions()`. Pair with `setPermissionBehavior('reject-all')`
+   * to make that asking end in a refusal.
+   *
+   * Takes `value` on the same terms as `grantPermission`, and must be given the
+   * same payload the grant used — it addresses one stored decision, not a tag.
+   */
+  revokePermission(tag: string, value?: unknown): Promise<void>;
 
   /** List currently granted permissions */
   getGrantedPermissions(): Promise<string[]>;
@@ -161,8 +176,19 @@ export interface TestHost {
    */
   seedProductStorage(key: string, value: string): Promise<void>;
 
-  /** Every product-storage entry, decoded as UTF-8. */
+  /**
+   * Every product-storage entry, decoded as UTF-8, keyed by the NAMESPACED key
+   * the core handed the host. Prefer the two below when a test knows the
+   * product's own key — suffix-matching this map is ambiguous when a local key
+   * contains `:`.
+   */
   getProductStorage(): Promise<Record<string, string>>;
+
+  /** Every entry with its key split both ways, so a test can match the local key exactly. */
+  getProductStorageEntries(): Promise<ProductStorageEntry[]>;
+
+  /** The value the product stored under `localKey`; an exact match, not a suffix match. */
+  getProductStorageValue(localKey: string): Promise<string | undefined>;
 
   /** Drop every product-storage entry. */
   clearProductStorage(): Promise<void>;
@@ -200,6 +226,26 @@ export interface TestHost {
 
   /** Drop every retained statement. Live subscriptions and signing are unaffected. */
   clearStatements(): Promise<void>;
+
+  /**
+   * Choose which resources the host allocates: `'approve-all'` (the default),
+   * `'reject-all'`, or a record that grants anything it does not mention.
+   *
+   * **`{ AutoSigning: false }` is what makes signing observable.** A product
+   * granted auto-signing is signed for inside the core, which holds its subtree
+   * secret from then on, so no request reaches the host and `getSigningLog()`
+   * stays empty. Prefer `behaviors.resourceAllocation` when the product asks at
+   * boot — by the time this setter runs it may already hold the grant.
+   */
+  setResourceAllocationBehavior(
+    behavior: 'approve-all' | 'reject-all' | Partial<Record<AllocatableResourceTag, boolean>>,
+  ): Promise<void>;
+
+  /** Every resource a product asked for, and whether the host allocated it. */
+  getResourceAllocationLog(): Promise<ResourceAllocationLogEntry[]>;
+
+  /** Drop the resource-allocation log. */
+  clearResourceAllocationLog(): Promise<void>;
 
   /**
    * Wait until the product has actually talked to the host. This is the
@@ -296,12 +342,18 @@ export function createTestHostFixture(defaults: TestHostFixtureOptions) {
           await page.evaluate((b) => window.__TEST_HOST__.setPermissionBehavior(b), behavior);
         },
 
-        async grantPermission(tag: string) {
-          await page.evaluate((t) => window.__TEST_HOST__.grantPermission(t), tag);
+        async grantPermission(tag: string, value?: unknown) {
+          await page.evaluate(
+            ([t, v]) => window.__TEST_HOST__.grantPermission(t as string, v),
+            [tag, value] as const,
+          );
         },
 
-        async revokePermission(tag: string) {
-          await page.evaluate((t) => window.__TEST_HOST__.revokePermission(t), tag);
+        async revokePermission(tag: string, value?: unknown) {
+          await page.evaluate(
+            ([t, v]) => window.__TEST_HOST__.revokePermission(t as string, v),
+            [tag, value] as const,
+          );
         },
 
         async getGrantedPermissions() {
@@ -454,6 +506,14 @@ export function createTestHostFixture(defaults: TestHostFixtureOptions) {
           return page.evaluate(() => window.__TEST_HOST__.getProductStorage());
         },
 
+        async getProductStorageEntries() {
+          return page.evaluate(() => window.__TEST_HOST__.getProductStorageEntries());
+        },
+
+        async getProductStorageValue(localKey: string) {
+          return page.evaluate((k) => window.__TEST_HOST__.getProductStorageValue(k), localKey);
+        },
+
         async clearProductStorage() {
           await page.evaluate(() => window.__TEST_HOST__.clearProductStorage());
         },
@@ -484,6 +544,20 @@ export function createTestHostFixture(defaults: TestHostFixtureOptions) {
 
         async clearStatements() {
           await page.evaluate(() => window.__TEST_HOST__.clearStatements());
+        },
+
+        async setResourceAllocationBehavior(
+          behavior: 'approve-all' | 'reject-all' | Partial<Record<AllocatableResourceTag, boolean>>,
+        ) {
+          await page.evaluate((b) => window.__TEST_HOST__.setResourceAllocationBehavior(b), behavior);
+        },
+
+        async getResourceAllocationLog() {
+          return page.evaluate(() => window.__TEST_HOST__.getResourceAllocationLog());
+        },
+
+        async clearResourceAllocationLog() {
+          await page.evaluate(() => window.__TEST_HOST__.clearResourceAllocationLog());
         },
 
         async waitForConnection(timeout = 30_000) {
