@@ -275,8 +275,8 @@ function withIframePermissionsPolicy(
     ...callbacks,
     permissions: {
       ...rest,
-      async devicePermission(request) {
-        const response = await devicePermission(request);
+      async devicePermission(product, request) {
+        const response = await devicePermission(product, request);
         const element = iframe();
         if (element) element.allow = buildAllowAttribute(state.grantedPermissions);
         return response;

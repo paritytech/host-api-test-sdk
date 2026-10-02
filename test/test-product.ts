@@ -161,8 +161,11 @@ declare global {
       getReceivedAccountStatus(): string[];
       beginOperation(label?: string): Promise<Outcome<{ id: number }>>;
       endOperation(id: number): Promise<Outcome>;
-      createTransaction(dotnsId: string, index: number): Promise<TransactionResult>;
+      /** `contactHandles` are the 32-byte handles the call claims to name. */
+      createTransaction(dotnsId: string, index: number, contactHandles?: string[]): Promise<TransactionResult>;
       createTransactionLegacy(publicKeyHex: string): Promise<TransactionResult>;
+      /** `contacts.pick`, reporting how the pick ended. */
+      contactsPick(): Promise<Outcome<{ outcome: string }>>;
       accountCreateProof(dotnsId: string, index: number): Promise<Outcome<{ proofHex: HexString; alias: HexString }>>;
       statementCreateProof(dotnsId: string, index: number, dataHex: string): Promise<Outcome<{ proof: StatementProof }>>;
       statementCreateProofAuthorized(dataHex: string): Promise<Outcome<{ proof: StatementProof }>>;
@@ -408,7 +411,7 @@ async function init(): Promise<void> {
 
     endOperation: (id) => call(() => api.worker.endOperation({ id }), () => ({})),
 
-    createTransaction: (dotnsId, derivationIndex) =>
+    createTransaction: (dotnsId, derivationIndex, contactHandles = []) =>
       call(
         () =>
           api.signing.createTransaction({
@@ -417,6 +420,10 @@ async function init(): Promise<void> {
             callData: '0x0000',
             extensions: [] as TxPayloadExtension[],
             txExtVersion: 0,
+            // Required on the wire since truapi 0.22: the handles the call
+            // names, for the host to swap for accounts. Empty unless a spec
+            // passes some.
+            contacts: contactHandles.map((handle) => ({ bytes: scale.toHexString(handle) })),
           }),
         (value) => ({ signedHex: value.transaction }),
       ),
@@ -432,6 +439,12 @@ async function init(): Promise<void> {
             txExtVersion: 0,
           }),
         (value) => ({ signedHex: value.transaction }),
+      ),
+
+    contactsPick: () =>
+      call(
+        () => api.contacts.pick({}),
+        (value) => ({ outcome: value.outcome.tag }),
       ),
 
     accountCreateProof: (dotnsId, derivationIndex) =>

@@ -423,6 +423,11 @@ export function createSsoResponder(options: ResponderOptions): SsoResponder {
         return reply('ListRingVrfKeysResponse', ringVrf.list(message.value));
       case 'RingVrfSignRequest':
         return reply('RingVrfSignResponse', ringVrf.sign(message.value));
+      case 'Cancel':
+        // Every request is answered in the tick the core submits it, so the
+        // request a `Cancel` names was answered before the `Cancel` was sent.
+        // Nothing is left to stop, and a withdrawal takes no reply.
+        return undefined;
       default:
         // `Disconnected` is handled by the caller; every `*Response` variant is
         // the peer's own traffic and is not a request.

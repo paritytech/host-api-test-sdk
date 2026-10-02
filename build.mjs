@@ -1,7 +1,7 @@
 import { build } from 'esbuild';
-import { copyFileSync, mkdirSync, rmSync } from 'node:fs';
+import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { dirname, join, posix, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const HOST_ASSET_DIR = 'dist/host';
@@ -15,6 +15,29 @@ mkdirSync(HOST_ASSET_DIR, { recursive: true });
 function resolveExport(specifier) {
   return fileURLToPath(import.meta.resolve(specifier));
 }
+
+/** The core's wasm-pack output: its glue, payload, snippets and `verifiable`. */
+const CORE_WASM_DIR = dirname(resolveExport('@parity/truapi-host/wasm/web'));
+
+/**
+ * The core loads `verifiable` (ring-VRF and its powers of tau) on demand,
+ * through a wasm-bindgen snippet that fetches `../../truapi_verifiable*` against
+ * its own `import.meta.url` — a path that assumes the snippet still sits two
+ * directories below the glue. Inlined into a chunk in `dist/host/`, it would
+ * climb out of the asset directory, and find the files only because
+ * `server.ts` serves that directory at the origin root, where URL resolution
+ * stops at `/`. So the snippet stays its own module, copied below with its
+ * directory, and resolves by the layout the core was built for rather than by
+ * where the host happens to be mounted.
+ */
+const keepCoreSnippetsExternal = {
+  name: 'keep-core-snippets-external',
+  setup(build) {
+    build.onResolve({ filter: /^\.\/snippets\// }, (args) =>
+      args.importer.startsWith(CORE_WASM_DIR + sep) ? { path: args.path, external: true } : undefined,
+    );
+  },
+};
 
 /**
  * esbuild passes `new Worker(new URL(...))` through verbatim rather than
@@ -41,6 +64,7 @@ const browserResult = await build({
     'process.env.NODE_ENV': '"production"',
   },
   conditions: ['browser'],
+  plugins: [keepCoreSnippetsExternal],
 });
 
 console.log(`Browser bundles built into ${HOST_ASSET_DIR}/`);
@@ -82,6 +106,62 @@ for (const { pkgEntry, glue, wasmName } of [
   const from = join(dirname(resolveExport(pkgEntry)), wasmName);
   copyFileSync(from, join(HOST_ASSET_DIR, wasmName));
   console.log(`WASM payload copied: ${HOST_ASSET_DIR}/${wasmName} (glue: ${glueChunks[0]})`);
+}
+
+/**
+ * Copy the core's snippets and everything they fetch, then prove each lands
+ * where it will be looked for.
+ *
+ * The snippets are external, so the chunk importing them must sit directly in
+ * `dist/host/` for its `./snippets/...` specifier to resolve, and every
+ * `new URL('<path>', import.meta.url)` inside a snippet must name a file that
+ * exists relative to that snippet. A rename upstream fails the build here
+ * rather than as a 404 the first time a product asks for a ring-VRF proof.
+ */
+{
+  if (!existsSync(join(CORE_WASM_DIR, 'snippets'))) {
+    throw new Error(`expected the core's wasm-bindgen snippets in ${CORE_WASM_DIR}/snippets; found none`);
+  }
+  cpSync(join(CORE_WASM_DIR, 'snippets'), join(HOST_ASSET_DIR, 'snippets'), { recursive: true });
+  for (const name of readdirSync(CORE_WASM_DIR)) {
+    if (name.startsWith('truapi_verifiable')) {
+      copyFileSync(join(CORE_WASM_DIR, name), join(HOST_ASSET_DIR, name));
+    }
+  }
+
+  const importers = Object.entries(browserResult.metafile.outputs).flatMap(([file, out]) =>
+    out.imports.filter((i) => i.external && i.path.startsWith('./snippets/')).map((i) => [file, i.path]),
+  );
+  if (importers.length === 0) {
+    throw new Error('expected the core glue to import its wasm-bindgen snippets; found none');
+  }
+  let checked = 0;
+  for (const [file, specifier] of importers) {
+    if (dirname(file) !== HOST_ASSET_DIR) {
+      throw new Error(`${file} imports ${specifier} but is not directly in ${HOST_ASSET_DIR}/`);
+    }
+    const snippet = posix.join(HOST_ASSET_DIR, specifier);
+    if (!existsSync(snippet)) throw new Error(`${file} imports ${specifier}, which was not copied`);
+    for (const [, fetched] of readFileSync(snippet, 'utf8').matchAll(/new URL\(\s*["']([^"']+)["']\s*,\s*import\.meta\.url/g)) {
+      const target = posix.join(dirname(snippet), fetched);
+      if (!target.startsWith(`${HOST_ASSET_DIR}/`) || !existsSync(target)) {
+        throw new Error(`${snippet} fetches ${fetched}, which does not resolve inside ${HOST_ASSET_DIR}/ (${target})`);
+      }
+      checked += 1;
+    }
+  }
+  // The pattern only sees a quoted literal. A snippet that builds its URL any
+  // other way would leave this guard checking nothing, so that is an error too.
+  if (checked === 0) {
+    throw new Error(
+      "found no `new URL('<path>', import.meta.url)` in the core's snippets; " +
+        'the layout check above checked nothing. Update the pattern to how they build their URLs.',
+    );
+  }
+  console.log(
+    `Core snippets copied for: ${[...new Set(importers.map(([file]) => file))].join(', ')} ` +
+      `(${checked} fetched URL${checked === 1 ? '' : 's'} checked)`,
+  );
 }
 
 // Both bundles live in dist/ so `server.ts`'s `import.meta.url` resolves
@@ -129,9 +209,7 @@ console.log('CJS bundles built: dist/index.cjs, dist/playwright.cjs');
 {
   const wasm = await import('@parity/truapi-host/wasm/web');
   await wasm.default({
-    module_or_path: await readFile(
-      new URL('node_modules/@parity/truapi-host/dist/wasm/web/truapi_server_bg.wasm', import.meta.url),
-    ),
+    module_or_path: await readFile(join(CORE_WASM_DIR, 'truapi_server_bg.wasm')),
   });
   const actual = wasm.wireSchemaHash();
   const source = await readFile(new URL('src/types.ts', import.meta.url), 'utf8');

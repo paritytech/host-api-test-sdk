@@ -9,7 +9,6 @@
 import { Bytes, Enum, Result, Struct, Vector, _void, str, u8 } from 'scale-ts';
 import type { Codec, Decoder, Encoder } from 'scale-ts';
 import {
-  AccountId,
   AllocatableResource,
   ContextualAlias,
   HostAccountCreateProofRequest,
@@ -24,13 +23,18 @@ import {
   HostSignPayloadResponse,
   HostSignRawRequest,
   LegacyAccountTxPayload,
-  ProductAccountTxPayload,
+  ProductAccountId,
   RawPayload,
   RegisteredRingVrfKey,
+  TxPayloadExtension,
   VrfSignature,
+  scale,
 } from '@parity/truapi';
 
 const Bytes32 = Bytes(32);
+
+/** `[u8; 32]`, which truapi no longer exports under an `AccountId` alias. */
+const AccountId = scale.Hex(32);
 
 export const StatementRequest = Struct({
   requestId: str,
@@ -76,6 +80,7 @@ export const REMOTE_MESSAGE_VARIANTS = [
   'ListRingVrfKeysResponse',
   'RingVrfSignRequest',
   'RingVrfSignResponse',
+  'Cancel',
 ] as const;
 
 export type RemoteMessageVariant = (typeof REMOTE_MESSAGE_VARIANTS)[number];
@@ -147,7 +152,21 @@ const ResourceAllocationResponse = Result(Vector(SsoAllocationOutcome), str);
 
 const CreateTransactionResponse = Result(Bytes(), str);
 
-const CreateTransactionPayload = Enum({ v1: ProductAccountTxPayload });
+/**
+ * `SsoProductTxPayload`: `ProductAccountTxPayload` without `contacts`. The
+ * pairing host substitutes every contact handle into `callData` before it
+ * relays, so the signing host has none to resolve and the wire keeps the shape
+ * host-papp encodes. Pinned by `create_transaction_message_wire_shape_pin`.
+ */
+const SsoProductTxPayload = Struct({
+  signer: ProductAccountId,
+  genesisHash: scale.Hex(32),
+  callData: scale.Hex(),
+  extensions: Vector(TxPayloadExtension),
+  txExtVersion: u8,
+});
+
+const CreateTransactionPayload = Enum({ v1: SsoProductTxPayload });
 
 const CreateTransactionRequest = Struct({ payload: CreateTransactionPayload });
 
@@ -177,6 +196,9 @@ const RegisterRingVrfKeyResponse = Result(Bytes32, RingVrfError);
 const ListRingVrfKeysResponse = Result(Vector(RegisteredRingVrfKey), RingVrfError);
 
 const RingVrfSignResponse = Result(Bytes(), RingVrfError);
+
+/** `Withdrawal`: the pairing host no longer waits on the request it names. */
+const Withdrawal = Struct({ messageId: str });
 
 /**
  * "A codec, payload type irrelevant". Not `Codec<unknown>`: `Codec<T>` is
@@ -217,6 +239,7 @@ const REMOTE_MESSAGE_PAYLOADS = {
   ListRingVrfKeysResponse: Response(ListRingVrfKeysResponse),
   RingVrfSignRequest: ProductRequest(HostAccountRingVrfSignRequest),
   RingVrfSignResponse: Response(RingVrfSignResponse),
+  Cancel: Withdrawal,
 } satisfies Record<RemoteMessageVariant, AnyCodec>;
 
 /**

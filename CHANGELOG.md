@@ -1,5 +1,90 @@
 # Changelog
 
+## 0.16.0
+
+The upstream stack moves to truapi `0.23`: `@parity/truapi` and
+`@parity/truapi-host` `0.18.0` → `0.23.0`, `@parity/truapi-provider` `0.2.1` →
+`0.3.1`. That is the line `@parity/product-sdk-host` `0.24.0` is on.
+
+### Breaking changes
+
+- **A product must be on truapi `0.23`.** Since `0.22`,
+  `ProductAccountTxPayload` carries a required `contacts` field — the contact
+  handles the call names, for the host to swap for accounts — on the wire as
+  well as in the type. A product on an earlier truapi sends a `createTransaction`
+  the core cannot decode. A call that names nobody passes `contacts: []`.
+- **`PermissionLogEntry` gained `productId`**, the product the core says asked.
+  Both permission prompts take the requesting `ProductContext` since truapi
+  `0.21`. An assertion on `tag` or `approved` is unaffected; one that deep-equals
+  a whole entry needs the field.
+- **A function-form `setUserConfirmationBehavior` sees reworked reviews.** The
+  core passes the review through as `value`, and the product-account reviews
+  now name the calling product beside what they review. `SignPayload` →
+  `Product` was the `HostSignPayloadRequest` itself and is now
+  `{ callingProductId?, request }`; `CreateTransaction` → `Product` was the
+  `ProductAccountTxPayload` and is now `{ callingProductId?, payload }`.
+  `SignRaw` and the statement-store review only gained `callingProductId`. The
+  value is typed `unknown`, so nothing flags the old path: `r.value.value.account`
+  becomes `r.value.value.request.account`.
+
+### Changed
+
+What the new core needed from the host. None of it was broken in a release; each
+would have broken with the bump alone.
+
+- **`createTransaction` would have hung.** The in-page signer
+  decoded the SSO `CreateTransactionRequest` with truapi's own
+  `ProductAccountTxPayload`, which now ends in `contacts`. The core does not send
+  that field over SSO — the pairing host has already substituted the contacts —
+  so every request would have failed to decode and gone unanswered. It now
+  decodes upstream's `SsoProductTxPayload`, pinned byte-for-byte to the
+  host-papp fixtures upstream tests against.
+- **The core's `verifiable` module is served.** truapi `0.21` split ring-VRF and
+  its powers of tau out of the core into `truapi_verifiable.js` and
+  `truapi_verifiable_bg.wasm`, fetched once a session connects by a
+  wasm-bindgen snippet that resolves `../../` against its own URL. `build.mjs`
+  copied neither file, so the fetch would have 404'd. Both are copied now, and
+  the snippet stays its own module, copied with its directory: inlined into a
+  chunk, its `../../` would climb out of `dist/host/` and find the files only
+  because that directory is served at the origin root. `build.mjs` fails if any
+  URL a snippet fetches does not resolve inside `dist/host/`.
+- **SSO `Cancel` is decoded.** truapi `0.21` appended it (index 24) for a
+  pairing host withdrawing a request; undecoded, each one would have reached the
+  console as a malformed message. It is acknowledged and otherwise ignored: every
+  request is answered in the tick it arrives, so there is nothing left to
+  withdraw.
+
+### Notes
+
+- **Naming another product's account goes to the network.** Since truapi
+  `0.22` the core admits it when that product's dotNS manifest grants the
+  caller `context`, and reads the manifest from Asset Hub before refusing — by
+  default the real Paseo endpoint. The refusal is still `PermissionDenied`.
+  Point Asset Hub's `rpcUrl` at `ws://127.0.0.1:9` to keep such a test hermetic.
+- **Blessed products skip remote prompts.** The core grants `peopl`, `dim2` and
+  `stash` (any dotNS TLD) every `RemotePermission` without asking, so with one
+  of those as `productId` nothing reaches `getPermissionLog()` and
+  `'reject-all'` does not refuse. Device permissions are still asked.
+- **`txExtVersion` is not honoured.** truapi `0.23` defines it (`0`: V5 general
+  if version 0 includes `VerifyMultiSignature`, else signed V4; non-zero: V5 on
+  that version). Building V5 needs runtime metadata the in-page signer does not
+  read, so every transaction the host builds is still a signed V4.
+- **Contacts are not served.** The host installs no `ContactsPlatform`, so
+  `contacts.pick` answers `Unsupported`, and a `createTransaction` whose
+  `contacts` is non-empty is refused as `NotSupported` ("this host resolves no
+  contacts") before it reaches the signer. A product that pays a contact cannot
+  be tested end to end here.
+- `TRUAPI_WIRE_SCHEMA_HASH` follows the new core.
+
+### Internal
+
+- `pnpm typecheck` covers the test product (`tsconfig.test.json`). esbuild
+  bundled it without type-checking it, so its missing `contacts` would have
+  surfaced only as a runtime decode failure.
+- The test product gained `contactsPick`, and `createTransaction` takes the
+  contact handles a call names.
+- Unit 209 → 215, integration 94 → 98.
+
 ## 0.15.0
 
 Breaking for code driving `window.__TEST_HOST__` directly: `grantPermission()`

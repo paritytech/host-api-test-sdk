@@ -9,7 +9,7 @@
 
 Lightweight test host for E2E testing embedded Polkadot products built on [TrUAPI](https://github.com/paritytech/truapi) — dev accounts that auto-sign with no prompts, no Docker, no wallet, and no network.
 
-> **Upstream contract:** `0.15.x` runs the TrUAPI core itself — `@parity/truapi-host` `0.18.0` (the Rust core compiled to WebAssembly), `@parity/truapi-provider` `0.2.1` for chain transport, and `@parity/truapi` `0.18.0` for the protocol codecs. **Your product must boot through `@parity/truapi/sandbox` on the same `0.18` minor.** A product on an earlier truapi minor will not connect — both sides of the wire move together. If your product goes through `@parity/product-sdk`, check what `@parity/product-sdk-host` pins before upgrading: at the time of writing its newest release (`0.21.0`) pins `@parity/truapi` `^0.17.0`, which excludes `0.18`, so such a product needs a product-sdk release first. Stay on `0.13.x` until then. If you vendor your own core rather than taking it from a release, compare `TRUAPI_WIRE_SCHEMA_HASH` against your binary's — the package version says what the JS codecs were built against, not what the `.wasm` speaks.
+> **Upstream contract:** `0.16.x` runs the TrUAPI core itself — `@parity/truapi-host` `0.23.0` (the Rust core compiled to WebAssembly), `@parity/truapi-provider` `0.3.1` for chain transport, and `@parity/truapi` `0.23.0` for the protocol codecs. **Your product must boot through `@parity/truapi/sandbox` on the same `0.23` minor** — both sides of the wire move together, and a product on truapi before `0.22` sends a `createTransaction` payload the core cannot decode (see [Migrating from 0.15.0 to 0.16.0](#migrating-from-0150-to-0160)). If your product goes through `@parity/product-sdk`, that means `@parity/product-sdk-host` `0.24.0`, the first release on `@parity/truapi` `^0.23.0`; on an older product-sdk, stay on `0.15.x`. If you vendor your own core rather than taking it from a release, compare `TRUAPI_WIRE_SCHEMA_HASH` against your binary's — the package version says what the JS codecs were built against, not what the `.wasm` speaks.
 
 ## Why
 
@@ -270,7 +270,7 @@ await testHost.revokePermission("Remote", { domains: ["example.dot"] });
 
 ### What `permissionLog` records (and what it doesn't)
 
-The permission log is narrower than the name suggests. It records the two prompts the host is actually asked to answer — **remote permission requests** (`RemotePermission`, one entry per request, with its `tag` and `value`) and **device permission requests** (`Camera`, `Microphone`, `Location`, `Bluetooth`, recorded under the request name with `value: undefined`). A granted device permission also updates the iframe's `allow` attribute, matching how a real host delegates browser-level access.
+The permission log is narrower than the name suggests. It records the two prompts the host is actually asked to answer — **remote permission requests** (`RemotePermission`, one entry per request, with its `tag` and `value`) and **device permission requests** (`Camera`, `Microphone`, `Location`, `Bluetooth`, recorded under the request name with `value: undefined`). Each entry carries the `productId` the core says asked. A granted device permission also updates the iframe's `allow` attribute, matching how a real host delegates browser-level access.
 
 **`ChainSubmit` can reach the host two ways, and only one of them is the core's.**
 The core triggers it *implicitly*, on the business call that needs it — the
@@ -305,6 +305,7 @@ It does **not** record:
 - **Anything a product with `AutoSigning` signs.** That capability hands the core the product's subtree secret, and the core then signs in-process — nothing reaches the host at all. See [Signing observability and `AutoSigning`](#signing-observability-and-autosigning).
 - **Signing requests.** Signing is not gated behind a permission here, deliberately: real hosts do not gate it either. A signing request leaves for the paired signer over the SSO channel and comes back as a signature. Use `getSigningLog()` as the oracle for "did signing happen".
 - **Transaction broadcast denials.** `ChainSubmit` is enforced by the core itself, at `transaction_broadcast`, after signing. It never reaches the host's permission callback, so it never lands in `permissionLog`. The oracle for "broadcast was denied" is whatever error your product surfaces.
+- **Remote permissions for a blessed product.** The core grants the first-party products `peopl`, `dim2` and `stash` (on any dotNS TLD) every `RemotePermission` without asking, and ignores recorded decisions for them. With one of those as `productId`, remote requests succeed under `setPermissionBehavior('reject-all')` and leave no entry. Device permissions are still asked.
 
 A typical flow:
 
@@ -596,8 +597,14 @@ createTestHostFixture({
 
 `productId` is also the namespace the core scopes product storage and permissions to.
 
+**Naming another product's account goes to the network.** The one exception to the refusal above is a product whose dotNS manifest grants yours `context`, and the core reads that manifest from Asset Hub before it refuses — through the Asset Hub network the host is configured with, which by default is the real Paseo endpoint. The answer is `PermissionDenied` either way when nothing grants it. A suite asserting that refusal can keep off the network by pointing Asset Hub at an address nothing listens on:
+
+```ts
+networks: [{ ...PASEO_ASSET_HUB, rpcUrl: 'ws://127.0.0.1:9' }],
+```
+
 > [!NOTE]
-> `productAccounts` is keyed by the `dotNsIdentifier` in the *request*, not by `productId`. The core asks the host for the subtree of the account being derived (`product_account_public_key` in `truapi-server/src/runtime.rs`), so the two coincide only because the gate above normally forces them to. They come apart for a `localhost` product id, which is a deliberate development wildcard: `is_product_account_valid_for_caller` admits `'localhost'` and `'localhost:<port>'` as callers for **any** `dotNsIdentifier`. Set `productId: 'localhost:3000'` and nothing is gated — convenient for a dev server, but it means a test suite is no longer exercising the check at all.
+> `productAccounts` is keyed by the `dotNsIdentifier` in the *request*, not by `productId`. The core asks the host for the subtree of the account being derived (`product_account_public_key` in `truapi/src/runtime.rs`), so the two coincide only because the gate above normally forces them to. They come apart for a `localhost` product id, which is a deliberate development wildcard: `authorized_product_account` admits `'localhost'` and `'localhost:<port>'` as callers for **any** `dotNsIdentifier`. Set `productId: 'localhost:3000'` and nothing is gated — convenient for a dev server, but it means a test suite is no longer exercising the check at all.
 
 ### Execution kind
 
@@ -686,6 +693,11 @@ Two limitations worth knowing:
 - **`seedProductStorage` only replays a key `getProductStorage()` has reported.** The core namespaces product-storage keys per product — `truapi:product-storage:v1:<productIdLength>:<productId>:<localKey>` — so a key written *back* is always round-tripped, never hand-constructed. `initialState.productStorage` carries the same restriction. For **reading**, you do not need the namespaced form: `getProductStorageValue(localKey)` and `getProductStorageEntries()` (which carries `localKey` alongside `key`) match on the product's own key. Prefer them to matching `getProductStorage()`'s keys by suffix, which is ambiguous when a local key contains `:` — the length prefix is exactly what disambiguates, and the parser returns `localKey: undefined` rather than guessing if the core ever moves to a new layout.
 - **A function-form behavior cannot cross `page.evaluate`.** `setNavigationBehavior` / `setNotificationBehavior` on the fixture, and the `behaviors` boot option, accept only `'approve-all' | 'reject-all'` — the `FixtureBehavior` type. `setPermissionBehavior` and `setUserConfirmationBehavior` accept `'approve-once'` as well — `FixtureConsentBehavior`. The function form — `(request) => boolean | PermissionDecision`, the last arm of `Behavior<Req>` / `DecisionBehavior<Req>` — works only in-page, via `window.__TEST_HOST__`.
 
+Two things the host does not do that a production host may:
+
+- **Every transaction the host builds is a signed V4**, whatever `txExtVersion` says. truapi `0.23` gives the field a meaning — `0` builds a V5 general transaction when the runtime's version-0 extensions include `VerifyMultiSignature` and a signed V4 otherwise, a non-zero value builds V5 on that version — and building V5 takes the runtime's metadata, which the in-page signer does not read. A product passing `txExtVersion: 1` gets a different shape here than from a real host.
+- **No contacts.** The host installs no `ContactsPlatform`, so `contacts.pick` answers `Unsupported` — which a product can tell apart from a dismissal — and a `createTransaction` that names contacts (a non-empty `contacts`) is refused as `NotSupported` before it reaches the signer. A product that pays a contact cannot be tested end to end here.
+
 ### Built-in networks
 
 | Network | Export |
@@ -724,7 +736,7 @@ pnpm test
 # Playwright E2E against a real product in an iframe
 pnpm run test:integration
 
-# Typecheck without emitting (two projects: Node side and browser side)
+# Typecheck without emitting (three projects: Node side, browser side, test product)
 pnpm run typecheck
 ```
 
@@ -755,9 +767,30 @@ src/
 
 The build produces three kinds of output:
 
-1. **Browser assets** (`dist/host/`) — ESM chunks built with esbuild, plus the two `.wasm` payloads, served by the test host's own HTTP server
+1. **Browser assets** (`dist/host/`) — ESM chunks built with esbuild, plus the two `.wasm` payloads and the core's on-demand `verifiable` module (`truapi_verifiable.js`, its `.wasm`, and the `snippets/` that load them), served by the test host's own HTTP server
 2. **ESM modules** (`dist/*.js`) — the Node-side API compiled with `tsc`
 3. **CJS bundles** (`dist/index.cjs`, `dist/playwright.cjs`) — the same API for CommonJS consumers
+
+## Migrating from 0.15.0 to 0.16.0
+
+0.16 moves the upstream stack to truapi `0.23`.
+
+- **Move your product to `@parity/truapi` `0.23`** — for a product-sdk product,
+  `@parity/product-sdk-host` `0.24.0`. Since `0.22`, `ProductAccountTxPayload`
+  carries a required `contacts` field on the wire, so a product on an earlier
+  truapi sends a `createTransaction` the core cannot decode. A call that names no
+  contacts passes `contacts: []`.
+- **An assertion that deep-equals a `getPermissionLog()` entry** needs the new
+  `productId` field.
+- **A function-form `setUserConfirmationBehavior` that reads the review** has
+  to follow its new shape. The product-account `SignPayload` review is now
+  `{ callingProductId?, request }` and the `CreateTransaction` one
+  `{ callingProductId?, payload }`, where both used to be the request itself:
+  `r.value.value.account` becomes `r.value.value.request.account`. `value` is
+  typed `unknown`, so the compiler will not point this out.
+- **A test that asserts a cross-product refusal** now makes a real RPC connection
+  to Asset Hub first. See [Product identity](#product-identity) to keep it off
+  the network.
 
 ## Migrating from 0.14.0 to 0.15.0
 
