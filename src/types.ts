@@ -26,7 +26,7 @@ import type {
  * `build.mjs` reads the value out of the bundled `.wasm` and fails the build if
  * it disagrees with this constant, so it cannot go stale on a dependency bump.
  */
-export const TRUAPI_WIRE_SCHEMA_HASH = '462dacb6e0d1f504';
+export const TRUAPI_WIRE_SCHEMA_HASH = 'ea1a1441ff0219b1';
 
 /** A `0x`-prefixed hex string. */
 export type HexString = `0x${string}`;
@@ -221,6 +221,8 @@ export interface SigningLogEntry {
 }
 
 export interface PermissionLogEntry {
+  /** The product that asked, as the core's `ProductContext` names it. */
+  productId: string;
   tag: string;
   value: unknown;
   /** `false` only for `'Deny'`: a one-use grant is still an approval. */

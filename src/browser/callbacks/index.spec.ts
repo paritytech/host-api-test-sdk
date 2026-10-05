@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { ProductContext } from '@parity/truapi-host';
 import { createLoopbackStore } from '../loopback-chain.js';
 import { createHostCallbacks, createHostState } from './index.js';
+
+const PRODUCT: ProductContext = { productId: 'test-product.dot', executionKind: 'App' };
 
 const build = () =>
   createHostCallbacks({
@@ -44,7 +47,7 @@ describe('host callbacks', () => {
     const callbacks = createHostCallbacks({
       state, store: createLoopbackStore(), networks: [],
     });
-    const decision = await callbacks.permissions.remotePermission({ permission: { tag: 'ChainSubmit' } });
+    const decision = await callbacks.permissions.remotePermission(PRODUCT, { permission: { tag: 'ChainSubmit' } });
     expect(decision).toBe('AllowAlways');
     expect(state.permissionLog[0].approved).toBe(true);
   });
@@ -55,7 +58,7 @@ describe('host callbacks', () => {
     const callbacks = createHostCallbacks({
       state, store: createLoopbackStore(), networks: [],
     });
-    await callbacks.permissions.remotePermission({ permission: { tag: 'ChainSubmit' } });
+    await callbacks.permissions.remotePermission(PRODUCT, { permission: { tag: 'ChainSubmit' } });
     expect(state.permissionLog[0].approved).toBe(false);
   });
 

@@ -1,0 +1,19 @@
+{
+  // Type-check-only project for the test product (`test/test-product.ts`).
+  //
+  // esbuild bundles the product without type-checking it, so it had no type
+  // gate. A protocol type that changed upstream — truapi 0.22 made
+  // `ProductAccountTxPayload.contacts` required — then reached the suite as a
+  // codec failure at runtime instead of an error here.
+  //
+  // The product only. The integration suite imports the built package from
+  // `dist/`, so checking it here would fail on a clean checkout and, after an
+  // earlier build, check against stale declarations.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "."
+  },
+  "include": ["test/test-product.ts"],
+  "exclude": []
+}

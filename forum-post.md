@@ -1295,3 +1295,85 @@ is stored under its domain list, so it takes one:
 Await `grantPermission()` and `revokePermission()` if you call them on
 `window.__TEST_HOST__` directly. Otherwise nothing to change — `'approve-all'`
 stays the default. Add the boot option to any suite that asserts on signing.
+
+---
+
+# host-api-test-sdk 0.16.0
+
+## The core moves to truapi 0.23
+
+`@parity/truapi` and `@parity/truapi-host` go from `0.18.0` to `0.23.0`, and
+`@parity/truapi-provider` from `0.2.1` to `0.3.1`. That is the line
+`@parity/product-sdk-host` `0.24.0` is on, so a product on the current
+product-sdk and this host agree again.
+
+**Your product has to be on truapi `0.23` too.** Since `0.22` a product-account
+transaction says which contacts its call names, so the host can swap them for
+accounts, and that list is on the wire. A product built on an earlier truapi
+sends a `createTransaction` the core cannot decode. If you build the payload by
+hand, a call that names nobody passes an empty list:
+
+```ts
+api.signing.createTransaction({
+  signer,
+  genesisHash,
+  callData,
+  extensions,
+  txExtVersion: 0,
+  contacts: [],
+});
+```
+
+## The permission log says who asked
+
+The core now tells the host which product a permission prompt is for, and the
+log keeps it:
+
+```ts
+const log = await testHost.getPermissionLog();
+// [{ productId: "myapp.dot", tag: "ChainSubmit", approved: true, decision: "AllowAlways", ... }]
+```
+
+If a test deep-equals a whole entry, add the field.
+
+## Asking for another product's account now goes to the network
+
+`signRaw`, `signPayload` and `createTransaction` still refuse an account
+belonging to another product with `PermissionDenied` — unless that product's
+dotNS manifest grants yours `context`. The core reads the manifest from Asset Hub
+before it refuses, and by default that is the real Paseo endpoint. A suite that
+asserts the refusal and should stay off the network can point Asset Hub nowhere:
+
+```ts
+createTestHostFixture({
+  productUrl: "http://localhost:3000",
+  networks: [{ ...PASEO_ASSET_HUB, rpcUrl: "ws://127.0.0.1:9" }],
+});
+```
+
+## Also in 0.16.0
+
+- **`peopl`, `dim2` and `stash` skip remote prompts.** The core grants those
+  products every remote permission without asking. With one of them as
+  `productId`, nothing reaches the permission log and `'reject-all'` refuses
+  nothing. Device permissions are still asked.
+- **No contacts.** The host has no contact picker, so `contacts.pick` answers
+  `Unsupported`, and a transaction that names a contact is refused as
+  `NotSupported` before anything is signed.
+- **`txExtVersion` is still ignored.** truapi `0.23` gives it a meaning: a
+  non-zero value asks for a V5 transaction, and so does `0` on a runtime whose
+  version-0 extensions include `VerifyMultiSignature`. The in-page signer cannot
+  build V5 without the runtime's metadata, so it returns a signed V4 for every
+  value.
+- **Confirmation reviews name the calling product.** If an in-page
+  `setUserConfirmationBehavior` function reads the review, the product-account
+  `SignPayload` and `CreateTransaction` reviews now wrap what they review:
+  `r.value.value.account` becomes `r.value.value.request.account`.
+- **The core's ring-VRF module is served.** It moved out of the main `.wasm`
+  into a file the core fetches on its own. Nothing to do on your side.
+
+## Upgrading
+
+Move the product to truapi `0.23` (product-sdk-host `0.24.0`). Add `productId`
+to any whole-entry permission-log assertion, and follow the new review shape in
+any confirmation behavior function that reads one. Otherwise nothing changes.

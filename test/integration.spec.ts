@@ -13,6 +13,7 @@
  * signing assertion awaits the answer rather than reading it off a log.
  */
 
+import { readdirSync } from 'node:fs';
 import { test, expect } from '@playwright/test';
 import type { Frame, Page } from '@playwright/test';
 import { compactFromU8a, hexToU8a, u8aToHex } from '@polkadot/util';
@@ -314,6 +315,11 @@ test.describe('Product account derivation', () => {
       productUrl: productServer.url,
       productId: 'other-product.dot',
       accounts: ['alice'],
+      // Since truapi 0.22 the core admits another product's account when that
+      // product's dotNS manifest grants the caller `context`, and looks the
+      // manifest up on Asset Hub before refusing. An unreachable RPC keeps the
+      // refusal the same and the suite off the network.
+      networks: [{ ...PASEO_ASSET_HUB, rpcUrl: 'ws://127.0.0.1:9' }],
     });
 
     try {
@@ -402,6 +408,32 @@ test.describe('Permission handling', () => {
 
       const log = await page.evaluate(() => window.__TEST_HOST__.getPermissionLog());
       expect(log.some((entry) => entry.tag === 'ChainSubmit' && !entry.approved)).toBe(true);
+    } finally {
+      await host.close();
+    }
+  });
+
+  // Since truapi 0.21 the core hands both prompts the asking product's
+  // `ProductContext`. A non-default id proves the log reads it from there
+  // rather than from the host's own config.
+  test('the permission log names the product the core says asked', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      productId: 'permission-probe.dot',
+      accounts: ['alice'],
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+
+      expectOk(await product.evaluate(() => window.__TEST_PRODUCT__.requestChainSubmit()));
+      expectOk(await product.evaluate(() => window.__TEST_PRODUCT__.requestDevicePermission('Camera')));
+
+      const log = await page.evaluate(() => window.__TEST_HOST__.getPermissionLog());
+      expect(log.map((entry) => [entry.tag, entry.productId])).toEqual([
+        ['ChainSubmit', 'permission-probe.dot'],
+        ['Camera', 'permission-probe.dot'],
+      ]);
     } finally {
       await host.close();
     }
@@ -1145,6 +1177,58 @@ test.describe('Chat', () => {
         .toContainEqual(['seeded']);
 
       await product.evaluate(() => window.__CHAT_ROOMS_SUB__.unsubscribe());
+    } finally {
+      await host.close();
+    }
+  });
+});
+
+// ── Contacts ────────────────────────────────────────────────────────
+
+test.describe('Contacts', () => {
+
+  // truapi 0.22 added the `Contacts` trait, served through an optional
+  // `ContactsPlatform`. This host installs none, so the core answers the
+  // product itself — `Unsupported`, which a product can tell apart from a
+  // dismissal it would retry.
+  test('contacts.pick answers Unsupported: the host installs no contact picker', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice'],
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+
+      expect(await product.evaluate(() => window.__TEST_PRODUCT__.contactsPick())).toEqual({
+        ok: false,
+        error: 'Unsupported',
+      });
+    } finally {
+      await host.close();
+    }
+  });
+
+  // The same gap seen from a transaction. A call that names a contact needs
+  // the host to turn the handle back into an account before anything is
+  // signed; with no `ContactsPlatform` nothing can, and the core refuses the
+  // whole call as `NotSupported`. (`UnknownContact` is the answer of a host
+  // that resolves contacts and does not recognise this one.)
+  test('a transaction naming a contact is refused before it reaches the signer', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice'],
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+
+      expect(
+        await product.evaluate(() =>
+          window.__TEST_PRODUCT__.createTransaction('test-product.dot', 0, [`0x${'11'.repeat(32)}`]),
+        ),
+      ).toEqual({ ok: false, error: 'NotSupported: this host resolves no contacts' });
+      expect(await page.evaluate(() => window.__TEST_HOST__.getSigningLog())).toEqual([]);
     } finally {
       await host.close();
     }
@@ -2732,6 +2816,50 @@ test.describe('Statement store proof', () => {
 // ── Session and connection state ───────────────────────────────────
 
 test.describe('Session and connection state', () => {
+
+  /**
+   * Since truapi 0.21 the core fetches `verifiable` (ring-VRF and its powers of
+   * tau) as a separate module once a session connects, through a wasm-bindgen
+   * snippet. Nothing on the page reports a failed load — the core tries again
+   * when a ring-VRF operation first runs — and a 200 for each file does not
+   * prove the module instantiated.
+   *
+   * So the check runs inside the core's own worker: importing the snippet
+   * there yields the very instance the core started, and its exports throw
+   * until the core has fetched and instantiated `verifiable`.
+   */
+  test('the core loads and starts its on-demand verifiable module', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice'],
+    });
+
+    try {
+      await loadHostAndProduct(page, host.url, productServer.url);
+      const [worker] = page.workers();
+      // The snippet directory carries a content hash, so read it off the build.
+      const snippets = readdirSync(new URL('../dist/host/snippets/', import.meta.url));
+      expect(snippets).toHaveLength(1);
+
+      await expect
+        .poll(
+          () =>
+            worker.evaluate(async (path) => {
+              try {
+                const snippet = await import(new URL(path, self.location.href).href);
+                // `alias` answers a SCALE `Result<[u8; 32], String>`: a tag byte and 32.
+                return snippet.alias(new Uint8Array(32), new Uint8Array(32)).length;
+              } catch (error) {
+                return String(error);
+              }
+            }, `/snippets/${snippets[0]}/inline0.js`),
+          { timeout: 15_000 },
+        )
+        .toBe(33);
+    } finally {
+      await host.close();
+    }
+  });
 
   test('the host session activates and the product reports connected', async ({ page }) => {
     const host = await createTestHostServer({

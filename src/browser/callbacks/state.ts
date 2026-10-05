@@ -9,7 +9,7 @@ import type {
   NotificationBehavior,
   OperationEntry,
   PermissionBehavior,
-  PermissionDecision,
+  PermissionLogEntry,
   ResourceAllocationBehavior,
   ResourceAllocationLogEntry,
   UserConfirmationBehavior,
@@ -17,15 +17,6 @@ import type {
 } from '../../types.js';
 
 export type { PermissionBehavior };
-
-export interface PermissionLogEntry {
-  tag: string;
-  value: unknown;
-  /** `false` only for `'Deny'`: a one-use grant is still an approval. */
-  approved: boolean;
-  decision: PermissionDecision;
-  timestamp: number;
-}
 
 export interface NavigationLogEntry {
   url: string;

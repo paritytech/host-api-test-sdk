@@ -511,6 +511,38 @@ describe('sso responder', () => {
     expect(h.responder.getSigningLog()).toEqual([]);
   });
 
+  // truapi 0.21 appended `Cancel` (index 24): the pairing host withdrawing a
+  // request it no longer waits on. Before the variant was decoded it reached
+  // the console as an undecodable message on every withdrawn call.
+  it('acknowledges a Cancel without replying, and keeps answering after it', () => {
+    const h = harness();
+    const frames = listen(h);
+    const reported = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      submitRequest(h, 'req-sign', [buildSignRawMessage('m-sign')]);
+      submitRequest(h, 'req-cancel', [envelope('m-cancel', 'Cancel', { messageId: 'm-sign' })]);
+      submitRequest(h, 'req-next', [buildSignRawMessage('m-next')]);
+
+      expect(reported).not.toHaveBeenCalled();
+      expect(frames.filter((f) => f.data.tag === 'response').map((f) => f.data.value)).toEqual([
+        { requestId: 'req-sign', responseCode: 0 },
+        { requestId: 'req-cancel', responseCode: 0 },
+        { requestId: 'req-next', responseCode: 0 },
+      ]);
+      const replies = repliesIn(frames).map((reply) => [
+        reply.data.value.tag,
+        (reply.data.value.value as { respondingTo: string }).respondingTo,
+      ]);
+      expect(replies).toEqual([
+        ['SignResponse', 'm-sign'],
+        ['SignResponse', 'm-next'],
+      ]);
+    } finally {
+      reported.mockRestore();
+    }
+  });
+
   it('stops answering after dispose', () => {
     const h = harness();
     const frames = listen(h);

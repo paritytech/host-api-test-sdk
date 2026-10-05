@@ -1,11 +1,11 @@
 /** Notifications: records what the product asked to push instead of displaying it. */
-import type { HostPushNotificationRequest, HostPushNotificationResponse, NotificationId } from '@parity/truapi';
+import type { HostPushNotificationRequest, HostPushNotificationResponse } from '@parity/truapi';
 import { decideBehavior } from '../../types.js';
 import type { HostState } from './state.js';
 
 export function createNotificationCallbacks(state: HostState): {
   pushNotification(notification: HostPushNotificationRequest): Promise<HostPushNotificationResponse>;
-  cancelNotification(id: NotificationId): Promise<void>;
+  cancelNotification(id: number): Promise<void>;
 } {
   let nextId = 1;
 
@@ -38,7 +38,7 @@ export function createNotificationCallbacks(state: HostState): {
       return { id };
     },
 
-    async cancelNotification(id: NotificationId): Promise<void> {
+    async cancelNotification(id: number): Promise<void> {
       const entry = state.notificationLog.find((e) => e.id === id);
       if (entry) entry.cancelled = true;
       // Idempotent: an unknown or already-fired id still succeeds.

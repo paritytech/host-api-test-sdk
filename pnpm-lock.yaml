@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       '@parity/truapi':
-        specifier: 0.18.0
-        version: 0.18.0
+        specifier: 0.23.0
+        version: 0.23.0
       '@playwright/test':
         specifier: '>=1.0.0'
         version: 1.58.2
@@ -25,11 +25,11 @@ importers:
         specifier: 2.4.0
         version: 2.4.0
       '@parity/truapi-host':
-        specifier: 0.18.0
-        version: 0.18.0
+        specifier: 0.23.0
+        version: 0.23.0(@playwright/test@1.58.2)(esbuild@0.25.12)
       '@parity/truapi-provider':
-        specifier: 0.2.1
-        version: 0.2.1
+        specifier: 0.3.1
+        version: 0.3.1
       '@polkadot-labs/hdkd-helpers':
         specifier: 0.0.34
         version: 0.0.34
@@ -275,14 +275,22 @@ packages:
   '@oxc-project/types@0.150.0':
     resolution: {integrity: sha512-rDS5/31E9HfPl/CIzGrn0DOlvBbXFseQ5URJ9sYMfstbKLD/c6Gm9vmRzRGDdAXyOIL4zmO37lc9RIwYqVruZw==}
 
-  '@parity/truapi-host@0.18.0':
-    resolution: {integrity: sha512-RNfq4O5v1Dw+tjKTCMDBVHFy9PCfzb4rLnTweiUglgpAQHFWOgqJc0YXj+buJT68qqcxpVmjLrW4mcdu5xwH7g==}
+  '@parity/truapi-host@0.23.0':
+    resolution: {integrity: sha512-O9VLioAznrcLARAetYgsS4fFRPQMukgJopk/Vv3ijhYNZXEOK9aiGzoUOLyFB7WM9VgUedwPF+ANv3unbk0bVA==}
+    peerDependencies:
+      '@playwright/test': '>=1.40'
+      esbuild: '>=0.20'
+    peerDependenciesMeta:
+      '@playwright/test':
+        optional: true
+      esbuild:
+        optional: true
 
-  '@parity/truapi-provider@0.2.1':
-    resolution: {integrity: sha512-cj3gnPfwhW2HzsRiPhB4BeSoT6RmdWb+VIvGQd8P7xK52h19jiFvP7MVR7opndh9WzkP16P/6iJvy7uMj1/MiA==}
+  '@parity/truapi-provider@0.3.1':
+    resolution: {integrity: sha512-mXCZEjjbBEDmPvqOb7waCxyOg3XFDWsZy8JR5pBxWS76ET6ZtWStx6N2tVpJ96nCQNad0XdCheFOWbXVhlUVAw==}
 
-  '@parity/truapi@0.18.0':
-    resolution: {integrity: sha512-q0Hgr9kX+ctHwd4JEuIs+q+l6YB1sJ/PwYOPuxzinZ2P1qudVNNvWj7Hxav8tJb0OO20CrGOrTolg6F5exZf1A==}
+  '@parity/truapi@0.23.0':
+    resolution: {integrity: sha512-ryPxgzDVn4VJUErOo6z9J+ksafFyl2Lu4fyodtkW95LMhEScTD9AuOLW4oI95l0xyW7eonPl+hbtNLvTvhYt+w==}
 
   '@playwright/test@1.58.2':
     resolution: {integrity: sha512-akea+6bHYBBfA9uQqSYmlJXn61cTa+jbO87xVLCWbTqbWadRVmhxlXATaOjOgcBaWU4ePo0wB41KMFv3o35IXA==}
@@ -1519,13 +1527,18 @@ snapshots:
 
   '@oxc-project/types@0.150.0': {}
 
-  '@parity/truapi-host@0.18.0':
+  '@parity/truapi-host@0.23.0(@playwright/test@1.58.2)(esbuild@0.25.12)':
     dependencies:
-      '@parity/truapi': 0.18.0
+      '@noble/hashes': 2.4.0
+      '@parity/truapi': 0.23.0
+      neverthrow: 8.2.0
+    optionalDependencies:
+      '@playwright/test': 1.58.2
+      esbuild: 0.25.12
 
-  '@parity/truapi-provider@0.2.1': {}
+  '@parity/truapi-provider@0.3.1': {}
 
-  '@parity/truapi@0.18.0':
+  '@parity/truapi@0.23.0':
     dependencies:
       '@noble/hashes': 2.4.0
       neverthrow: 8.2.0

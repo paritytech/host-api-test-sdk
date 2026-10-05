@@ -1,6 +1,6 @@
 {
   "name": "@parity/host-api-test-sdk",
-  "version": "0.15.0",
+  "version": "0.16.0",
   "description": "Lightweight test host for Spektr product E2E testing — embeds dapps with auto-signing dev accounts, no Docker needed",
   "license": "MIT",
   "repository": {
@@ -33,10 +33,10 @@
     "test": "node --test test-exports-esm.mjs test-exports-cjs.cjs",
     "test:integration": "pnpm run build:bundle && node test/build-test-product.mjs && pnpm exec playwright test --config test/playwright.config.ts",
     "test:unit": "vitest run",
-    "typecheck": "tsc --noEmit && tsc -p tsconfig.browser.json"
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.browser.json && tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@parity/truapi": "0.18.0"
+    "@parity/truapi": "0.23.0"
   },
   "peerDependencies": {
     "@playwright/test": ">=1.0.0"
@@ -50,8 +50,8 @@
     "@noble/ciphers": "2.4.0",
     "@noble/curves": "2.4.0",
     "@noble/hashes": "2.4.0",
-    "@parity/truapi-host": "0.18.0",
-    "@parity/truapi-provider": "0.2.1",
+    "@parity/truapi-host": "0.23.0",
+    "@parity/truapi-provider": "0.3.1",
     "@polkadot-labs/hdkd-helpers": "0.0.34",
     "@polkadot/types": "^16.0.0",
     "@polkadot/util": "^14.0.0",
