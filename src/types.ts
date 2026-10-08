@@ -26,7 +26,7 @@ import type {
  * `build.mjs` reads the value out of the bundled `.wasm` and fails the build if
  * it disagrees with this constant, so it cannot go stale on a dependency bump.
  */
-export const TRUAPI_WIRE_SCHEMA_HASH = 'ea1a1441ff0219b1';
+export const TRUAPI_WIRE_SCHEMA_HASH = 'c130fa60ef495768';
 
 /** A `0x`-prefixed hex string. */
 export type HexString = `0x${string}`;

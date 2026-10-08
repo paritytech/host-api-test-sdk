@@ -16,8 +16,15 @@ function resolveExport(specifier) {
   return fileURLToPath(import.meta.resolve(specifier));
 }
 
+/**
+ * The core build the host runs: the `testing` bundle, built with `test-host`,
+ * which carries the switches a test host needs (`setSubmitPreimagesLocally`)
+ * and the production `web` bundle leaves out.
+ */
+const CORE_WASM_ENTRY = '@parity/truapi-host/wasm/testing';
+
 /** The core's wasm-pack output: its glue, payload, snippets and `verifiable`. */
-const CORE_WASM_DIR = dirname(resolveExport('@parity/truapi-host/wasm/web'));
+const CORE_WASM_DIR = dirname(resolveExport(CORE_WASM_ENTRY));
 
 /**
  * The core loads `verifiable` (ring-VRF and its powers of tau) on demand,
@@ -36,6 +43,20 @@ const keepCoreSnippetsExternal = {
     build.onResolve({ filter: /^\.\/snippets\// }, (args) =>
       args.importer.startsWith(CORE_WASM_DIR + sep) ? { path: args.path, external: true } : undefined,
     );
+  },
+};
+
+/**
+ * The worker runtime imports the production glue, `./wasm/web/truapi_server.js`.
+ * Point that one import at the testing bundle's glue instead, so the worker
+ * runs the core this host is built around.
+ */
+const useTestingCore = {
+  name: 'use-testing-core',
+  setup(build) {
+    build.onResolve({ filter: /^\.\/wasm\/web\/truapi_server\.js$/ }, () => ({
+      path: resolveExport(CORE_WASM_ENTRY),
+    }));
   },
 };
 
@@ -64,7 +85,7 @@ const browserResult = await build({
     'process.env.NODE_ENV': '"production"',
   },
   conditions: ['browser'],
-  plugins: [keepCoreSnippetsExternal],
+  plugins: [useTestingCore, keepCoreSnippetsExternal],
 });
 
 console.log(`Browser bundles built into ${HOST_ASSET_DIR}/`);
@@ -83,8 +104,8 @@ console.log(`Browser bundles built into ${HOST_ASSET_DIR}/`);
  */
 for (const { pkgEntry, glue, wasmName } of [
   {
-    pkgEntry: '@parity/truapi-host/wasm/web',
-    glue: '/wasm/web/truapi_server.js',
+    pkgEntry: CORE_WASM_ENTRY,
+    glue: '/wasm/testing/truapi_server.js',
     wasmName: 'truapi_server_bg.wasm',
   },
   {
@@ -207,7 +228,7 @@ console.log('CJS bundles built: dist/index.cjs, dist/playwright.cjs');
  * without changing the constant would publish a lie.
  */
 {
-  const wasm = await import('@parity/truapi-host/wasm/web');
+  const wasm = await import(CORE_WASM_ENTRY);
   await wasm.default({
     module_or_path: await readFile(join(CORE_WASM_DIR, 'truapi_server_bg.wasm')),
   });
