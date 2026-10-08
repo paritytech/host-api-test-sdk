@@ -16,6 +16,7 @@
 import { readdirSync } from 'node:fs';
 import { test, expect } from '@playwright/test';
 import type { Frame, Page } from '@playwright/test';
+import { blake2b } from '@noble/hashes/blake2.js';
 import { compactFromU8a, hexToU8a, u8aToHex } from '@polkadot/util';
 import { verify } from '@scure/sr25519';
 import { createTestHostServer, PASEO_ASSET_HUB } from '../dist/index.js';
@@ -1298,9 +1299,8 @@ test.describe('Preimage', () => {
       const preimages = await page.evaluate(() => window.__TEST_HOST__.getPreimages());
       expect(preimages).toHaveLength(1);
       expect(preimages[0].key).toBe(key);
-      // There is no host-side preimage submit any more: the product's submit
-      // goes out over the chain route, so everything this host knows about was
-      // seeded by the test.
+      // A product's submit is kept by the core, not handed to this host, so
+      // everything the host's own store holds was seeded by the test.
       expect(preimages[0].fromProduct).toBe(false);
 
       await page.evaluate(() => window.__TEST_HOST__.clearPreimages());
@@ -1311,45 +1311,62 @@ test.describe('Preimage', () => {
   });
 
   /**
-   * Preimage submission is the core's own Bulletin traffic, routed by the
-   * genesis the host declared at boot rather than by anything
-   * `supportedChains()` reports. Both halves are asserted because only the
-   * pair distinguishes "the host named the configured chain" from "the host
-   * named nothing and the core fell back to the all-zero genesis".
+   * The responder answers Bulletin allowances in-page, with keys never
+   * authorized on chain, so the host turns on the core's local preimage store:
+   * a submit answers with the content key and the value reads back through
+   * lookup without any network. The configured Bulletin node is unreachable on
+   * purpose, so a submit that dialled it would fail.
    */
-  test('preimageSubmit reaches the Bulletin network the host configured', async ({ page }) => {
+  test('preimageSubmit stays in the core and reads back through lookup', async ({ page }) => {
     const BULLETIN: NetworkConfig = {
       id: 'unreachable-bulletin',
       name: 'Unreachable Bulletin',
       genesisHash: `0x${'bb'.repeat(32)}`,
-      // Refused at once, so the assertion is on which chain was dialled rather
-      // than on a live one answering.
       rpcUrl: 'ws://127.0.0.1:1',
       tokenSymbol: 'UNIT',
       tokenDecimals: 10,
       chain: 'Bulletin',
     };
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice'],
+      networks: [PASEO_ASSET_HUB, BULLETIN],
+    });
 
-    for (const { networks, expected } of [
-      { networks: [PASEO_ASSET_HUB], expected: `no chain configured for genesis 0x${'00'.repeat(32)}` },
-      { networks: [PASEO_ASSET_HUB, BULLETIN], expected: 'ws://127.0.0.1:1' },
-    ]) {
-      const host = await createTestHostServer({
-        productUrl: productServer.url,
-        accounts: ['alice'],
-        networks,
-      });
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+      const submitted = await product.evaluate(() =>
+        window.__TEST_PRODUCT__.preimageSubmit('0xdeadbeef'),
+      );
+      const key = u8aToHex(blake2b(hexToU8a('0xdeadbeef'), { dkLen: 32 }));
+      expect(submitted).toEqual({ ok: true, key });
 
-      try {
-        const product = await loadHostAndProduct(page, host.url, productServer.url);
-        const outcome = await product.evaluate(() =>
-          window.__TEST_PRODUCT__.preimageSubmit('0xdeadbeef'),
-        );
-        expect(outcome.ok).toBe(false);
-        expect(outcome.ok ? '' : outcome.error).toContain(expected);
-      } finally {
-        await host.close();
-      }
+      const lookedUp = await product.evaluate(
+        (k) => window.__TEST_PRODUCT__.preimageLookup(k),
+        key,
+      );
+      expect(lookedUp).toEqual({ ok: true, value: [0xde, 0xad, 0xbe, 0xef] });
+    } finally {
+      await host.close();
+    }
+  });
+
+  /** Keeping the value local does not skip the allowance a submit asks for. */
+  test('preimageSubmit is refused when the Bulletin allowance is withheld', async ({ page }) => {
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice'],
+      behaviors: { resourceAllocation: { BulletinAllowance: false } },
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+      const outcome = await product.evaluate(() =>
+        window.__TEST_PRODUCT__.preimageSubmit('0xdeadbeef'),
+      );
+      expect(outcome.ok).toBe(false);
+    } finally {
+      await host.close();
     }
   });
 });

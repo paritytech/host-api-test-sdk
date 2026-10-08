@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.17.0
+
+The upstream stack moves to truapi `0.24`: `@parity/truapi` and
+`@parity/truapi-host` `0.23.0` → `0.24.0`. That is the line
+`@parity/product-sdk-host` `0.25.0` is on. The core speaks wire schema
+`c130fa60ef495768`.
+
+### Changed
+
+- **`preimage.submit()` stays in the core.** The responder answers Bulletin
+  allowances in-page, with keys never authorized on chain, so every submit used
+  to reach the configured Bulletin node and be refused at dry-run with
+  `allowance rejected: dry-run`. The host now turns on the core's local preimage
+  store (`setSubmitPreimagesLocally`): a submit answers with the content key and
+  the value reads back through `preimage.lookupSubscribe`, with no network. A
+  withheld `BulletinAllowance` still refuses the submit.
+- **The host runs the core's `testing` bundle.** The worker loads
+  `@parity/truapi-host/wasm/testing`, built with `test-host`, in place of the
+  production `wasm/web` bundle, which leaves out the switches a test host needs.
+
 ## 0.16.0
 
 The upstream stack moves to truapi `0.23`: `@parity/truapi` and

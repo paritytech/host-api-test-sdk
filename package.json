@@ -1,7 +1,7 @@
 {
   "name": "@parity/host-api-test-sdk",
-  "version": "0.16.0",
-  "description": "Lightweight test host for Spektr product E2E testing — embeds dapps with auto-signing dev accounts, no Docker needed",
+  "version": "0.17.0",
+  "description": "Lightweight test host for Spektr product E2E testing \u2014 embeds dapps with auto-signing dev accounts, no Docker needed",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -36,7 +36,7 @@
     "typecheck": "tsc --noEmit && tsc -p tsconfig.browser.json && tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@parity/truapi": "0.23.0"
+    "@parity/truapi": "0.24.0"
   },
   "peerDependencies": {
     "@playwright/test": ">=1.0.0"
@@ -50,7 +50,7 @@
     "@noble/ciphers": "2.4.0",
     "@noble/curves": "2.4.0",
     "@noble/hashes": "2.4.0",
-    "@parity/truapi-host": "0.23.0",
+    "@parity/truapi-host": "0.24.0",
     "@parity/truapi-provider": "0.3.1",
     "@polkadot-labs/hdkd-helpers": "0.0.34",
     "@polkadot/types": "^16.0.0",

@@ -391,6 +391,10 @@ async function init(): Promise<void> {
   };
 
   try {
+    // The responder answers Bulletin allowances in-page with keys never
+    // authorized on chain, so a real `store` would be refused at dry-run. The
+    // core keeps submissions instead and serves them back through lookup.
+    await runtime.setSubmitPreimagesLocally(true);
     await runtime.activateExternalSession(encodeExternalPairedSession(session));
 
     const productId = config.productId ?? DEFAULT_PRODUCT_ID;

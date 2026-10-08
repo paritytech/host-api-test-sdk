@@ -140,10 +140,10 @@ A network with no `chain` is still routable by genesis hash; it is simply left o
 
 | Role | What the core uses it for | Without it |
 |------|---------------------------|------------|
-| `'Bulletin'` | `preimage.submit()` | Every submit fails: `bulletin chain unavailable … no chain configured for genesis 0x0000…` |
+| `'Bulletin'` | Nothing a product calls: `preimage.submit()` stays in the core, which keeps the value and serves it back through lookup | Nothing changes |
 | `'AssetHub'` | dotNS lookups — product manifests, and the `trustedProducts` grants that carry cross-product access | Every grant not already cached is refused, indistinguishably from the other product having granted nothing |
 
-So a test that exercises preimage submission needs a network with `chain: 'Bulletin'`, and one that exercises cross-product grants needs `chain: 'AssetHub'`. Both talk to the real `rpcUrl`.
+So a test that exercises cross-product grants needs a network with `chain: 'AssetHub'`, which talks to the real `rpcUrl`. Preimage submission needs no network: the host's Bulletin allowances are answered in-page and were never authorized on any chain, so the core keeps each submission and returns its content key.
 
 **Signing never touches a network.** The People chain is served in-page by a loopback statement store, which is what carries the SSO signing round trip. Only a product's own chain calls go out to `rpcUrl`, so a test that never reads chain state runs fully offline.
 
@@ -770,6 +770,19 @@ The build produces three kinds of output:
 1. **Browser assets** (`dist/host/`) — ESM chunks built with esbuild, plus the two `.wasm` payloads and the core's on-demand `verifiable` module (`truapi_verifiable.js`, its `.wasm`, and the `snippets/` that load them), served by the test host's own HTTP server
 2. **ESM modules** (`dist/*.js`) — the Node-side API compiled with `tsc`
 3. **CJS bundles** (`dist/index.cjs`, `dist/playwright.cjs`) — the same API for CommonJS consumers
+
+## Migrating from 0.16.0 to 0.17.0
+
+0.17 moves the upstream stack to truapi `0.24`.
+
+- **Move your product to `@parity/truapi` `0.24`** — for a product-sdk product,
+  `@parity/product-sdk` `0.34.0` or later, which is on `@parity/product-sdk-host`
+  `0.25.0`.
+- **A test that expected `preimage.submit()` to fail now sees it succeed.** The
+  submit answers with the blake2b-256 content key and the value reads back
+  through `preimage.lookupSubscribe`, with no Bulletin network involved. To test
+  a product's handling of a refused submit, withhold the allowance:
+  `behaviors: { resourceAllocation: { BulletinAllowance: false } }`.
 
 ## Migrating from 0.15.0 to 0.16.0
 

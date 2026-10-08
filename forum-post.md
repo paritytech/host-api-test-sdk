@@ -1377,3 +1377,37 @@ createTestHostFixture({
 Move the product to truapi `0.23` (product-sdk-host `0.24.0`). Add `productId`
 to any whole-entry permission-log assertion, and follow the new review shape in
 any confirmation behavior function that reads one. Otherwise nothing changes.
+
+# host-api-test-sdk 0.17.0
+
+## The core moves to truapi 0.24
+
+`@parity/truapi` and `@parity/truapi-host` go from `0.23.0` to `0.24.0`. That is
+the line `@parity/product-sdk-host` `0.25.0` is on, which `@parity/product-sdk`
+`0.34.0` and later use.
+
+## Preimage submissions work
+
+`preimage.submit()` used to fail in every test: the host answers Bulletin
+allowances in-page, with keys no chain ever authorized, so the core's real
+`TransactionStorage.store` was refused at dry-run. The host now keeps
+submissions in the core instead. A submit answers with the content key, and the
+value reads back through lookup:
+
+```ts
+const key = await api.preimage.submit("0xdeadbeef"); // blake2b-256 of the value
+api.preimage.lookupSubscribe({ request: { key } }).subscribe(({ value }) => {
+  // value === "0xdeadbeef"
+});
+```
+
+No Bulletin network is needed for this. A product that has to cope with a
+refused submit can still be tested by withholding the allowance:
+
+```ts
+createTestHostFixture({
+  productUrl: "http://localhost:3000",
+  behaviors: { resourceAllocation: { BulletinAllowance: false } },
+});
+```
+
