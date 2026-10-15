@@ -1411,3 +1411,57 @@ createTestHostFixture({
 });
 ```
 
+---
+
+# host-api-test-sdk 0.18.0
+
+## Transactions on a transaction-extension pipeline
+
+A runtime can declare more than one transaction-extension pipeline, and only a
+V5 general transaction can choose one other than 0. Paseo Asset Hub Next
+charges fees in PGAS on pipeline 1 only, so a product that wants PGAS fees asks
+its host for `txExtVersion: 1`.
+
+Until now the test host answered every `createTransaction` with a signed V4, so
+such a request came back in a shape no runtime accepts. From 0.18 the host
+builds what a real signing host builds: an Extrinsic V5 general transaction on
+the requested pipeline, signed into `VerifyMultiSignature`. It reads the
+pipeline's layout from the runtime metadata, over the `rpcUrl` of the network
+whose genesis the transaction names, once per page:
+
+```ts
+createTestHostFixture({
+  productUrl: "http://localhost:3000",
+  // A transaction on Asset Hub with txExtVersion: 1 reads Asset Hub's metadata here.
+  networks: [PASEO_ASSET_HUB],
+});
+```
+
+`txExtVersion: 0` still gets a signed V4 and reads nothing, so a product that
+never asks for a pipeline stays off the network.
+
+## What a test sees when it cannot be built
+
+The host refuses what the core would refuse, with the core's message, and the
+product sees it as `Unknown` with that reason. Without the chain:
+
+```
+Unknown: cannot load chain metadata: no answer within 20 s
+```
+
+and on a pipeline the runtime does not declare:
+
+```
+Unknown: unsupported tx_ext_version 2; the runtime declares transaction extension versions [0, 1]
+```
+
+A suite that passed `txExtVersion: 1` with an unreachable `rpcUrl` and relied on
+the old V4 now gets the first of these.
+
+## `host.close()` returns at once
+
+`host.close()` waited for every connection to the host to end, including a
+socket Chrome had opened ahead of need and never used, which Node keeps for 60 s.
+A test that closed its host in `finally` could run into its own timeout. The
+host now closes every connection when it is closed.
+

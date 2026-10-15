@@ -116,6 +116,16 @@ function collect<T, Reason, U>(
 type SigningResult = Outcome<{ signature: HexString }>;
 type TransactionResult = Outcome<{ signedHex: HexString }>;
 
+/** A product-account transaction on a chosen chain and transaction-extension version. */
+interface PipelineTransactionRequest {
+  dotnsId: string;
+  derivationIndex: number;
+  genesisHash: HexString;
+  callData: HexString;
+  extensions: TxPayloadExtension[];
+  txExtVersion: number;
+}
+
 declare global {
   interface Window {
     __TEST_PRODUCT__: {
@@ -164,6 +174,7 @@ declare global {
       /** `contactHandles` are the 32-byte handles the call claims to name. */
       createTransaction(dotnsId: string, index: number, contactHandles?: string[]): Promise<TransactionResult>;
       createTransactionLegacy(publicKeyHex: string): Promise<TransactionResult>;
+      createPipelineTransaction(request: PipelineTransactionRequest): Promise<TransactionResult>;
       /** `contacts.pick`, reporting how the pick ended. */
       contactsPick(): Promise<Outcome<{ outcome: string }>>;
       accountCreateProof(dotnsId: string, index: number): Promise<Outcome<{ proofHex: HexString; alias: HexString }>>;
@@ -424,6 +435,17 @@ async function init(): Promise<void> {
             // names, for the host to swap for accounts. Empty unless a spec
             // passes some.
             contacts: contactHandles.map((handle) => ({ bytes: scale.toHexString(handle) })),
+          }),
+        (value) => ({ signedHex: value.transaction }),
+      ),
+
+    createPipelineTransaction: ({ dotnsId, derivationIndex, ...transaction }) =>
+      call(
+        () =>
+          api.signing.createTransaction({
+            signer: accountId(dotnsId, derivationIndex),
+            ...transaction,
+            contacts: [],
           }),
         (value) => ({ signedHex: value.transaction }),
       ),

@@ -20,6 +20,7 @@ import { createIframeHost, createWebWorkerPairingHostRuntime } from '@parity/tru
 import { buildAllowAttribute, buildControlApi, normalizeTheme } from './control-api.js';
 import type { ChainRuntimeConfig, HostState } from './callbacks/index.js';
 import { createHostCallbacks, createHostState } from './callbacks/index.js';
+import { createMetadataReader } from './chain-metadata.js';
 import { genesisForRole } from './callbacks/features.js';
 import { PEOPLE_GENESIS_HASH } from './constants.js';
 import type { DevKeypair } from './dev-accounts.js';
@@ -348,18 +349,20 @@ async function init(): Promise<void> {
     },
   };
 
-  let session = mintSession(deriveFromUri(accounts[0].uri), usernameOf(accounts[0]));
-  markSessionTopics(session);
-  let responder = createSsoResponder({ store, session, resolveAccount, resourcePolicy });
-  /** Signing recorded by responders retired by an account switch. */
-  const retiredSigningLog: SigningLogEntry[] = [];
-
   let iframeHost: IframeHost | undefined;
   const callbacks = withIframePermissionsPolicy(
     createHostCallbacks({ state, store, networks: config.networks }),
     state,
     () => iframeHost?.iframe,
   );
+  /** The responder reads metadata over the core's own chain routing. */
+  const readMetadata = createMetadataReader(callbacks.chain);
+
+  let session = mintSession(deriveFromUri(accounts[0].uri), usernameOf(accounts[0]));
+  markSessionTopics(session);
+  let responder = createSsoResponder({ store, session, resolveAccount, resourcePolicy, readMetadata });
+  /** Signing recorded by responders retired by an account switch. */
+  const retiredSigningLog: SigningLogEntry[] = [];
 
   // Held in a local so a rejected runtime (bad chunk, wasm that will not
   // instantiate) does not leak a worker nothing else holds.
@@ -450,7 +453,7 @@ async function init(): Promise<void> {
       // A switch mints fresh ids; the retired ones stay marked, so statements
       // already in flight on them are still read as session traffic.
       markSessionTopics(session);
-      responder = createSsoResponder({ store, session, resolveAccount, resourcePolicy });
+      responder = createSsoResponder({ store, session, resolveAccount, resourcePolicy, readMetadata });
 
       // No unwind: if activation then fails, the core has already reported the
       // drop and `getChainStatus()` reads `'disconnected'`.

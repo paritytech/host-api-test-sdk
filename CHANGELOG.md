@@ -1,5 +1,74 @@
 # Changelog
 
+## 0.18.0
+
+`createTransaction` honours `txExtVersion`: a transaction on a non-zero
+version is the Extrinsic V5 general transaction a real signing host builds.
+
+### Breaking changes
+
+- **A non-zero `txExtVersion` gets a V5 general transaction, or a refusal.** The
+  in-page signer used to return a signed V4 for every version, with the
+  pipeline's extension bytes read into pipeline 0's slots, which no runtime
+  accepts. It now reads the runtime metadata of the transaction's chain over
+  that network's `rpcUrl` and builds the V5 the core builds
+  (`build_signed_extrinsic_v5`): the supplied extensions laid out in the
+  pipeline's order, and `VerifyMultiSignature` signed by the account unless the
+  product supplied it. A request the core would refuse is refused in the core's
+  words, which the product sees as `Unknown` with that reason, as it does from
+  a paired phone:
+  - `cannot load chain metadata: …` when no configured network serves the
+    genesis, the `rpcUrl` does not answer within 20 s, or the genesis is the
+    in-page People store;
+  - `unsupported tx_ext_version …` for a version the runtime does not declare;
+  - an extension no pipeline declares, one listed twice, a non-empty one left
+    out, a pipeline without `VerifyMultiSignature`, or a call the runtime does
+    not declare.
+
+  A suite that passed a non-zero version with an unreachable `rpcUrl` now gets
+  the first refusal where it used to get a V4.
+
+### Changed
+
+- **Version 0 is unchanged:** a signed V4, built offline. The core builds V5 for
+  version 0 too when that pipeline declares `VerifyMultiSignature`; this host
+  does not read metadata for version 0, so a product's transactions do not put
+  its tests on the network. Paseo Asset Hub Next (spec 3004000) declares
+  `VerifyMultiSignature` on pipeline 1 only.
+- **The metadata is read once per genesis for the page's life**, with
+  `Metadata_metadata_at_version(16)`, and with `state_getMetadata` where the
+  runtime has no V16 or refuses that call. A failed read is tried again on the
+  next transaction; a runtime upgrade during a test is not picked up.
+- **A V5 transaction is answered once its metadata is in.** Every other request
+  is still answered in the tick it arrives. The reply goes out even if an
+  account switch retired the responder in the meantime: the core discards a
+  reply it no longer waits for.
+
+### Fixed
+
+- **`host.close()` no longer outlasts a test.** It waited for every connection
+  to the host's server to end, and Chrome keeps sockets it opened ahead of need
+  without sending a request on them. Node drops such a socket only at
+  `headersTimeout`, 60 s by default, so a test's `await host.close()` ran into
+  the 60 s test timeout: in 7 of 11 full integration runs of this release's
+  build before the fix, and in none of 7 runs of `0.17.0`. It now closes every
+  connection, and 4 runs after the fix had no such timeout.
+
+### Notes
+
+- **The supplied extension bytes are not checked against their types**, which
+  the core does. A malformed one is refused by the chain as `BadProof` rather
+  than by the host.
+
+### Internal
+
+- `@polkadot-api/substrate-bindings` `0.21.1`, the version `polkadot-api`
+  `3.1.0` already pulls in, decodes the metadata. The V5 builder and the decoder
+  are a chunk of their own, loaded with the first V5 transaction; a boot loads
+  2.4 kB more than `0.17.0` (867,615 bytes against 865,242).
+- The test product gained `createPipelineTransaction`, which takes the genesis,
+  call, extensions and version.
+
 ## 0.17.0
 
 The upstream stack moves to truapi `0.24`: `@parity/truapi` and

@@ -1,7 +1,8 @@
 /**
  * The peer half of the SSO signing session, served in-page: decrypt the request
  * off the loopback statement store, sign with a dev account, publish the reply
- * back on `sessionIdPeer`. No handler here touches a chain.
+ * back on `sessionIdPeer`. Only a transaction on a non-zero `txExtVersion`
+ * touches a chain, for the runtime metadata its V5 encoding needs.
  *
  * Three rules are load-bearing, all from `../host-rust-core`:
  *
@@ -20,6 +21,7 @@ import { type HexString, type ProductAccountId, scale } from '@parity/truapi';
 import { ss58Address } from '@polkadot-labs/hdkd-helpers';
 import { getPublicKey, sign } from '@scure/sr25519';
 import { type DevKeypair, canonicalSecretKey, deriveDev } from '../dev-accounts.js';
+import type { ReadMetadata } from '../chain-metadata.js';
 import type { LoopbackStore } from '../loopback-chain.js';
 import { type RawSignPayload, buildSignedV4Extrinsic, signRawBytes } from '../signing/index.js';
 import { open, seal, sessionAeadKey } from './crypto.js';
@@ -68,6 +70,11 @@ export interface ResponderOptions {
   resolveAccount: ResolveAccount;
   /** Absent allocates everything, which is what every release before 0.15 did. */
   resourcePolicy?: ResourcePolicy;
+  /**
+   * Runtime metadata by genesis, for a transaction on a non-zero `txExtVersion`.
+   * Absent refuses such a transaction as a host whose chain is unreachable.
+   */
+  readMetadata?: ReadMetadata;
 }
 
 export interface SsoResponder {
@@ -90,6 +97,9 @@ const allocated = (value: AllocatedResource): AllocationOutcome => ({ tag: 'allo
  * declining this request, which is what a user refusing a prompt looks like.
  */
 const REJECTED: AllocationOutcome = { tag: 'rejected', value: undefined };
+
+/** A reply, or one that waits on the chain (a V5 transaction's metadata). */
+type Reply = RemoteMessageValue | Promise<RemoteMessageValue>;
 
 /** The `HostSignPayloadData` carried by `SignRequest::Payload`. */
 type SignPayloadData = Extract<
@@ -187,7 +197,7 @@ function signPayloadData(keypair: DevKeypair, payload: SignPayloadData): HexStri
 }
 
 export function createSsoResponder(options: ResponderOptions): SsoResponder {
-  const { store, session, resolveAccount, resourcePolicy } = options;
+  const { store, session, resolveAccount, resourcePolicy, readMetadata } = options;
   const channelKey = sessionAeadKey(session.encSecret, session.peerEncPubkey);
   const signingLog: SigningLogEntry[] = [];
   const ringVrf = createRingVrfRegistry(resolveAccount);
@@ -258,22 +268,52 @@ export function createSsoResponder(options: ResponderOptions): SsoResponder {
 
   function answerCreateTransaction(
     request: RemoteMessagePayload<'CreateTransactionRequest'>,
-  ): RemoteMessageValue {
+  ): Reply {
     record('createTransaction', request.payload.value);
-    return reply('CreateTransactionResponse', {
-      success: true,
-      value: buildExtrinsic(account(request.payload.value.signer), request.payload.value),
-    });
+    return transactionReply(account(request.payload.value.signer), request.payload.value);
   }
 
   function answerCreateTransactionWithLegacyAccount(
     request: RemoteMessagePayload<'CreateTransactionWithLegacyAccountRequest'>,
-  ): RemoteMessageValue {
+  ): Reply {
     record('createTransaction', request.payload.value);
-    return reply('CreateTransactionResponse', {
-      success: true,
-      value: buildExtrinsic(legacyAccount(request.payload.value.signer), request.payload.value),
-    });
+    return transactionReply(legacyAccount(request.payload.value.signer), request.payload.value);
+  }
+
+  /**
+   * Version 0 is a signed V4, built at once and offline. Any other version is a
+   * V5 general transaction on that pipeline, built once the metadata is in.
+   * The core also builds V5 for version 0 when that pipeline declares
+   * `VerifyMultiSignature`; reading metadata for every transaction would put
+   * every product's tests on the network, so this host does not.
+   */
+  function transactionReply(keypair: DevKeypair, payload: TransactionPayload): Reply {
+    if (payload.txExtVersion === 0) {
+      return reply('CreateTransactionResponse', { success: true, value: buildExtrinsic(keypair, payload) });
+    }
+    if (!readMetadata) {
+      throw new Error('cannot load chain metadata: this host reads no chain');
+    }
+    // The builder brings the metadata decoder; it loads with the first V5 transaction.
+    return Promise.all([
+      readMetadata(payload.genesisHash),
+      import('../signing/general.js'),
+    ]).then(([metadata, { buildSignedV5Extrinsic }]) =>
+      reply('CreateTransactionResponse', {
+        success: true,
+        value: buildSignedV5Extrinsic(
+          keypair,
+          metadata,
+          payload.txExtVersion,
+          scale.hexToBytes(payload.callData),
+          payload.extensions.map((extension) => ({
+            id: extension.id,
+            extra: scale.hexToBytes(extension.extra),
+            additionalSigned: scale.hexToBytes(extension.additionalSigned),
+          })),
+        ),
+      }),
+    );
   }
 
   function answerSignRawWithLegacyAccount(
@@ -397,7 +437,7 @@ export function createSsoResponder(options: ResponderOptions): SsoResponder {
   // ---- dispatch -------------------------------------------------------------
 
   /** The reply for one request, or `undefined` for anything not a request. */
-  function answer(message: RemoteMessageValue): RemoteMessageValue | undefined {
+  function answer(message: RemoteMessageValue): Reply | undefined {
     switch (message.tag) {
       case 'SignRequest':
         return answerSign(message.value);
@@ -424,9 +464,11 @@ export function createSsoResponder(options: ResponderOptions): SsoResponder {
       case 'RingVrfSignRequest':
         return reply('RingVrfSignResponse', ringVrf.sign(message.value));
       case 'Cancel':
-        // Every request is answered in the tick the core submits it, so the
-        // request a `Cancel` names was answered before the `Cancel` was sent.
-        // Nothing is left to stop, and a withdrawal takes no reply.
+        // Every request but a V5 transaction is answered in the tick the core
+        // submits it, so the request a `Cancel` names was answered before the
+        // `Cancel` was sent. A V5 transaction still waiting for its metadata is
+        // answered when the metadata arrives; nothing here withdraws it, and a
+        // withdrawal takes no reply.
         return undefined;
       default:
         // `Disconnected` is handled by the caller; every `*Response` variant is
@@ -450,7 +492,7 @@ export function createSsoResponder(options: ResponderOptions): SsoResponder {
     // `response` is a transport acknowledgement, never a request.
     if (frame.tag !== 'request') return;
 
-    const replies: Uint8Array[] = [];
+    const replies: Array<Uint8Array | undefined | Promise<Uint8Array | undefined>> = [];
     for (const encoded of frame.value.data) {
       let envelope: ReturnType<typeof RemoteMessageEnvelope.dec>;
       try {
@@ -466,34 +508,56 @@ export function createSsoResponder(options: ResponderOptions): SsoResponder {
         unsubscribe();
         return;
       }
-      let answered: RemoteMessageValue | undefined;
+      const failed = (error: unknown) => {
+        console.error(`[sso-responder] ${message.tag} failed:`, error);
+        return failureReply(message.tag, error instanceof Error ? error.message : String(error));
+      };
+      let answered: Reply | undefined;
       try {
         answered = answer(message);
       } catch (error) {
-        const reason = error instanceof Error ? error.message : String(error);
-        console.error(`[sso-responder] ${message.tag} failed:`, error);
-        answered = failureReply(message.tag, reason);
+        answered = failed(error);
       }
       if (!answered) continue;
-      const wire = encodeReply(answered, envelope.messageId, message.tag);
-      if (wire) replies.push(wire);
+      replies.push(
+        answered instanceof Promise
+          ? answered
+              .catch(failed)
+              .then((settled) => settled && encodeReply(settled, envelope.messageId, message.tag))
+          : encodeReply(answered, envelope.messageId, message.tag),
+      );
     }
 
     // The ack first: the core holds a decoded reply back until it has seen one.
     const requestId = frame.value.requestId;
     publish({ tag: 'response', value: { requestId, responseCode: RESPONSE_ACCEPTED } });
-    if (replies.length > 0) {
-      publish({ tag: 'request', value: { requestId, data: replies } });
+    const publishReplies = (encoded: Array<Uint8Array | undefined>) => {
+      const data = encoded.filter((wire): wire is Uint8Array => wire !== undefined);
+      if (data.length > 0) publish({ tag: 'request', value: { requestId, data } });
+    };
+    if (!replies.some((wire) => wire instanceof Promise)) {
+      publishReplies(replies as Array<Uint8Array | undefined>);
+      return;
     }
+    // A V5 transaction waits for its metadata, and the frame's other replies
+    // with it.
+    // Published even by a responder an account switch retired in the meantime:
+    // the core discards a reply it no longer waits for, and one it still waits
+    // for would otherwise wait out its timeout.
+    void Promise.all(replies)
+      .then(publishReplies)
+      .catch((error: unknown) => {
+        console.error('[sso-responder] could not publish the replies:', error);
+      });
   });
 
   // ---- transport ------------------------------------------------------------
 
   /**
-   * Encoding must happen here, before the ack is published: a throw later is
-   * swallowed by the store's listener isolation and the core then waits forever
-   * with nothing on the console. A failure reply is a fixed shape, so it
-   * encodes where a mis-shaped success payload did not.
+   * Encoding must not throw: a throw is swallowed by the store's listener
+   * isolation, or by the promise of a reply that waited on the chain, and the
+   * core then waits forever with nothing on the console. A failure reply is a
+   * fixed shape, so it encodes where a mis-shaped success payload did not.
    */
   function encodeReply(
     answered: RemoteMessageValue,
@@ -572,13 +636,15 @@ function allowanceSlotSecret(kind: 'statement-store' | 'bulletin', productId: st
   return canonicalSecretKey(deriveDev('allowance', tag).secretKey);
 }
 
-function buildExtrinsic(
-  keypair: DevKeypair,
-  payload: {
-    callData: string;
-    extensions: ReadonlyArray<{ extra: string; additionalSigned: string }>;
-  },
-): Uint8Array {
+/** What both transaction requests carry, in their wire form. */
+interface TransactionPayload {
+  genesisHash: HexString;
+  callData: string;
+  extensions: ReadonlyArray<{ id: string; extra: string; additionalSigned: string }>;
+  txExtVersion: number;
+}
+
+function buildExtrinsic(keypair: DevKeypair, payload: TransactionPayload): Uint8Array {
   return buildSignedV4Extrinsic(
     keypair,
     scale.hexToBytes(payload.callData),

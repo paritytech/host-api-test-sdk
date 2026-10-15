@@ -12,6 +12,13 @@ import {
   type RemoteMessageValue,
   StatementData,
 } from './messages.js';
+import type { ReadMetadata } from '../chain-metadata.js';
+import {
+  REMARK,
+  suppliedExtensions,
+  syntheticMetadata,
+} from '../signing/general.fixture.js';
+import { readTransactionMetadata } from '../signing/general.js';
 import { createSsoResponder } from './responder.js';
 import type { ResourcePolicy } from './responder.js';
 import { decodeStatement, encodeStatement, signStatement } from './statement.js';
@@ -30,6 +37,7 @@ function harness(
   failWith?: string,
   overrideResolve?: ResolveAccountFn,
   resourcePolicy?: ResourcePolicy,
+  readMetadata?: ReadMetadata,
 ) {
   const alice = deriveDev('Alice');
   const hostEncSecret = x25519.utils.randomSecretKey();
@@ -63,6 +71,7 @@ function harness(
     session,
     resolveAccount: overrideResolve ?? resolveAccount,
     resourcePolicy,
+    readMetadata,
   });
   const key = sessionAeadKey(hostEncSecret, session.peerEncPubkey);
   return { alice, store, session, responder, key, resolveAccount };
@@ -915,5 +924,152 @@ describe('sso responder resource policy', () => {
     request(h, [{ tag: 'BulletinAllowance', value: undefined }]);
 
     expect(recorded).toEqual([{ resource: 'BulletinAllowance', granted: true }]);
+  });
+});
+
+describe('sso responder transaction-extension versions', () => {
+  const GENESIS = toHex(topic(4));
+
+  /** A pipeline-`txExtVersion` `CreateTransactionRequest` for System.remark. */
+  function transactionRequest(txExtVersion: number, messageId = 'm-v5'): Uint8Array {
+    return envelope(messageId, 'CreateTransactionRequest', {
+      payload: {
+        tag: 'v1',
+        value: {
+          signer: ACCOUNT,
+          genesisHash: GENESIS,
+          callData: toHex(REMARK),
+          extensions: suppliedExtensions().map((extension) => ({
+            id: extension.id,
+            extra: toHex(extension.extra),
+            additionalSigned: toHex(extension.additionalSigned),
+          })),
+          txExtVersion,
+        },
+      },
+    });
+  }
+
+  const transactionOf = (frames: CapturedFrame[]) => {
+    const [reply] = replyValues(frames);
+    expect(reply.tag).toBe('CreateTransactionResponse');
+    return (reply.value as { payload: { success: boolean; value: Uint8Array | string } }).payload;
+  };
+
+  /** Let a reply that waits on metadata settle. */
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  it('builds a V5 general transaction on the requested pipeline, after the ack', async () => {
+    const read = vi.fn<ReadMetadata>(async () => readTransactionMetadata(syntheticMetadata()));
+    const h = harness(undefined, undefined, undefined, read);
+    const frames = listen(h);
+
+    submitRequest(h, 'req-v5', [transactionRequest(1)]);
+    expect(frames.map((frame) => frame.data.tag)).toEqual(['response']);
+    await settle();
+
+    expect(read).toHaveBeenCalledWith(GENESIS);
+    const payload = transactionOf(frames);
+    expect(payload.success).toBe(true);
+    const tx = payload.value as Uint8Array;
+    // [compact len, 2 bytes here][0x45][version 1][CheckBeforeSignature][Signed][Sr25519]…
+    expect([...tx.subarray(2, 4)]).toEqual([0x45, 1]);
+    expect(tx.subarray(7, 71)).toHaveLength(64);
+    expect(tx.subarray(71, 103)).toEqual(h.resolveAccount(PRODUCT, INDEX_0).publicKey);
+    expect(h.responder.getSigningLog().map((entry) => entry.type)).toEqual(['createTransaction']);
+  });
+
+  it('builds a V4 for version 0 without reading metadata', () => {
+    const read = vi.fn<ReadMetadata>();
+    const h = harness(undefined, undefined, undefined, read);
+    const frames = listen(h);
+
+    submitRequest(h, 'req-v4', [transactionRequest(0)]);
+
+    expect(read).not.toHaveBeenCalled();
+    expect((transactionOf(frames).value as Uint8Array)[2]).toBe(0x84);
+  });
+
+  it('refuses a non-zero version when it reads no chain', () => {
+    const h = harness();
+    const frames = listen(h);
+    const reported = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    submitRequest(h, 'req-no-chain', [transactionRequest(1)]);
+    reported.mockRestore();
+
+    expect(transactionOf(frames)).toEqual({
+      success: false,
+      value: 'cannot load chain metadata: this host reads no chain',
+    });
+  });
+
+  it('refuses with the reason when the metadata cannot be read', async () => {
+    const read = vi.fn<ReadMetadata>(async () => {
+      throw new Error('cannot load chain metadata: no answer within 20 s');
+    });
+    const h = harness(undefined, undefined, undefined, read);
+    const frames = listen(h);
+    const reported = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    submitRequest(h, 'req-unreachable', [transactionRequest(1)]);
+    await settle();
+    reported.mockRestore();
+
+    expect(transactionOf(frames)).toEqual({
+      success: false,
+      value: 'cannot load chain metadata: no answer within 20 s',
+    });
+  });
+
+  it('refuses a version the runtime does not declare', async () => {
+    const h = harness(undefined, undefined, undefined, async () =>
+      readTransactionMetadata(syntheticMetadata()),
+    );
+    const frames = listen(h);
+    const reported = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    submitRequest(h, 'req-v2', [transactionRequest(2)]);
+    await settle();
+    reported.mockRestore();
+
+    expect(transactionOf(frames)).toEqual({
+      success: false,
+      value: 'unsupported tx_ext_version 2; the runtime declares transaction extension versions [0, 1]',
+    });
+  });
+
+  it('holds the other replies of a frame until its V5 transaction is built', async () => {
+    const h = harness(undefined, undefined, undefined, async () =>
+      readTransactionMetadata(syntheticMetadata()),
+    );
+    const frames = listen(h);
+
+    submitRequest(h, 'req-mixed', [buildSignRawMessage('m-raw'), transactionRequest(1, 'm-v5')]);
+    expect(replyValues(frames)).toEqual([]);
+    await settle();
+
+    expect(repliesIn(frames).map((reply) => reply.data.value.tag)).toEqual([
+      'SignResponse',
+      'CreateTransactionResponse',
+    ]);
+  });
+
+  it('still answers when an account switch retired it while the metadata loaded', async () => {
+    let release: (metadata: ReturnType<typeof readTransactionMetadata>) => void = () => {};
+    const h = harness(
+      undefined,
+      undefined,
+      undefined,
+      () => new Promise((resolve) => (release = resolve)),
+    );
+    const frames = listen(h);
+
+    submitRequest(h, 'req-retired', [transactionRequest(1)]);
+    h.responder.dispose();
+    release(readTransactionMetadata(syntheticMetadata()));
+    await settle();
+
+    expect(transactionOf(frames).success).toBe(true);
   });
 });

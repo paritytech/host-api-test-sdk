@@ -30,6 +30,9 @@ importers:
       '@parity/truapi-provider':
         specifier: 0.3.1
         version: 0.3.1
+      '@polkadot-api/substrate-bindings':
+        specifier: 0.21.1
+        version: 0.21.1
       '@polkadot-labs/hdkd-helpers':
         specifier: 0.0.34
         version: 0.0.34

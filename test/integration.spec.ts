@@ -17,7 +17,7 @@ import { readdirSync } from 'node:fs';
 import { test, expect } from '@playwright/test';
 import type { Frame, Page } from '@playwright/test';
 import { blake2b } from '@noble/hashes/blake2.js';
-import { compactFromU8a, hexToU8a, u8aToHex } from '@polkadot/util';
+import { compactFromU8a, compactToU8a, hexToU8a, u8aToHex } from '@polkadot/util';
 import { verify } from '@scure/sr25519';
 import { createTestHostServer, PASEO_ASSET_HUB } from '../dist/index.js';
 import type { NetworkConfig } from '../dist/index.js';
@@ -27,6 +27,13 @@ import type {} from '../dist/playwright/index.js';
 // The SDK's own derivation, so expected keys come from one source of truth
 // rather than a second keyring implementation in the tests.
 import { deriveDev, deriveFromUri, deriveSoft } from '../src/browser/dev-accounts.js';
+import {
+  NONCE,
+  REMARK,
+  SPEC_VERSION,
+  suppliedExtensions,
+  syntheticMetadata,
+} from '../src/browser/signing/general.fixture.js';
 // `index_bytes(n)` — the soft chain code the CORE derives a product account
 // at. Imported rather than restated so the two cannot drift apart.
 import { indexBytes } from '../src/browser/product-accounts.js';
@@ -2731,6 +2738,113 @@ test.describe('Create transaction', () => {
 
       const log = await page.evaluate(() => window.__TEST_HOST__.getSigningLog());
       expect(log.map((entry) => entry.type)).toEqual(['createTransaction']);
+    } finally {
+      await host.close();
+    }
+  });
+
+  /**
+   * The host's chain provider is the only path to the metadata, so the RPC it
+   * opens for Asset Hub is answered here: the synthetic runtime for
+   * `Metadata_metadata_at_version`, an error for anything else.
+   */
+  async function serveMetadata(
+    page: Page,
+    answer: (method: string) => { result: string } | { error: { code: number; message: string } },
+  ): Promise<{ network: NetworkConfig; methods: string[] }> {
+    const rpcUrl = 'ws://asset-hub.metadata.test/';
+    const methods: string[] = [];
+    await page.routeWebSocket(rpcUrl, (socket) => {
+      socket.onMessage((message) => {
+        const request = JSON.parse(String(message)) as { id: number; method: string; params: unknown[] };
+        const method = request.method === 'state_call' ? `state_call ${String(request.params[0])}` : request.method;
+        methods.push(method);
+        socket.send(JSON.stringify({ jsonrpc: '2.0', id: request.id, ...answer(method) }));
+      });
+    });
+    return { network: { ...PASEO_ASSET_HUB, rpcUrl }, methods };
+  }
+
+  const pipelineTransaction = (txExtVersion: number) => ({
+    dotnsId: 'test-product.dot',
+    derivationIndex: 0,
+    genesisHash: PASEO_ASSET_HUB.genesisHash,
+    callData: u8aToHex(REMARK),
+    extensions: suppliedExtensions().map((extension) => ({
+      id: extension.id,
+      extra: u8aToHex(extension.extra),
+      additionalSigned: u8aToHex(extension.additionalSigned),
+    })),
+    txExtVersion,
+  });
+
+  test('createTransaction on pipeline 1 returns a V5 general transaction', async ({ page }) => {
+    const metadata = syntheticMetadata();
+    const { network, methods } = await serveMetadata(page, (method) =>
+      method === 'state_call Metadata_metadata_at_version'
+        ? { result: u8aToHex(new Uint8Array([0x01, ...compactToU8a(metadata.length), ...metadata])) }
+        : { error: { code: -32601, message: 'Method not found' } },
+    );
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice'],
+      networks: [network],
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+
+      const result = expectOk(
+        await product.evaluate(
+          (request) => window.__TEST_PRODUCT__.createPipelineTransaction(request),
+          pipelineTransaction(1),
+        ),
+      );
+
+      const tx = hexToU8a(result.signedHex);
+      const [prefix, length] = compactFromU8a(tx);
+      expect(tx.length).toBe(prefix + length.toNumber());
+      const body = tx.subarray(prefix);
+      // [0x45][version][CheckBeforeSignature][Signed][Sr25519][sig 64][account 32][AsPgas][CheckNonce][call]
+      expect(Array.from(body.subarray(0, 5))).toEqual([0x45, 1, 0x01, 0x01, 0x01]);
+      const signer = deriveSoft(deriveFromUri('//Alice//test-product.dot'), indexBytes(0)).publicKey;
+      expect(u8aToHex(body.subarray(69, 101))).toBe(u8aToHex(signer));
+      expect(Array.from(body.subarray(103))).toEqual(Array.from(REMARK));
+
+      // Version, call, then the values and implicits after VerifyMultiSignature.
+      const payload = new Uint8Array([1, ...REMARK, 0x00, ...NONCE, ...SPEC_VERSION]);
+      expect(verify(blake2b(payload, { dkLen: 32 }), body.subarray(5, 69), signer)).toBe(true);
+      expect(methods).toContain('state_call Metadata_metadata_at_version');
+    } finally {
+      await host.close();
+    }
+  });
+
+  test('createTransaction on pipeline 1 is refused when the metadata cannot be read', async ({ page }) => {
+    const { network } = await serveMetadata(page, () => ({
+      error: { code: -32000, message: 'no metadata here' },
+    }));
+    const host = await createTestHostServer({
+      productUrl: productServer.url,
+      accounts: ['alice'],
+      networks: [network],
+    });
+
+    try {
+      const product = await loadHostAndProduct(page, host.url, productServer.url);
+
+      const outcome = await product.evaluate(
+        (request) => window.__TEST_PRODUCT__.createPipelineTransaction(request),
+        pipelineTransaction(1),
+      );
+
+      // A paired phone's refusal reaches the product as `Unknown`, with its reason.
+      expect(outcome).toEqual({
+        ok: false,
+        error:
+          'Unknown: cannot load chain metadata: state_call failed: {"code":-32000,"message":"no metadata here"}; ' +
+          'state_getMetadata failed: {"code":-32000,"message":"no metadata here"}',
+      });
     } finally {
       await host.close();
     }

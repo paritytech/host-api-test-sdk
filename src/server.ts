@@ -139,5 +139,10 @@ function closeServer(server: Server): Promise<void> {
       if (err) reject(err);
       else resolve();
     });
+    // `close()` waits for every connection to end, and Chrome keeps sockets it
+    // opened ahead of need without sending a request on them. Node drops such a
+    // socket only at `headersTimeout` (60 s by default), so a test's
+    // `host.close()` could outlast the test. A closed host serves nothing more.
+    server.closeAllConnections();
   });
 }

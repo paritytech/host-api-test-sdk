@@ -145,7 +145,13 @@ A network with no `chain` is still routable by genesis hash; it is simply left o
 
 So a test that exercises cross-product grants needs a network with `chain: 'AssetHub'`, which talks to the real `rpcUrl`. Preimage submission needs no network: the host's Bulletin allowances are answered in-page and were never authorized on any chain, so the core keeps each submission and returns its content key.
 
-**Signing never touches a network.** The People chain is served in-page by a loopback statement store, which is what carries the SSO signing round trip. Only a product's own chain calls go out to `rpcUrl`, so a test that never reads chain state runs fully offline.
+**Signing never touches a network**, with one exception below. The People chain is served in-page by a loopback statement store, which is what carries the SSO signing round trip. Only a product's own chain calls go out to `rpcUrl`, so a test that never reads chain state runs fully offline.
+
+### Transaction-extension versions
+
+`createTransaction` takes a `txExtVersion`, the transaction-extension pipeline the transaction runs. Version 0 gets a signed V4, built offline. Any other version gets an Extrinsic V5 general transaction on that pipeline, signed into `VerifyMultiSignature`, as a real signing host builds it. That needs the pipeline's layout, so the host reads the runtime metadata over the `rpcUrl` of the network whose genesis the transaction names, once per genesis for the page's life.
+
+A request a real host would refuse is refused with the core's message, which the product sees as `Unknown` with that reason: `cannot load chain metadata: …` when no network serves the genesis or its `rpcUrl` does not answer within 20 s, `unsupported tx_ext_version …` for a pipeline the runtime does not declare, and likewise an extension the runtime does not know, one listed twice, or a non-empty one left out.
 
 ## Permission testing
 
@@ -460,7 +466,8 @@ Playwright test
   → createTestHostServer() starts a Node HTTP server
   → it serves an HTML shell plus dist/host/: the two entry chunks
     (host-runtime.js, worker-runtime.js), the shared chunks esbuild splits out,
-    the two wasm-glue chunks and the two .wasm payloads — eight files in all
+    the V5 transaction builder, the two wasm-glue chunks and the two .wasm
+    payloads
   → the page starts the TrUAPI core in a Web Worker (Rust → WebAssembly)
   → the page mints an SSO session for the selected dev account and activates it
   → the page creates an <iframe src="productUrl"> and answers the product's
@@ -475,7 +482,7 @@ Product (in iframe, @parity/truapi/sandbox)
     key → the signature comes back the same way
 ```
 
-The People chain is a **loopback statement store inside the page**: no node, no network, no Docker. That is what makes auto-signing possible without a wallet, and it is also why the assets above are all a consumer needs — they are pre-built and shipped, so there are zero build-time dependencies for you. A boot fetches six of the eight; the JSON-RPC provider's glue and `.wasm` are loaded only when a test actually opens one of the configured networks, so a signing-only run never downloads them.
+The People chain is a **loopback statement store inside the page**: no node, no network, no Docker. That is what makes auto-signing possible without a wallet, and it is also why the assets above are all a consumer needs — they are pre-built and shipped, so there are zero build-time dependencies for you. A boot fetches all but three of them. The JSON-RPC provider's glue and `.wasm` are loaded only when a test opens one of the configured networks, and the V5 builder only for a transaction on a non-zero `txExtVersion`, which also reads that chain's metadata. A run that signs only on version 0 downloads none of the three.
 
 ## API reference
 
@@ -693,9 +700,10 @@ Two limitations worth knowing:
 - **`seedProductStorage` only replays a key `getProductStorage()` has reported.** The core namespaces product-storage keys per product — `truapi:product-storage:v1:<productIdLength>:<productId>:<localKey>` — so a key written *back* is always round-tripped, never hand-constructed. `initialState.productStorage` carries the same restriction. For **reading**, you do not need the namespaced form: `getProductStorageValue(localKey)` and `getProductStorageEntries()` (which carries `localKey` alongside `key`) match on the product's own key. Prefer them to matching `getProductStorage()`'s keys by suffix, which is ambiguous when a local key contains `:` — the length prefix is exactly what disambiguates, and the parser returns `localKey: undefined` rather than guessing if the core ever moves to a new layout.
 - **A function-form behavior cannot cross `page.evaluate`.** `setNavigationBehavior` / `setNotificationBehavior` on the fixture, and the `behaviors` boot option, accept only `'approve-all' | 'reject-all'` — the `FixtureBehavior` type. `setPermissionBehavior` and `setUserConfirmationBehavior` accept `'approve-once'` as well — `FixtureConsentBehavior`. The function form — `(request) => boolean | PermissionDecision`, the last arm of `Behavior<Req>` / `DecisionBehavior<Req>` — works only in-page, via `window.__TEST_HOST__`.
 
-Two things the host does not do that a production host may:
+Three things the host does not do that a production host may:
 
-- **Every transaction the host builds is a signed V4**, whatever `txExtVersion` says. truapi `0.23` gives the field a meaning — `0` builds a V5 general transaction when the runtime's version-0 extensions include `VerifyMultiSignature` and a signed V4 otherwise, a non-zero value builds V5 on that version — and building V5 takes the runtime's metadata, which the in-page signer does not read. A product passing `txExtVersion: 1` gets a different shape here than from a real host.
+- **`txExtVersion: 0` always gets a signed V4.** A real host builds a V5 general transaction for version 0 when that pipeline declares `VerifyMultiSignature`. Knowing whether it does takes the runtime's metadata, which this host reads only for a non-zero version (see [Transaction-extension versions](#transaction-extension-versions)), so that a product's transactions keep its tests off the network. Paseo Asset Hub Next declares `VerifyMultiSignature` on pipeline 1 only, so there the two agree.
+- **The supplied extension bytes are not type-checked.** A real host checks each extension's bytes against the type the metadata declares before it signs a V5 transaction. This host signs what it is given, so a malformed extension is refused by the chain as `BadProof` rather than by the host.
 - **No contacts.** The host installs no `ContactsPlatform`, so `contacts.pick` answers `Unsupported` — which a product can tell apart from a dismissal — and a `createTransaction` that names contacts (a non-empty `contacts`) is refused as `NotSupported` before it reaches the signer. A product that pays a contact cannot be tested end to end here.
 
 ### Built-in networks
@@ -757,6 +765,7 @@ src/
 │   ├── dev-accounts.ts       #   in-page sr25519 derivation
 │   ├── product-accounts.ts   #   product subtree + soft index derivation
 │   ├── loopback-chain.ts     #   the in-page People statement store
+│   ├── chain-metadata.ts     #   runtime metadata for V5 transactions
 │   ├── callbacks/            #   host callbacks the core calls
 │   ├── signing/              #   extrinsic assembly and raw signing
 │   └── sso/                  #   the paired-signer half of the SSO session
@@ -770,6 +779,15 @@ The build produces three kinds of output:
 1. **Browser assets** (`dist/host/`) — ESM chunks built with esbuild, plus the two `.wasm` payloads and the core's on-demand `verifiable` module (`truapi_verifiable.js`, its `.wasm`, and the `snippets/` that load them), served by the test host's own HTTP server
 2. **ESM modules** (`dist/*.js`) — the Node-side API compiled with `tsc`
 3. **CJS bundles** (`dist/index.cjs`, `dist/playwright.cjs`) — the same API for CommonJS consumers
+
+## Migrating from 0.17.0 to 0.18.0
+
+- **A non-zero `txExtVersion` now needs its chain.** Such a `createTransaction`
+  used to come back as a signed V4. It is now a V5 general transaction built on
+  the runtime metadata, read over the `rpcUrl` of the network whose genesis the
+  transaction names. With an unreachable `rpcUrl` the product gets
+  `Unknown: cannot load chain metadata: …`. Version 0 is unchanged and reads
+  nothing.
 
 ## Migrating from 0.16.0 to 0.17.0
 
