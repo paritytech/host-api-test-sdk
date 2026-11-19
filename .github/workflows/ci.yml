@@ -44,7 +44,8 @@ jobs:
         run: pnpm pack && ls -lh *.tgz
 
   integration-tests:
-    runs-on: ubuntu-latest
+    # Playwright 1.58 cannot install Chromium's system deps on ubuntu-latest (26.04).
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
