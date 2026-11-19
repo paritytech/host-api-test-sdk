@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.17.1
+
+### Deprecated
+
+- **This package is deprecated** and will not receive further releases. Its
+  replacement is `@parity/truapi-host/testing`, which runs the real TrUAPI core
+  and ships with every core release. The README section
+  [Migrating to `@parity/truapi-host/testing`](./README.md#migrating-to-paritytruapi-hosttesting)
+  lists the steps, and the full guide is
+  [Moving your e2e suite to the TrUAPI test host](https://github.com/paritytech/trinity-user-agents/blob/main/docs/migration/test-host.md).
+  The code is unchanged from `0.17.0`.
+
 ## 0.17.0
 
 The upstream stack moves to truapi `0.24`: `@parity/truapi` and

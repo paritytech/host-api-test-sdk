@@ -1411,3 +1411,20 @@ createTestHostFixture({
 });
 ```
 
+# host-api-test-sdk 0.17.1
+
+## This package is deprecated
+
+`@parity/host-api-test-sdk` will not receive further releases. Move your e2e
+suite to `@parity/truapi-host/testing`, which runs the real TrUAPI core and ships
+with every core release. The product needs `@parity/truapi` `0.24` or later,
+which is `@parity/product-sdk-host` `0.25` or `@parity/product-sdk` `0.34` and
+later. Most specs stay as they are:
+
+```diff
+-import { createTestHostFixture } from "@parity/host-api-test-sdk/playwright";
++import { createTestHostFixture } from "@parity/truapi-host/testing/playwright";
+```
+
+The full guide, including the fixture options and assertions that change:
+https://github.com/paritytech/trinity-user-agents/blob/main/docs/migration/test-host.md
