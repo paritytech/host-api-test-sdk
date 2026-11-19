@@ -4,12 +4,61 @@
 [![npm](https://img.shields.io/npm/v/@parity/host-api-test-sdk)](https://www.npmjs.com/package/@parity/host-api-test-sdk)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 
+> [!CAUTION]
+> **Deprecated.** This package is no longer maintained and will not receive further releases. Its replacement is the TrUAPI test host, [`@parity/truapi-host/testing`](https://www.npmjs.com/package/@parity/truapi-host), which runs the real TrUAPI core, mocks only the platform, and ships with every core release. See [Migrating to `@parity/truapi-host/testing`](#migrating-to-paritytruapi-hosttesting).
+
 > [!WARNING]
 > The following is a prototype, reference implementation, and proof-of-concept. This open source code is provided for research, experimentation, and developer education only. This code has not been audited, is actively experimental, and may contain bugs, vulnerabilities, or incomplete features. Use at your own risk.
 
 Lightweight test host for E2E testing embedded Polkadot products built on [TrUAPI](https://github.com/paritytech/truapi) — dev accounts that auto-sign with no prompts, no Docker, no wallet, and no network.
 
 > **Upstream contract:** `0.16.x` runs the TrUAPI core itself — `@parity/truapi-host` `0.23.0` (the Rust core compiled to WebAssembly), `@parity/truapi-provider` `0.3.1` for chain transport, and `@parity/truapi` `0.23.0` for the protocol codecs. **Your product must boot through `@parity/truapi/sandbox` on the same `0.23` minor** — both sides of the wire move together, and a product on truapi before `0.22` sends a `createTransaction` payload the core cannot decode (see [Migrating from 0.15.0 to 0.16.0](#migrating-from-0150-to-0160)). If your product goes through `@parity/product-sdk`, that means `@parity/product-sdk-host` `0.24.0`, the first release on `@parity/truapi` `^0.23.0`; on an older product-sdk, stay on `0.15.x`. If you vendor your own core rather than taking it from a release, compare `TRUAPI_WIRE_SCHEMA_HASH` against your binary's — the package version says what the JS codecs were built against, not what the `.wasm` speaks.
+
+## Migrating to `@parity/truapi-host/testing`
+
+The full, maintained guide is [Moving your e2e suite to the TrUAPI test host](https://github.com/paritytech/trinity-user-agents/blob/main/docs/migration/test-host.md). Most specs stay as they are, because most fixture method names are unchanged. Every suite goes through these steps:
+
+1. **Check the product's stack.** The product must resolve `@parity/truapi` `0.24` or later: `@parity/product-sdk-host` `0.25`+ or `@parity/product-sdk` `0.34`+. Check with `pnpm why @parity/truapi`, and read the copy under the product SDK your `package.json` lists directly, not the one under `@parity/host-api-test-sdk`. On an older product SDK, upgrade it first and stay on this package until then.
+2. **Swap the dependency** in `devDependencies`. Use the `@parity/truapi-host` release with the same minor as the `@parity/truapi` your product resolves. The test host also needs `esbuild` `0.20` or later when the server starts: add it as a dev dependency if `npm ls esbuild` doesn't list it.
+
+   ```diff
+   -"@parity/host-api-test-sdk": "...",
+   +"@parity/truapi-host": "<the same minor as your @parity/truapi>",
+   ```
+
+3. **Change the imports.** The fixture, `PASEO_ASSET_HUB`, `DEV_ACCOUNTS`, `fromNetworks` and the log types come from `@parity/truapi-host/testing/playwright`. `createTestHostServer` comes from `@parity/truapi-host/testing/server`.
+
+   ```diff
+   -import { createTestHostFixture, type TestHost } from "@parity/host-api-test-sdk/playwright";
+   +import { createTestHostFixture, type TestHost } from "@parity/truapi-host/testing/playwright";
+   ```
+
+4. **Update the fixture options.**
+
+   ```ts
+   import { test as base } from "@playwright/test";
+   import { asProductId } from "@parity/truapi";
+   import { createTestHostFixture, PASEO_ASSET_HUB, type TestHost } from "@parity/truapi-host/testing/playwright";
+
+   export const test = base.extend<{ testHost: TestHost }>(
+     createTestHostFixture({
+       productUrl: "http://localhost:3000",
+       productId: asProductId("myapp.dot"), // plain string on truapi-host 0.28 and older
+       networks: [PASEO_ASSET_HUB],
+       accounts: ["alice"],
+     }),
+   );
+   ```
+
+   - `productId` must be the id your product signs with, as a dotNS name or `localhost:<port>`. It defaults to `mock.dot`, and a wrong value fails every signing call with `PermissionDenied`. If your repo doesn't depend on `@parity/truapi` directly, add it as a dev dependency at the same version for `asProductId`.
+   - `networks` doesn't have a default. A suite that relied on the Paseo Asset Hub default passes `networks: [PASEO_ASSET_HUB]`.
+   - `chain` on a `NetworkConfig` is removed. The role comes from the end of the `id` (`-people`, `-asset-hub`, `-bulletin`), and any other id is read as a relay chain, so a bare `people` id needs a prefix such as `paseo-next-people`.
+   - `accounts` takes `"alice"`, `"bob"`, `"charlie"`, `"dave"` or `{ name, entropy }`. `eve`, `ferdie`, `uri` and `username` are removed.
+   - `productAccounts`, `executionKind`, `initialState` and most of `behaviors` are removed. The guide maps each old option to its replacement.
+5. **Fund the product account** if the suite signs. It is derived from the session and the product id, so it cannot be pinned to `//Alice`. `await productAccountAddress({ account, productId, index })` from `@parity/truapi-host/testing/playwright` resolves to the address to fund.
+6. **Update the assertions that changed.** `setPermissionBehavior` takes `"allow-all"` or `"deny-all"`, usernames are the account `name`, and storage, connection status, statements and preimages read back in new shapes. Several methods are removed, and payments and chat actions are not supported yet. Steps 5 and 6 of the guide list each case.
+
+An example migration is [browse](https://github.com/paritytech/browse/pull/141). The [`migrate-to-truapi-test-host`](https://github.com/paritytech/trinity-user-agents/blob/main/.claude/skills/migrate-to-truapi-test-host/SKILL.md) agent skill covers the same migration in more depth for a coding agent. Questions go on your product's migration issue, tracked in [trinity-user-agents issue 1349](https://github.com/paritytech/trinity-user-agents/issues/1349).
 
 ## Why
 
